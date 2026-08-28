@@ -1,16 +1,17 @@
 {
-  "name": "@rehpic/aag",
+  "name": "@imai/aag",
   "version": "0.1.0",
   "description": "Run an OpenClaw or Codex agent as a first-class Anytype member.",
   "license": "Apache-2.0",
-  "author": "xrehpicx",
+  "author": "IMAI Studio",
+  "packageManager": "pnpm@11.22.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xrehpicx/anytype-agent-gateway.git"
+    "url": "git+https://github.com/imai-studio/anytype-agent-gateway.git"
   },
-  "homepage": "https://github.com/xrehpicx/anytype-agent-gateway#readme",
+  "homepage": "https://github.com/imai-studio/anytype-agent-gateway#readme",
   "bugs": {
-    "url": "https://github.com/xrehpicx/anytype-agent-gateway/issues"
+    "url": "https://github.com/imai-studio/anytype-agent-gateway/issues"
   },
   "keywords": [
     "anytype",
@@ -50,9 +51,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke:codex": "tsx scripts/smoke-codex.ts",
-    "check": "npm run build && npm run typecheck && npm run lint && npm test",
-    "prepack": "npm run build",
-    "prepublishOnly": "npm run check",
+    "check": "pnpm run build && pnpm run typecheck && pnpm run lint && pnpm test",
+    "prepack": "pnpm run build",
+    "prepublishOnly": "pnpm run check",
     "start": "node dist/cli.js run"
   },
   "engines": {

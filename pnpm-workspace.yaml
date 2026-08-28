@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+minimumReleaseAgeExclude:
+  - '@agentclientprotocol/codex-acp@1.7.0'
+onlyBuiltDependencies:
+  - esbuild

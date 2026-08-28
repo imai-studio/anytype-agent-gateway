@@ -12,12 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.9
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run check
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
       - run: test "$(node dist/cli.js --version)" = "$(node -p "require('./package.json').version")"
       - uses: actions/setup-go@v5
         with:

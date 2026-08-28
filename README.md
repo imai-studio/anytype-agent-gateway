@@ -1,7 +1,7 @@
 # Anytype Agent Gateway
 
-[![CI](https://github.com/xrehpicx/anytype-agent-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/xrehpicx/anytype-agent-gateway/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@rehpic/aag.svg)](https://www.npmjs.com/package/@rehpic/aag)
+[![CI](https://github.com/imai-studio/anytype-agent-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/imai-studio/anytype-agent-gateway/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@imai/aag.svg)](https://www.npmjs.com/package/@imai/aag)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Anytype Agent Gateway (AAG) runs one OpenClaw or Codex agent as one Anytype member. A long-lived `aag run` process watches the configured chats and object discussions, decides when that member should wake, supplies Anytype context to the runtime, and projects the run back into Anytype as an editable reply.
@@ -45,24 +45,24 @@ Anytype Desktop normally exposes its API at `http://127.0.0.1:31009`. When AAG r
 
 ## Install
 
-Install the published CLI with npm:
+Install the published CLI with pnpm:
 
 ```bash
-npm install --global @rehpic/aag
+pnpm add --global @imai/aag
 aag --version
 ```
 
 To build from source instead:
 
 ```bash
-git clone https://github.com/xrehpicx/anytype-agent-gateway.git
+git clone https://github.com/imai-studio/anytype-agent-gateway.git
 cd anytype-agent-gateway
-npm ci
-npm run build
-npm link
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm link --global
 ```
 
-`npm link` makes the `aag` command available from the current Node installation. You can instead invoke the compiled CLI directly from `dist/cli.js`.
+`pnpm link --global` makes the `aag` command available from the current Node installation. You can instead invoke the compiled CLI directly from `dist/cli.js`.
 
 To enable object-discussion discovery, build and install the pinned Heart adapter:
 
@@ -245,19 +245,19 @@ Use `comments.mode: filtered` with `includeObjectTypes`/`excludeObjectTypes` for
 ## Development checks
 
 ```bash
-npm run check
-npm run smoke:codex
+pnpm run check
+pnpm run smoke:codex
 
 cd heart-adapter
 go test ./...
 go build ./...
 ```
 
-`npm run check` builds, lints, and runs the unit/workflow tests. `smoke:codex` requires a real `codex-acp` command and performs live ACP prompt and steering checks.
+`pnpm run check` builds, lints, and runs the unit/workflow tests. `smoke:codex` requires a real `codex-acp` command and performs live ACP prompt and steering checks.
 
 ## Releases
 
-The npm package is [`@rehpic/aag`](https://www.npmjs.com/package/@rehpic/aag), while the installed command remains `aag`. Release versions come from `package.json`. Publishing a GitHub release tagged `vX.Y.Z` runs the verified npm publishing workflow; the tag must exactly match the package version.
+The registry package is [`@imai/aag`](https://www.npmjs.com/package/@imai/aag), while the installed command remains `aag`. Install it with pnpm, npm, or another compatible Node package manager. Release versions come from `package.json`. Publishing a GitHub release tagged `vX.Y.Z` runs the verified npm publishing workflow; the tag must exactly match the package version.
 
 The workflow uses npm trusted publishing through GitHub Actions OIDC, so release publishing does not require a long-lived npm token in the repository. The initial package publish and trusted-publisher registration are maintainer operations.
 

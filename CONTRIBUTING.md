@@ -7,10 +7,10 @@ Thanks for helping improve Anytype Agent Gateway.
 Use Node.js 24 or newer. Go 1.25.7 is required only for the optional Heart discussion adapter.
 
 ```bash
-git clone https://github.com/xrehpicx/anytype-agent-gateway.git
+git clone https://github.com/imai-studio/anytype-agent-gateway.git
 cd anytype-agent-gateway
-npm ci
-npm run check
+pnpm install --frozen-lockfile
+pnpm run check
 
 cd heart-adapter
 go test ./...
@@ -22,7 +22,7 @@ Keep credentials and machine-local configuration outside the repository. Use the
 ## Pull requests
 
 - Keep changes focused and include tests for behavior changes.
-- Run `npm run check`, `go test ./...`, and `go vet ./...` before opening a pull request.
+- Run `pnpm run check`, `go test ./...`, and `go vet ./...` before opening a pull request.
 - Document configuration or operational changes in the README and examples.
 - Explain compatibility implications when updating Anytype, Anytype Heart, OpenClaw, Codex ACP, or the ACP SDK.
 
