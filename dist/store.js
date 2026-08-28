@@ -20,6 +20,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_run_messages_message ON run_messages(message_id);
       CREATE TABLE IF NOT EXISTS discussions (space_id TEXT NOT NULL, object_id TEXT NOT NULL, discussion_id TEXT NOT NULL, object_name TEXT, object_type TEXT, discovered_at INTEGER NOT NULL, PRIMARY KEY (space_id, object_id));
       CREATE TABLE IF NOT EXISTS codex_acp_sessions (session_key TEXT PRIMARY KEY, session_id TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_generations (thread_key TEXT PRIMARY KEY, generation INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     `);
         const versionColumns = this.db.prepare("PRAGMA table_info(handled_message_versions)").all();
         if (!versionColumns.some(column => column.name === "fingerprint")) {
@@ -88,5 +89,10 @@ export class Store {
     codexAcpSession(sessionKey) { return this.db.prepare("SELECT session_id FROM codex_acp_sessions WHERE session_key=?").get(sessionKey)?.session_id; }
     saveCodexAcpSession(sessionKey, sessionId) { this.db.prepare("INSERT INTO codex_acp_sessions(session_key,session_id,updated_at) VALUES(?,?,?) ON CONFLICT(session_key) DO UPDATE SET session_id=excluded.session_id, updated_at=excluded.updated_at").run(sessionKey, sessionId, Date.now()); }
     deleteCodexAcpSession(sessionKey) { this.db.prepare("DELETE FROM codex_acp_sessions WHERE session_key=?").run(sessionKey); }
+    sessionGeneration(threadKey) { return Number(this.db.prepare("SELECT generation FROM session_generations WHERE thread_key=?").get(threadKey)?.generation ?? 0); }
+    resetSession(threadKey) {
+        this.db.prepare("INSERT INTO session_generations(thread_key,generation,updated_at) VALUES(?,1,?) ON CONFLICT(thread_key) DO UPDATE SET generation=generation+1,updated_at=excluded.updated_at").run(threadKey, Date.now());
+        return this.sessionGeneration(threadKey);
+    }
     close() { this.db.close(); }
 }

@@ -61,11 +61,16 @@ export class AnytypeClient implements AnytypePort {
   }
 
   async resolveChat(spaceId: string, selector: { id?: string; name?: string }): Promise<{ id: string; name: string }> {
-    const chats = await this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/chats`);
+    const chats = await this.listChats(spaceId);
     const matches = chats.filter((chat: JsonRecord) => selector.id ? chat.id === selector.id : chat.name === selector.name);
     if (matches.length !== 1) throw new Error(`Expected one Anytype chat matching ${selector.id ?? JSON.stringify(selector.name)}, found ${matches.length}`);
     const match = matches[0]!;
     return { id: match.id, name: match.name ?? match.id };
+  }
+
+  async listChats(spaceId: string): Promise<Array<{ id: string; name: string }>> {
+    const chats = await this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/chats`);
+    return chats.map(chat => ({ id: chat.id, name: chat.name ?? chat.id }));
   }
 
   async getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage> {

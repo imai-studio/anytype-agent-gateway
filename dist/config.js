@@ -31,12 +31,21 @@ const commentsSchema = z.object({
     if (value.mode === "filtered" && value.includeObjectTypes.length === 0)
         context.addIssue({ code: "custom", path: ["includeObjectTypes"], message: "comments.includeObjectTypes is required for filtered mode" });
 }).transform(value => ({ ...value, wake: value.wake ?? disabledWake }));
+const chatDiscoverySchema = z.object({
+    enabled: z.boolean().default(false),
+    discoveryIntervalSeconds: z.number().int().min(10).default(30),
+    wake: wakeSchema.optional()
+}).superRefine((value, context) => {
+    if (value.enabled && !value.wake)
+        context.addIssue({ code: "custom", path: ["wake"], message: "chatDiscovery.wake is required when chat discovery is enabled" });
+}).transform(value => ({ ...value, wake: value.wake ?? disabledWake }));
 const spaceSchema = z.object({
     id: z.string().optional(),
     name: z.string().optional(),
     participantId: z.string().optional(),
     invite: z.string().url().optional(),
     chats: z.array(chatSchema).default([]),
+    chatDiscovery: chatDiscoverySchema.default({ enabled: false, discoveryIntervalSeconds: 30, wake: disabledWake }),
     comments: commentsSchema.default({ mode: "disabled", includeObjectTypes: [], excludeObjectTypes: [], discoveryIntervalSeconds: 60, createMissing: false, wake: disabledWake })
 }).refine(value => value.id || value.name || value.invite, "space id, name, or invite is required");
 const baseRuntime = {

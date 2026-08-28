@@ -6,7 +6,7 @@ This repository builds and operates Anytype Agent Gateway (AAG). When a user giv
 
 - One AAG process represents one runtime agent through one dedicated Anytype member.
 - Treat invite links, API keys, participant IDs, gateway tokens, and local project paths as sensitive operator input. Never invent them, print their values, or commit them.
-- Joining a space does not authorize every chat. Configure explicit space/chat routes and wake rules.
+- Joining a space does not authorize every chat. Configure explicit routes or explicitly enable per-space chat discovery with a narrow wake rule and sender allowlist.
 - `allowedProjects` and `defaultProject` communicate intent to the runtime; they are not a filesystem sandbox. Enforce access in Codex/OpenClaw, the service account, or a container.
 - Do not expose Anytype, Heart, or OpenClaw listeners publicly. Use loopback, SSH forwarding, or an authenticated private network.
 - The optional Heart adapter has a separate Any Source Available dependency boundary documented in `THIRD_PARTY_NOTICES.md`.

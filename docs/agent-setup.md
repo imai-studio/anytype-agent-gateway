@@ -31,7 +31,7 @@ Ask only for values that cannot be discovered safely:
 1. Runtime: `codex` or `openclaw`.
 2. Dedicated Anytype member name.
 3. One or more Anytype space invite links, unless the identity is already a member.
-4. Space and chat names to watch, plus whether object discussions are enabled.
+4. Space and initial chat names to watch, whether newly created chats should be discovered, and whether object discussions are enabled.
 5. Stable participant IDs allowed to wake the agent.
 6. Wake rule per chat: `mention`, `mention-or-reply`, `every-message`, `prefix`, or `disabled`.
 7. Absolute default and allowed project paths.
@@ -83,6 +83,13 @@ anytype:
   apiKeyFile: ~/.config/aag/anytype-api-key
 spaces:
   - name: SPACE_NAME
+    chatDiscovery:
+      enabled: true
+      discoveryIntervalSeconds: 30
+      wake:
+        humans: mention-or-reply
+        agents: direct-mention
+        allowedUsers: [_participant_authorized_human_id]
     chats:
       - name: CHAT_NAME
         wake:
@@ -105,7 +112,7 @@ responses:
 
 The installed package resolves its bundled `codex-acp` executable automatically. For OpenClaw, use `examples/openclaw-agent.yaml`, provide the absolute Gateway client-module path, and keep the Gateway token in the configured environment variable or protected OpenClaw config file.
 
-One configuration should describe one identity and one runtime agent. Use explicit routes; space membership alone must not turn on every conversation.
+One configuration should describe one identity and one runtime agent. Use explicit routes or an explicit `chatDiscovery` policy; space membership alone must not turn on every conversation. When discovery is enabled, keep its wake policy mention-based and its sender allowlist narrow.
 
 ## 5. Validate before connecting
 

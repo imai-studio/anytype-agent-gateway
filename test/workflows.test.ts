@@ -46,6 +46,26 @@ describe("example workflows", () => {
     await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Done with tests"));
   });
 
+  it("replaces an active harness session when a tagged /new command arrives", async () => {
+    const { anytype, runtime, store, controller } = setup();
+    const first = incoming(); anytype.messages.push(first);
+    await controller.process(conversation, wake, first);
+    const oldReply = anytype.messages.at(-1)!.id;
+    const reset = incoming({ id: "message-new", content: { text: "@AAG /new plan the release", marks: [{ type: "mention", param: "bot" }] } });
+    anytype.messages.push(reset);
+    await controller.process(conversation, wake, reset);
+
+    expect(runtime.steers).toEqual([]);
+    expect(runtime.starts.map(start => start.sessionKey)).toEqual(["aag:chat:space:chat", "aag:chat:space:chat:g1"]);
+    expect(runtime.starts.at(-1)?.prompt).toContain("new harness session");
+    expect(runtime.starts.at(-1)?.prompt).toContain("plan the release");
+    expect(runtime.starts.at(-1)?.prompt).not.toContain("@AAG do the work");
+    expect(anytype.edits).toContainEqual({ id: oldReply, text: "Agent session replaced by /new." });
+    expect(store.sessionGeneration("chat:space:chat")).toBe(1);
+    runtime.finish({ text: "Fresh session ready" });
+    await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Fresh session ready"));
+  });
+
   it("deletes the placeholder when the harness deliberately stays silent", async () => {
     const { anytype, runtime, controller } = setup("delete");
     const message = incoming(); anytype.messages.push(message);

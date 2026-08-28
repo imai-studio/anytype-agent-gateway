@@ -14,6 +14,13 @@ anytype:
 
 spaces:
   - name: My Anytype Space
+    chatDiscovery:
+      enabled: true
+      discoveryIntervalSeconds: 30
+      wake:
+        humans: mention-or-reply
+        agents: direct-mention
+        allowedUsers: [_participant_replace_with_authorized_human_id]
     chats:
       - name: sandbox
         wake:

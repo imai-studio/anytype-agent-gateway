@@ -27,6 +27,7 @@ describe("loadConfig", () => {
     expect(config.spaces[0]?.chats[0]?.wake.agents).toBe("never");
     expect(config.responses.silentPlaceholder).toBe("delete");
     expect(config.responses.streaming).toBe(true);
+    expect(config.spaces[0]?.chatDiscovery.enabled).toBe(false);
   });
 
   it("rejects prefix wake without a prefix", async () => {
@@ -41,6 +42,13 @@ describe("loadConfig", () => {
     const path = join(dir, "comments.yaml");
     await writeFile(path, yaml.replace("chats:\n      - name: sandbox\n        wake: { humans: mention, agents: never, allowedUsers: [human-1] }", "comments: { mode: all }"));
     await expect(loadConfig(path)).rejects.toThrow("comments.wake");
+  });
+
+  it("requires an explicit wake policy when chat discovery is enabled", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aag-config-"));
+    const path = join(dir, "chat-discovery.yaml");
+    await writeFile(path, yaml.replace("runtime: { kind: openclaw }", "runtime: { kind: openclaw }\n").replace("    chats:", "    chatDiscovery: { enabled: true }\n    chats:"));
+    await expect(loadConfig(path)).rejects.toThrow("chatDiscovery.wake");
   });
 
   it("resolves the packaged Codex ACP executable", async () => {

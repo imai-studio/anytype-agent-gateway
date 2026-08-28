@@ -24,6 +24,10 @@ export declare class AnytypeClient implements AnytypePort {
         id: string;
         name: string;
     }>;
+    listChats(spaceId: string): Promise<Array<{
+        id: string;
+        name: string;
+    }>>;
     getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage>;
     listMessages(spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]>;
     sendMessage(spaceId: string, chatId: string, input: {

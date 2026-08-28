@@ -61,6 +61,48 @@ export declare const configSchema: z.ZodObject<{
                 allowedUsers: z.ZodArray<z.ZodString>;
             }, z.core.$strip>;
         }, z.core.$strip>>>;
+        chatDiscovery: z.ZodDefault<z.ZodPipe<z.ZodObject<{
+            enabled: z.ZodDefault<z.ZodBoolean>;
+            discoveryIntervalSeconds: z.ZodDefault<z.ZodNumber>;
+            wake: z.ZodOptional<z.ZodObject<{
+                humans: z.ZodDefault<z.ZodEnum<{
+                    mention: "mention";
+                    "mention-or-reply": "mention-or-reply";
+                    "every-message": "every-message";
+                    prefix: "prefix";
+                    disabled: "disabled";
+                }>>;
+                agents: z.ZodDefault<z.ZodEnum<{
+                    "every-message": "every-message";
+                    never: "never";
+                    "direct-mention": "direct-mention";
+                }>>;
+                prefix: z.ZodOptional<z.ZodString>;
+                allowedUsers: z.ZodArray<z.ZodString>;
+            }, z.core.$strip>>;
+        }, z.core.$strip>, z.ZodTransform<{
+            wake: {
+                humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";
+                agents: "every-message" | "never" | "direct-mention";
+                allowedUsers: string[];
+                prefix?: string | undefined;
+            } | {
+                humans: "disabled";
+                agents: "never";
+                allowedUsers: string[];
+            };
+            enabled: boolean;
+            discoveryIntervalSeconds: number;
+        }, {
+            enabled: boolean;
+            discoveryIntervalSeconds: number;
+            wake?: {
+                humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";
+                agents: "every-message" | "never" | "direct-mention";
+                allowedUsers: string[];
+                prefix?: string | undefined;
+            } | undefined;
+        }>>>;
         comments: z.ZodDefault<z.ZodPipe<z.ZodObject<{
             mode: z.ZodDefault<z.ZodEnum<{
                 disabled: "disabled";

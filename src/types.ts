@@ -25,6 +25,7 @@ export type ConversationRef = {
 export type ContextBundle = {
   conversation: ConversationRef;
   trigger: ChatMessage;
+  newSession?: boolean;
   history: ChatMessage[];
   replyAncestry: ChatMessage[];
   referencedObjects: Array<{ id: string; name?: string; markdown?: string }>;
@@ -64,6 +65,7 @@ export interface AnytypePort {
   stream(spaceId: string, chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent>;
   resolveSpace(selector: { id?: string; name?: string }): Promise<{ id: string; name: string }>;
   resolveChat(spaceId: string, selector: { id?: string; name?: string }): Promise<{ id: string; name: string }>;
+  listChats(spaceId: string): Promise<Array<{ id: string; name: string }>>;
   getObject(spaceId: string, objectId: string): Promise<{ id: string; name?: string; markdown?: string }>;
   searchObjects(spaceId: string, offset: number, limit: number): Promise<Array<{ id: string; name?: string; type?: string }>>;
 }

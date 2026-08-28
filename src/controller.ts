@@ -1,6 +1,6 @@
 import type { AgentConfig, WakeConfig } from "./config.js";
 import { createHash } from "node:crypto";
-import { buildContext, formatPrompt } from "./context.js";
+import { buildContext, formatPrompt, isNewSessionCommand } from "./context.js";
 import { RunProjection } from "./projection.js";
 import { Store } from "./store.js";
 import type { ActiveRuntime, AnytypePort, ChatMessage, ConversationRef, RuntimeDriver } from "./types.js";
@@ -32,10 +32,18 @@ export class AgentController {
     const decision = decideWake(message, wake, this.config, { replyToAgent, ...(conversation.selfParticipantId ? { selfParticipantId: conversation.selfParticipantId } : {}) });
     if (!decision.wake) { this.log("message_ignored", { routeId: conversation.routeId, messageId: message.id, reason: decision.reason }); return; }
     const threadKey = await this.threadKey(conversation, message);
+    const newSession = isNewSessionCommand(message.content?.text ?? "");
     const hop = decision.isAgent ? await this.agentHop(conversation, message) : 0;
     if (hop > this.config.coordination.maxHops) { this.log("hop_limit", { routeId: conversation.routeId, hop }); return; }
     const active = this.active.get(threadKey);
     if (active) {
+      if (newSession) {
+        await this.replaceActiveSession(active);
+        const generation = this.store.resetSession(threadKey);
+        await this.start(conversation, message, threadKey, hop, true);
+        this.log("session_reset", { routeId: conversation.routeId, messageId: message.id, generation });
+        return;
+      }
       try {
         const responseId = await active.projection.move(message.id);
         this.store.updateRunResponse(active.id, responseId, message.id);
@@ -65,7 +73,9 @@ export class AgentController {
     }
     const recent = this.store.recentActivations(conversation.routeId, threadKey, Date.now() - this.config.coordination.windowSeconds * 1000);
     if (recent >= this.config.coordination.maxActivationsPerThread) { this.log("activation_circuit_open", { routeId: conversation.routeId, recent }); return; }
-    await this.start(conversation, message, threadKey, hop);
+    const generation = newSession ? this.store.resetSession(threadKey) : this.store.sessionGeneration(threadKey);
+    await this.start(conversation, message, threadKey, hop, newSession);
+    if (newSession) this.log("session_reset", { routeId: conversation.routeId, messageId: message.id, generation });
   }
 
   async stop(): Promise<void> {
@@ -84,17 +94,19 @@ export class AgentController {
     await this.runtime.close?.();
   }
 
-  private async start(conversation: ConversationRef, message: ChatMessage, threadKey: string, hop: number): Promise<void> {
+  private async start(conversation: ConversationRef, message: ChatMessage, threadKey: string, hop: number, newSession = false): Promise<void> {
     const runId = crypto.randomUUID();
     const recentMessages = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
     const orphan = recentMessages.find(candidate => candidate.reply_to_message_id === message.id && candidate.creator === (conversation.selfParticipantId ?? this.config.agent.participantId));
     const projection = orphan
       ? await RunProjection.resume(this.anytype, this.config, conversation, orphan.id, message.id, orphan.content?.text)
       : await RunProjection.create(this.anytype, this.config, conversation, message.id);
-    const context = await buildContext(this.anytype, this.config, conversation, message);
+    const context = await buildContext(this.anytype, this.config, conversation, message, { newSession });
     this.store.createRun({ id: runId, routeId: conversation.routeId, threadKey, triggerId: message.id, responseId: projection.messageId, hop });
     try {
-      const handle = await this.runtime.start({ sessionKey: `aag:${threadKey}`, prompt: formatPrompt(context, this.config) }, event => projection.onEvent(event));
+      const generation = this.store.sessionGeneration(threadKey);
+      const sessionKey = generation === 0 ? `aag:${threadKey}` : `aag:${threadKey}:g${generation}`;
+      const handle = await this.runtime.start({ sessionKey, prompt: formatPrompt(context, this.config) }, event => projection.onEvent(event));
       const active: ActiveRun = { id: runId, handle, projection, conversation, threadKey, completion: Promise.resolve(), cancelled: false };
       this.active.set(threadKey, active);
       this.log("run_started", { routeId: conversation.routeId, runId, messageId: message.id });
@@ -116,6 +128,14 @@ export class AgentController {
       this.store.finishRun(runId, "failed");
       this.log("run_start_failed", { routeId: conversation.routeId, error: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  private async replaceActiveSession(active: ActiveRun): Promise<void> {
+    active.cancelled = true;
+    this.active.delete(active.threadKey);
+    await active.handle.cancel().catch(() => undefined);
+    await active.projection.interrupt("Agent session replaced by /new.").catch(() => undefined);
+    this.store.finishRun(active.id, "cancelled");
   }
 
   private steerPrompt(message: ChatMessage): string { return `A follow-up arrived from ${message.creator_name ?? message.creator ?? "unknown"}. Incorporate it into the active run and continue:\n\n${message.content?.text ?? ""}`; }

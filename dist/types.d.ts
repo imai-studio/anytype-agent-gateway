@@ -31,6 +31,7 @@ export type ConversationRef = {
 export type ContextBundle = {
     conversation: ConversationRef;
     trigger: ChatMessage;
+    newSession?: boolean;
     history: ChatMessage[];
     replyAncestry: ChatMessage[];
     referencedObjects: Array<{
@@ -105,6 +106,10 @@ export interface AnytypePort {
         id: string;
         name: string;
     }>;
+    listChats(spaceId: string): Promise<Array<{
+        id: string;
+        name: string;
+    }>>;
     getObject(spaceId: string, objectId: string): Promise<{
         id: string;
         name?: string;

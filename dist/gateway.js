@@ -33,6 +33,8 @@ export class Gateway {
                     const chat = await this.anytype.resolveChat(space.id, { ...(configuredChat.id ? { id: configuredChat.id } : {}), ...(configuredChat.name ? { name: configuredChat.name } : {}) });
                     this.addRoute({ conversation: { routeId: `chat:${space.id}:${chat.id}`, spaceId: space.id, chatId: chat.id, kind: "chat", selfParticipantId: configuredSpace.participantId ?? this.config.agent.participantId }, wake: configuredChat.wake });
                 }
+                if (configuredSpace.chatDiscovery.enabled)
+                    this.track(this.discoverChats(space.id, configuredSpace.chatDiscovery, configuredSpace.participantId ?? this.config.agent.participantId));
                 if (configuredSpace.comments.mode !== "disabled")
                     this.track(this.discoverDiscussions(space.id, configuredSpace.comments, configuredSpace.participantId ?? this.config.agent.participantId));
             }
@@ -67,10 +69,11 @@ export class Gateway {
         const { conversation } = route;
         if (!this.store.isInitialized(conversation.routeId)) {
             const recent = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
-            for (const message of recent)
+            const baseline = route.baselineExisting === false ? recent.slice(0, -20) : recent;
+            for (const message of baseline)
                 this.store.markHandled(conversation.routeId, message.id, message.modified_at ?? message.created_at, messageFingerprint(message));
-            this.store.initialize(conversation.routeId, recent.at(-1)?.order_id);
-            this.log("route_baselined", { routeId: conversation.routeId, messages: recent.length });
+            this.store.initialize(conversation.routeId, baseline.at(-1)?.order_id);
+            this.log(route.baselineExisting === false ? "route_recent_catchup" : "route_baselined", { routeId: conversation.routeId, messages: recent.length, pending: recent.length - baseline.length });
         }
         await this.reconcileInterruptedRuns(conversation);
         let delay = 500;
@@ -112,6 +115,29 @@ export class Gateway {
                 await wait(delay, this.abort.signal);
                 delay = Math.min(delay * 2, 30_000);
             }
+        }
+    }
+    async discoverChats(spaceId, discovery, selfParticipantId) {
+        let firstPass = true;
+        while (!this.abort.signal.aborted) {
+            try {
+                const chats = await this.anytype.listChats(spaceId);
+                for (const chat of chats) {
+                    this.addRoute({
+                        conversation: { routeId: `chat:${spaceId}:${chat.id}`, spaceId, chatId: chat.id, kind: "chat", selfParticipantId },
+                        wake: discovery.wake,
+                        baselineExisting: firstPass
+                    });
+                }
+                this.log("chat_discovery_complete", { spaceId, chats: chats.length });
+            }
+            catch (error) {
+                if (firstPass)
+                    throw error;
+                this.log("chat_discovery_failed", { spaceId, error: error instanceof Error ? error.message : String(error) });
+            }
+            firstPass = false;
+            await wait(discovery.discoveryIntervalSeconds * 1000, this.abort.signal).catch(() => undefined);
         }
     }
     async reconcileInterruptedRuns(conversation) {

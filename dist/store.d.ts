@@ -44,5 +44,7 @@ export declare class Store {
     codexAcpSession(sessionKey: string): string | undefined;
     saveCodexAcpSession(sessionKey: string, sessionId: string): void;
     deleteCodexAcpSession(sessionKey: string): void;
+    sessionGeneration(threadKey: string): number;
+    resetSession(threadKey: string): number;
     close(): void;
 }

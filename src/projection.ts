@@ -85,12 +85,12 @@ export class RunProjection {
     });
   }
 
-  async interrupt(): Promise<void> {
+  async interrupt(message = "Agent run interrupted before completion."): Promise<void> {
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
     await this.enqueue(async () => {
       await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false).catch(() => undefined);
-      await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, "Agent run interrupted before completion.");
+      await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, message);
     });
   }
 

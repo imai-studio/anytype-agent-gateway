@@ -64,12 +64,16 @@ export class AnytypeClient {
         return { id: match.id, name: match.name ?? match.id };
     }
     async resolveChat(spaceId, selector) {
-        const chats = await this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/chats`);
+        const chats = await this.listChats(spaceId);
         const matches = chats.filter((chat) => selector.id ? chat.id === selector.id : chat.name === selector.name);
         if (matches.length !== 1)
             throw new Error(`Expected one Anytype chat matching ${selector.id ?? JSON.stringify(selector.name)}, found ${matches.length}`);
         const match = matches[0];
         return { id: match.id, name: match.name ?? match.id };
+    }
+    async listChats(spaceId) {
+        const chats = await this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/chats`);
+        return chats.map(chat => ({ id: chat.id, name: chat.name ?? chat.id }));
     }
     async getMessage(spaceId, chatId, messageId) {
         const json = await (await this.request(this.messagePath(spaceId, chatId, messageId))).json();

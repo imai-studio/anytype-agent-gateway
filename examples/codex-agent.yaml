@@ -8,6 +8,8 @@ anytype:
   apiKeyFile: ~/.config/aag/anytype-api-key
 spaces:
   - name: My Anytype Space
+    chatDiscovery:
+      enabled: false
     chats:
       - name: sandbox
         wake:

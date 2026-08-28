@@ -2,6 +2,7 @@ import type { ActiveRuntime, AnytypeEvent, AnytypePort, ChatMessage, RuntimeDriv
 
 export class FakeAnytype implements AnytypePort {
   messages: ChatMessage[] = [];
+  chats: Array<{ id: string; name: string }> = [{ id: "chat", name: "Chat" }];
   edits: Array<{ id: string; text: string }> = [];
   deleted: string[] = [];
   reactions: Array<{ id: string; emoji: string; present: boolean }> = [];
@@ -16,6 +17,7 @@ export class FakeAnytype implements AnytypePort {
   async *stream(_spaceId: string, _chatId: string, _signal: AbortSignal): AsyncIterable<AnytypeEvent> {}
   async resolveSpace(): Promise<{ id: string; name: string }> { return { id: "space", name: "Space" }; }
   async resolveChat(): Promise<{ id: string; name: string }> { return { id: "chat", name: "Chat" }; }
+  async listChats(): Promise<Array<{ id: string; name: string }>> { return this.chats; }
   async getObject(_spaceId: string, objectId: string): Promise<{ id: string; name?: string; markdown?: string }> { return { id: objectId, name: "Object", markdown: "Object context" }; }
   async searchObjects(): Promise<Array<{ id: string; name?: string; type?: string }>> { return []; }
 }
@@ -32,6 +34,7 @@ export class FakeRuntime implements RuntimeDriver {
   current = deferred();
   async doctor(): Promise<string[]> { return ["fake"]; }
   async start(input: { sessionKey: string; prompt: string }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime> {
+    this.current = deferred();
     this.starts.push(input); this.events = onEvent;
     return { result: this.current.promise, steer: async message => { this.steers.push(message); }, cancel: async () => { this.current.resolve({ text: "cancelled" }); } };
   }

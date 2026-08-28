@@ -39,7 +39,7 @@ chat:<space-id>:<chat-id>
 discussion:<space-id>:<discussion-id>
 ```
 
-On its first start, a route records the currently visible messages as handled before opening the event stream. This prevents installation from replaying historical messages. Before every stream connection, including reconnects, AAG lists recent messages and processes any unhandled gap; the stream then reconnects with exponential backoff. A message is recorded as handled after its dispatch path completes, while an in-memory claim suppresses concurrent duplicate delivery. The handled revision includes a content/mark fingerprint as well as Anytype's timestamp, so a final mention-bearing edit remains visible even when the placeholder and final edit share second-resolution timestamps.
+On its first start, a route records the currently visible messages as handled before opening the event stream. This prevents installation from replaying historical messages. Optional per-space chat discovery lists chat objects on a bounded interval and adds routes under the discovery wake policy. The initial discovery pass also baselines history; a chat found on a later pass checks only a bounded recent tail so a mention sent while discovery was pending is not lost. Before every stream connection, including reconnects, AAG lists recent messages and processes any unhandled gap; the stream then reconnects with exponential backoff. A message is recorded as handled after its dispatch path completes, while an in-memory claim suppresses concurrent duplicate delivery. The handled revision includes a content/mark fingerprint as well as Anytype's timestamp, so a final mention-bearing edit remains visible even when the placeholder and final edit share second-resolution timestamps.
 
 If dispatch stops after AAG creates the immediate reply but before it commits the run record, a retry looks for a bot reply under the same trigger. It resumes that reply instead of posting a duplicate. This recovery handles one known failure window; it is not a durable distributed queue.
 
@@ -51,7 +51,7 @@ If dispatch stops after AAG creates the immediate reply but before it commits th
 - configured agents: `never`, `direct-mention`, or `every-message`;
 - both: `allowedUsers`, which AAG checks only against the stable creator or participant ID. The `"*"` wildcard allows every ID and should be rare. Display names never authorize a sender.
 
-Chat routes have no implicit wake block: each configured chat must declare one. Discussion discovery and wake behavior default to disabled until the space explicitly opts in.
+Chat routes have no implicit wake block: each configured chat must declare one. Chat discovery and discussion discovery both default to disabled and require their own wake policy when enabled.
 
 Set `agent.participantId` to the agent's stable Anytype participant ID. AAG uses structured Anytype mention marks for direct mentions and accepts textual `@<name-or-alias>` as a fallback. It ignores self messages by participant ID.
 
@@ -87,6 +87,8 @@ Runtime events are projected according to `responses.mode`:
 
 If a qualifying message arrives while the same chat or root discussion thread has an active run, AAG treats it as steering. AAG flushes the old response, removes the reaction from the previous trigger, reacts to the follow-up, and sends later progress and final output to a new reply beneath it. `run_messages` keeps every response ID, so a reply to an earlier frozen response still counts as a follow-up. AAG does not queue a second run for that thread.
 
+An authorized wake message containing the standalone command token `/new` is the exception to steering. AAG cancels and visibly replaces an active run, increments a SQLite-backed generation for that chat or root comment thread, and starts the runtime with a new session key. Generation zero retains the legacy key, so upgrades preserve existing continuity. A reset prompt excludes earlier channel history and reply ancestry while retaining the current message, route metadata, the owning discussion object, and objects referenced by the current message.
+
 The configured runtime timeout races the result and cancels an overlong run. Shutdown aborts route streams, cancels all active handles, clears their working reactions, marks the visible replies interrupted, waits for their completion paths to settle, and only then closes SQLite and releases the process lock. On startup, each route also reconciles any run still recorded as `running`, clears its reaction, marks the reply interrupted, and closes the run as failed.
 
 The exact runtime result `[[AAG_STAY_SILENT]]` (optionally with a reason after a colon) maps to a silent result. AAG deletes, retains, or replaces the current placeholder according to `responses.silentPlaceholder`.
@@ -107,7 +109,7 @@ start(session key, prompt, event callback)
 
 `OpenClawDriver` loads the configured Gateway client module and opens an authenticated WebSocket connection as an operator with read/write scopes. The token comes from the configured environment variable or OpenClaw JSON config. It sends `agent`, observes agent/tool events keyed by run ID, waits with `agent.wait`, and falls back to `chat.history` when a terminal reply is absent. Steering uses `sessions.steer`; cancellation uses `sessions.abort`.
 
-The conversation session key is `aag:<route-or-thread-key>`. `runtime.sessionKey` adds a prefix instead of replacing the key: `<configured-prefix>:aag:<route-or-thread-key>`. OpenClaw owns its agent lifecycle, memory, approvals, tools, and filesystem policy. AAG passes project fields to this adapter as context only.
+The initial conversation session key is `aag:<route-or-thread-key>`. After `/new`, it becomes `aag:<route-or-thread-key>:g<generation>`. `runtime.sessionKey` adds a prefix instead of replacing the key. OpenClaw owns its agent lifecycle, memory, approvals, tools, and filesystem policy. AAG passes project fields to this adapter as context only.
 
 The Gateway client is not assumed to be independently published by all OpenClaw distributions. A source deployment should point `gateway.clientModule` at the built `GatewayClient` module shipped with that OpenClaw installation.
 

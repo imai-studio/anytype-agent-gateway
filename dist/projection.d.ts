@@ -18,7 +18,7 @@ export declare class RunProjection {
     onEvent(event: RuntimeEvent): void;
     finish(result: RuntimeResult): Promise<"done" | "silent">;
     fail(error: unknown): Promise<void>;
-    interrupt(): Promise<void>;
+    interrupt(message?: string): Promise<void>;
     private schedule;
     private currentDisplay;
     private flush;

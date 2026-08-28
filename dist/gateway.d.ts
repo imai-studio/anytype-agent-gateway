@@ -21,6 +21,7 @@ export declare class Gateway {
     private addRoute;
     private track;
     private runRoute;
+    private discoverChats;
     private reconcileInterruptedRuns;
     private discoverDiscussions;
 }

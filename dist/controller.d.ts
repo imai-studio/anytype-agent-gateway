@@ -14,6 +14,7 @@ export declare class AgentController {
     private processClaimed;
     stop(): Promise<void>;
     private start;
+    private replaceActiveSession;
     private steerPrompt;
     private threadKey;
     private agentHop;

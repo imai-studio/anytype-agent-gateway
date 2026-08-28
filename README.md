@@ -11,12 +11,13 @@ The current deployment model is deliberately simple: **one AAG process, one Anyt
 
 ## Implemented behavior
 
-- Resolves spaces and chats by exact ID or exact name through the Anytype API `2025-11-08`.
+- Resolves spaces and chats by exact ID or exact name and can discover newly created chats through the Anytype API `2025-11-08`.
 - Baselines existing history on first start, catches up through the REST API before every stream connection, then consumes Anytype's server-sent chat events without replaying handled requests.
 - Supports human wake modes `mention`, `mention-or-reply`, `every-message`, `prefix`, and `disabled`, independently for each configured chat or a space's object discussions.
 - Supports peer-agent wake modes `never`, `direct-mention`, and `every-message`, with allowed-sender lists, hop limits, and an activation circuit breaker.
 - Adds a configurable working reaction to the triggering user message, posts a reply immediately, edits that reply with progress, and removes the reaction when the run finishes.
 - Treats a qualifying follow-up during an active run as steering. The gateway freezes the previous progress reply, creates a new reply beneath the follow-up, and continues there.
+- Starts a fresh persisted harness session for the current chat or comment thread when an authorized wake message contains `/new`; an active run is replaced instead of steered.
 - Preserves every reply created by a steered run so a later reply to any of them is still recognized as a follow-up.
 - Allows a runtime to stay silent by returning exactly `[[AAG_STAY_SILENT]]` or `[[AAG_STAY_SILENT: reason]]`. The placeholder can be deleted, retained, or replaced according to configuration.
 - Builds bounded context from recent messages, reply ancestry, the object owning a discussion, and objects referenced by Anytype marks.
@@ -127,6 +128,13 @@ anytype:
 
 spaces:
   - name: IMAI Studio Inc.
+    chatDiscovery:
+      enabled: true
+      discoveryIntervalSeconds: 30
+      wake:
+        humans: mention-or-reply
+        agents: direct-mention
+        allowedUsers: [_participant_replace_with_authorized_human_id]
     chats:
       - name: sandbox
         wake:
@@ -209,7 +217,10 @@ Every configured chat must include its `wake` block; there is no implicit broad 
 - `humans: mention-or-reply` is useful for conversational agents because a reply to the agent's recorded response can steer it without another mention.
 - `humans: every-message` implements a group-listener style agent. Use it only in a tightly scoped chat and combine it with `allowedUsers` when appropriate.
 - `agents` applies only to creators listed in `coordination.peers` or the legacy `coordination.agentParticipants` list. A peer entry supplies a stable participant ID plus the name/aliases used for outbound coordination.
+- `spaces[].chatDiscovery` is disabled by default. When enabled with its own required `wake` block, AAG subscribes to current and newly created chats in that space. Existing history is baselined; a bounded recent tail is checked when a chat appears after startup so its first mention is not lost.
 - `responses.streaming: true` edits the stable reply with text as the runtime produces it. Streaming is enabled by default and coalesced to avoid excessive API writes; set it to `false` to keep the placeholder unchanged until the final answer. `responses.mode: single` hides tool and status chatter, `milestones` exposes tool lifecycle milestones, and `verbose` also exposes runtime status output.
+
+An authorized wake message containing `/new` increments the persistent session generation for that chat or comment thread. AAG starts a fresh OpenClaw/ACP session with only the current message and directly referenced object context. For example, `@Anya /new plan the release` starts cleanly with “plan the release”; if another run is active, AAG marks its reply as replaced and does not steer it.
 
 Silence is a runtime decision, not an Anytype tool call. The prompt tells the runtime about the exact marker; AAG then applies `silentPlaceholder` to the current reply.
 

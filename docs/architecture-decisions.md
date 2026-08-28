@@ -71,6 +71,8 @@ These modes support assistants that wait for a mention and group listeners that 
 
 Peer agents may talk in the same chat. Outbound coordination uses an explicit peer marker that AAG converts into a real Anytype mention, while inbound peer wakeups remain subject to allowlists, hop limits, fan-out limits, and an activation circuit breaker.
 
+Static chat routes remain the default. A space can explicitly enable chat discovery with a separate wake policy and sender allowlist. AAG then subscribes to every current and newly created chat in that space, while mention-based waking keeps mere membership from invoking the runtime. Existing history is baselined; only a bounded recent tail is eligible when a chat first appears after startup.
+
 ## Conversation and comment-thread session boundaries
 
 Use one runtime session and active-run lane per chat. Object discussions use one session and lane per root comment thread.
@@ -78,6 +80,8 @@ Use one runtime session and active-run lane per chat. Object discussions use one
 A comment-thread prompt includes its owning object, reply ancestry, and other messages from the same root thread. A chat prompt includes bounded recent history and referenced objects. When a first message lacks enough context, the gateway can fetch older bounded history rather than expecting the runtime to infer the channel from a single isolated message.
 
 The runtime owns context compaction beyond these transport-level bounds.
+
+An authorized `/new` wake message creates an explicit session boundary without requiring a second Anytype chat. AAG persists a generation per chat or root comment thread and changes the runtime session key after each reset. A reset excludes earlier message history from the transport prompt. If a run is active, reset replaces it visibly rather than steering it, because steering would preserve the very harness session the user asked to discard.
 
 ## Immediate editable replies and native steering
 

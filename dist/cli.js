@@ -23,7 +23,8 @@ program.command("init").description("Interactively create a one-agent configurat
         const participantId = (await prompt.question("Anytype participant ID: ")).trim();
         const apiKeyFile = (await prompt.question("Anytype API key file [~/.config/aag/anytype-api-key]: ")).trim() || "~/.config/aag/anytype-api-key";
         const spaceId = (await prompt.question("Anytype space ID: ")).trim();
-        const chatId = (await prompt.question("Anytype chat/channel ID: ")).trim();
+        const chatId = (await prompt.question("Initial Anytype chat/channel ID (optional with discovery): ")).trim();
+        const discoverChats = /^y(?:es)?$/i.test((await prompt.question("Discover new chats in this space [y/N]: ")).trim());
         const allowedUsers = (await prompt.question("Authorized participant IDs (comma-separated): ")).split(",").map(value => value.trim()).filter(Boolean);
         const runtimeKind = (await prompt.question("Runtime (openclaw/codex) [openclaw]: ")).trim().toLowerCase() || "openclaw";
         if (runtimeKind !== "openclaw" && runtimeKind !== "codex")
@@ -32,7 +33,10 @@ program.command("init").description("Interactively create a one-agent configurat
         const runtime = runtimeKind === "openclaw"
             ? { kind: "openclaw", agentId: (await prompt.question("OpenClaw agent ID [main]: ")).trim() || "main", ...(defaultProject ? { defaultProject } : {}) }
             : { kind: "codex", permissions: "deny", ...(defaultProject ? { defaultProject } : {}) };
-        const value = { version: 1, agent: { name, participantId }, anytype: { apiKeyFile }, spaces: [{ id: spaceId, chats: [{ id: chatId, wake: { humans: "mention-or-reply", agents: "never", allowedUsers } }], comments: { mode: "disabled" } }], runtime, responses: { mode: "single", streaming: true } };
+        if (!chatId && !discoverChats)
+            throw new Error("Provide an initial chat ID or enable chat discovery");
+        const wake = { humans: "mention-or-reply", agents: "never", allowedUsers };
+        const value = { version: 1, agent: { name, participantId }, anytype: { apiKeyFile }, spaces: [{ id: spaceId, chats: chatId ? [{ id: chatId, wake }] : [], ...(discoverChats ? { chatDiscovery: { enabled: true, discoveryIntervalSeconds: 30, wake } } : {}), comments: { mode: "disabled" } }], runtime, responses: { mode: "single", streaming: true } };
         configSchema.parse(value);
         const output = resolve(options.output);
         await mkdir(dirname(output), { recursive: true });
@@ -62,6 +66,8 @@ program.command("doctor").description("Check Anytype, configured routes, adapter
             const chat = await anytype.resolveChat(space.id, { ...(chatConfig.id ? { id: chatConfig.id } : {}), ...(chatConfig.name ? { name: chatConfig.name } : {}) });
             console.log(`ok: chat ${chat.name}`);
         }
+        if (configuredSpace.chatDiscovery.enabled)
+            console.log(`ok: chat discovery (${(await anytype.listChats(space.id)).length} current chats)`);
     }
     if (config.spaces.some(space => space.comments.mode !== "disabled")) {
         if (!await commandExists(config.anytype.heartAdapter.command))
