@@ -150,6 +150,7 @@ runtime:
 
 responses:
   mode: single
+  streaming: true
   workingText: Working…
   workingReaction: 👀
   silentPlaceholder: delete
@@ -208,7 +209,7 @@ Every configured chat must include its `wake` block; there is no implicit broad 
 - `humans: mention-or-reply` is useful for conversational agents because a reply to the agent's recorded response can steer it without another mention.
 - `humans: every-message` implements a group-listener style agent. Use it only in a tightly scoped chat and combine it with `allowedUsers` when appropriate.
 - `agents` applies only to creators listed in `coordination.peers` or the legacy `coordination.agentParticipants` list. A peer entry supplies a stable participant ID plus the name/aliases used for outbound coordination.
-- `responses.mode: single` keeps the placeholder stable until the final answer. `milestones` exposes tool lifecycle milestones; `verbose` also streams text deltas and status output, with edits coalesced to avoid excessive API writes.
+- `responses.streaming: true` edits the stable reply with text as the runtime produces it. Streaming is enabled by default and coalesced to avoid excessive API writes; set it to `false` to keep the placeholder unchanged until the final answer. `responses.mode: single` hides tool and status chatter, `milestones` exposes tool lifecycle milestones, and `verbose` also exposes runtime status output.
 
 Silence is a runtime decision, not an Anytype tool call. The prompt tells the runtime about the exact marker; AAG then applies `silentPlaceholder` to the current reply.
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseSseBlock } from "../src/anytype-client.js";
 import { configSchema } from "../src/config.js";
 import { renderCoordination, RunProjection } from "../src/projection.js";
@@ -43,6 +43,30 @@ describe("protocol boundaries", () => {
 });
 
 describe("projection ordering", () => {
+  it("streams text into the stable reply in single mode by default", async () => {
+    vi.useFakeTimers();
+    try {
+      const anytype = new FakeAnytype();
+      const projection = await RunProjection.create(anytype, config(), conversation, "trigger");
+      projection.onEvent({ type: "text-delta", text: "A partial answer" });
+      await vi.advanceTimersByTimeAsync(900);
+      expect(anytype.edits.at(-1)?.text).toBe("A partial answer");
+      await projection.finish({ text: "A complete answer" });
+      expect(anytype.edits.at(-1)?.text).toBe("A complete answer");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("can keep the placeholder stable when streaming is disabled", async () => {
+    const anytype = new FakeAnytype();
+    const projection = await RunProjection.create(anytype, config({ responses: { streaming: false } }), conversation, "trigger");
+    projection.onEvent({ type: "text-delta", text: "hidden partial" });
+    expect(anytype.edits).toEqual([]);
+    await projection.finish({ text: "final only" });
+    expect(anytype.edits.at(-1)?.text).toBe("final only");
+  });
+
   it("does not let a delayed progress edit overwrite the final answer", async () => {
     class SlowAnytype extends FakeAnytype {
       override async editMessage(spaceId: string, chatId: string, messageId: string, text: string): Promise<void> {

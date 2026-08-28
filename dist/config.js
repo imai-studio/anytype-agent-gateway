@@ -81,12 +81,13 @@ export const configSchema = z.object({
     runtime: runtimeSchema,
     responses: z.object({
         mode: z.enum(["single", "milestones", "verbose"]).default("single"),
+        streaming: z.boolean().default(true),
         workingText: z.string().default("Working…"),
         workingReaction: z.string().default("👀"),
         maxCharacters: z.number().int().min(100).max(20000).default(19000),
         silentPlaceholder: z.enum(["delete", "keep", "replace"]).default("delete"),
         silentText: z.string().default("Stayed silent by choice.")
-    }).default({ mode: "single", workingText: "Working…", workingReaction: "👀", maxCharacters: 19000, silentPlaceholder: "delete", silentText: "Stayed silent by choice." }),
+    }).default({ mode: "single", streaming: true, workingText: "Working…", workingReaction: "👀", maxCharacters: 19000, silentPlaceholder: "delete", silentText: "Stayed silent by choice." }),
     context: z.object({ historyMessages: z.number().int().min(0).max(200).default(30), replyDepth: z.number().int().min(0).max(50).default(12), referencedObjects: z.number().int().min(0).max(20).default(8) }).default({ historyMessages: 30, replyDepth: 12, referencedObjects: 8 }),
     coordination: z.object({
         peers: z.array(z.object({ name: z.string().min(1), participantId: z.string().min(1), aliases: z.array(z.string()).default([]) })).default([]),

@@ -36,7 +36,7 @@ Ask only for values that cannot be discovered safely:
 6. Wake rule per chat: `mention`, `mention-or-reply`, `every-message`, `prefix`, or `disabled`.
 7. Absolute default and allowed project paths.
 8. Codex permission mode (`deny` is the safe default) or OpenClaw Gateway connection details.
-9. Response verbosity (`single`, `milestones`, or `verbose`).
+9. Whether answer text should stream, plus response verbosity (`single`, `milestones`, or `verbose`).
 
 Never infer an invite link, participant ID, or project authorization from a display name. Never place an API key or Gateway token in the YAML file.
 
@@ -100,6 +100,7 @@ runtime:
     - /absolute/path/to/another-project
 responses:
   mode: milestones
+  streaming: true
 ```
 
 The installed package resolves its bundled `codex-acp` executable automatically. For OpenClaw, use `examples/openclaw-agent.yaml`, provide the absolute Gateway client-module path, and keep the Gateway token in the configured environment variable or protected OpenClaw config file.

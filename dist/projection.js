@@ -48,7 +48,7 @@ export class RunProjection {
             return;
         if (event.type === "text-delta") {
             this.text += event.text;
-            if (this.config.responses.mode === "verbose")
+            if (this.config.responses.streaming)
                 this.schedule();
         }
         else if (event.type === "tool" && this.config.responses.mode !== "single") {

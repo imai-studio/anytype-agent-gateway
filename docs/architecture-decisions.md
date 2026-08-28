@@ -83,7 +83,7 @@ The runtime owns context compaction beyond these transport-level bounds.
 
 Acknowledge a trigger immediately with a working reaction on the user's message and one reply. Edit that reply as the run progresses.
 
-The default response mode keeps one message stable and replaces its text with the latest/final answer. Milestone and verbose modes can expose more progress. The working reaction is removed on completion, silence, interruption, or failure.
+The default response mode keeps one message stable and streams the latest answer text into it. Streaming can be disabled independently; milestone and verbose modes add tool or status detail. The working reaction is removed on completion, silence, interruption, or failure.
 
 If a follow-up arrives during the same active conversation, it steers the current run instead of starting a queued run. AAG freezes the previous progress message and creates a new reply beneath the follow-up. Later updates go to the new reply. Runtime adapters must report steering failures. AAG does not silently cancel and send the prompt again because that could repeat tool side effects.
 

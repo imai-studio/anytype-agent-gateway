@@ -79,11 +79,11 @@ Before the runtime starts, `RunProjection` sends `responses.workingText` as a re
 
 Runtime events are projected according to `responses.mode`:
 
-- `single`: keep the stable working reply and publish only the final text;
-- `milestones`: include tool lifecycle/status milestones;
-- `verbose`: include text deltas and status output as well.
+- `single`: stream only answer text into the stable reply;
+- `milestones`: stream answer text and include tool lifecycle/status milestones;
+- `verbose`: stream answer text and include tool and runtime status output.
 
-A short timer combines nearby edits. A per-reply promise chain writes them in order, so a progress flush cannot overwrite a move or final edit. AAG truncates final output to `responses.maxCharacters`, writes it to the same message, and removes the working reaction from the trigger.
+`responses.streaming` controls incremental answer edits independently of verbosity and defaults to `true`. A short timer combines nearby deltas. A per-reply promise chain writes them in order, so a progress flush cannot overwrite a move or final edit. AAG truncates final output to `responses.maxCharacters`, writes it to the same message, and removes the working reaction from the trigger.
 
 If a qualifying message arrives while the same chat or root discussion thread has an active run, AAG treats it as steering. AAG flushes the old response, removes the reaction from the previous trigger, reacts to the follow-up, and sends later progress and final output to a new reply beneath it. `run_messages` keeps every response ID, so a reply to an earlier frozen response still counts as a follow-up. AAG does not queue a second run for that thread.
 

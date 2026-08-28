@@ -152,6 +152,7 @@ export declare const configSchema: z.ZodObject<{
             milestones: "milestones";
             verbose: "verbose";
         }>>;
+        streaming: z.ZodDefault<z.ZodBoolean>;
         workingText: z.ZodDefault<z.ZodString>;
         workingReaction: z.ZodDefault<z.ZodString>;
         maxCharacters: z.ZodDefault<z.ZodNumber>;

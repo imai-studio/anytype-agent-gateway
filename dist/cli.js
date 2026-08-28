@@ -32,7 +32,7 @@ program.command("init").description("Interactively create a one-agent configurat
         const runtime = runtimeKind === "openclaw"
             ? { kind: "openclaw", agentId: (await prompt.question("OpenClaw agent ID [main]: ")).trim() || "main", ...(defaultProject ? { defaultProject } : {}) }
             : { kind: "codex", permissions: "deny", ...(defaultProject ? { defaultProject } : {}) };
-        const value = { version: 1, agent: { name, participantId }, anytype: { apiKeyFile }, spaces: [{ id: spaceId, chats: [{ id: chatId, wake: { humans: "mention-or-reply", agents: "never", allowedUsers } }], comments: { mode: "disabled" } }], runtime, responses: { mode: "single" } };
+        const value = { version: 1, agent: { name, participantId }, anytype: { apiKeyFile }, spaces: [{ id: spaceId, chats: [{ id: chatId, wake: { humans: "mention-or-reply", agents: "never", allowedUsers } }], comments: { mode: "disabled" } }], runtime, responses: { mode: "single", streaming: true } };
         configSchema.parse(value);
         const output = resolve(options.output);
         await mkdir(dirname(output), { recursive: true });

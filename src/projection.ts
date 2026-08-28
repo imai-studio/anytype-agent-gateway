@@ -47,7 +47,7 @@ export class RunProjection {
     if (this.closed) return;
     if (event.type === "text-delta") {
       this.text += event.text;
-      if (this.config.responses.mode === "verbose") this.schedule();
+      if (this.config.responses.streaming) this.schedule();
     } else if (event.type === "tool" && this.config.responses.mode !== "single") {
       this.text = `${this.text.trimEnd()}\n\n${event.status === "completed" ? "✓" : "↻"} ${event.name}`.trim();
       this.schedule();

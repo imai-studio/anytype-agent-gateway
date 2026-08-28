@@ -42,6 +42,7 @@ runtime:
 
 responses:
   mode: single
+  streaming: true
   workingText: Working…
   workingReaction: 👀
   silentPlaceholder: delete

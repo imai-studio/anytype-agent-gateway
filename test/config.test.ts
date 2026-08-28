@@ -26,6 +26,7 @@ describe("loadConfig", () => {
     expect(config.spaces[0]?.chats[0]?.wake.humans).toBe("mention");
     expect(config.spaces[0]?.chats[0]?.wake.agents).toBe("never");
     expect(config.responses.silentPlaceholder).toBe("delete");
+    expect(config.responses.streaming).toBe(true);
   });
 
   it("rejects prefix wake without a prefix", async () => {
