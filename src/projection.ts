@@ -709,12 +709,16 @@ function normalizeMarkdown(
       { open: "*", close: "*", type: "italic" },
       { open: "_", close: "_", type: "italic" },
     ];
-    const format = formats.find(
-      (candidate) =>
-        text.startsWith(candidate.open, index) &&
-        text.indexOf(candidate.close, index + candidate.open.length) >
-          index + candidate.open.length,
-    );
+    const format = formats.find((candidate) => {
+      if (!text.startsWith(candidate.open, index)) return false;
+      const closeAt = text.indexOf(candidate.close, index + candidate.open.length);
+      if (closeAt <= index + candidate.open.length) return false;
+      if (!candidate.open.includes("_")) return true;
+      return (
+        !isWordCharacter(text[index - 1]) &&
+        !isWordCharacter(text[closeAt + candidate.close.length])
+      );
+    });
     if (format) {
       const closeAt = text.indexOf(format.close, index + format.open.length);
       for (let offset = 0; offset < format.open.length; offset += 1)
@@ -752,6 +756,10 @@ function normalizeMarkdown(
       ...(mark.to !== undefined ? { to: boundaries[mark.to] ?? mark.to } : {}),
     });
   return { text: output, marks };
+}
+
+function isWordCharacter(value: string | undefined): boolean {
+  return value !== undefined && /[\p{L}\p{N}]/u.test(value);
 }
 
 function escapeRegExp(value: string): string {

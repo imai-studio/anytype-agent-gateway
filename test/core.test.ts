@@ -73,6 +73,12 @@ describe("protocol boundaries", () => {
     );
   });
 
+  it("preserves intraword underscores while still rendering underscore emphasis", () => {
+    const rendered = renderForAnytype("NEW_SESSION_PASS and _italic_", config());
+    expect(rendered.text).toBe("NEW_SESSION_PASS and italic");
+    expect(rendered.marks).toContainEqual({ type: "italic", from: 21, to: 27 });
+  });
+
   it("renders object references, Anytype links, and fenced code as native marks", () => {
     const rendered = renderForAnytype(
       "See [[AAG_OBJECT:object-1|Roadmap]] and [open](anytype://object/object-1).\n```ts\nconst answer = 42;\n```",
