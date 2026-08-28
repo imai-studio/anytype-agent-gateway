@@ -1,0 +1,58 @@
+version: 1
+agent:
+  name: OpenClaw
+  participantId: _participant_replace_me
+  aliases: [claw]
+
+anytype:
+  apiBase: http://127.0.0.1:31012
+  apiKeyFile: ~/.config/aag/anytype-api-key
+  cli:
+    command: anytype
+  heartAdapter:
+    command: aag-heart-adapter
+
+spaces:
+  - name: My Anytype Space
+    chats:
+      - name: sandbox
+        wake:
+          humans: mention-or-reply
+          agents: direct-mention
+          allowedUsers: [_participant_replace_with_authorized_human_id]
+    comments:
+      mode: disabled
+      createMissing: false
+      wake:
+        humans: mention
+        agents: direct-mention
+        allowedUsers: [_participant_replace_with_authorized_human_id]
+
+runtime:
+  kind: openclaw
+  command: openclaw
+  agentId: main
+  gateway:
+    url: ws://127.0.0.1:18789
+    configFile: ~/.openclaw/openclaw.json
+    clientModule: /path/to/openclaw/packages/gateway-client/dist/index.mjs
+    protocolVersion: 4
+  defaultProject: /absolute/path/to/default-project
+  allowedProjects: []
+
+responses:
+  mode: single
+  workingText: Working…
+  workingReaction: 👀
+  silentPlaceholder: delete
+
+coordination:
+  peers: []
+  agentParticipants: []
+  maxHops: 3
+  maxFanout: 4
+  maxActivationsPerThread: 12
+  windowSeconds: 300
+
+state:
+  path: ~/.local/state/aag/state.sqlite

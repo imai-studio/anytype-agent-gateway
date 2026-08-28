@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenClaw Gateway for Anytype Agent Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env openclaw --profile aag gateway --port 18789
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NODE_OPTIONS=--max-old-space-size=4096
+
+[Install]
+WantedBy=default.target

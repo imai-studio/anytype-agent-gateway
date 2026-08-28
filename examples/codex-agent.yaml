@@ -1,0 +1,27 @@
+version: 1
+agent:
+  name: Codex
+  participantId: _participant_replace_with_bot_id
+  aliases: [codex]
+anytype:
+  apiBase: http://127.0.0.1:31012
+  apiKeyFile: ~/.config/aag/anytype-api-key
+spaces:
+  - name: My Anytype Space
+    chats:
+      - name: sandbox
+        wake:
+          humans: mention
+          agents: direct-mention
+          allowedUsers: [_participant_replace_with_authorized_human_id]
+    comments:
+      mode: disabled
+runtime:
+  kind: codex
+  command: codex-acp
+  permissions: deny
+  defaultProject: /absolute/path/to/default-project
+  allowedProjects:
+    - /absolute/path/to/another-project
+responses:
+  mode: milestones

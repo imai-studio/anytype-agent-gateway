@@ -1,0 +1,8 @@
+deploy/*.local.yaml
+deploy/*.env
+dist/test/
+dist/scripts/
+dist/aag-heart-adapter*
+heart-adapter/aag-heart-adapter*
+heart-adapter/heart-adapter
+*.tgz

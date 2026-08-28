@@ -1,0 +1,11 @@
+.env
+deploy/*.env
+deploy/*.local.yaml
+*.key
+state/
+node_modules/
+dist/
+heart-adapter/aag-heart-adapter*
+heart-adapter/heart-adapter
+*.tgz
+.DS_Store

@@ -1,0 +1,82 @@
+{
+  "name": "@rehpic/aag",
+  "version": "0.1.0",
+  "description": "Run an OpenClaw or Codex agent as a first-class Anytype member.",
+  "license": "Apache-2.0",
+  "author": "xrehpicx",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xrehpicx/anytype-agent-gateway.git"
+  },
+  "homepage": "https://github.com/xrehpicx/anytype-agent-gateway#readme",
+  "bugs": {
+    "url": "https://github.com/xrehpicx/anytype-agent-gateway/issues"
+  },
+  "keywords": [
+    "anytype",
+    "agents",
+    "openclaw",
+    "codex",
+    "acp",
+    "cli"
+  ],
+  "type": "module",
+  "bin": {
+    "aag": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "ARCHITECTURE.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md",
+    "docs",
+    "deploy/anytype-agent-gateway.service",
+    "deploy/openclaw-aag-gateway.service",
+    "examples",
+    "heart-adapter/go.mod",
+    "heart-adapter/go.sum",
+    "heart-adapter/main.go",
+    "heart-adapter/main_test.go"
+  ],
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "dev": "tsx src/cli.ts",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke:codex": "tsx scripts/smoke-codex.ts",
+    "check": "npm run build && npm run typecheck && npm run lint && npm test",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run check",
+    "start": "node dist/cli.js run"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "^1.7.0",
+    "@agentclientprotocol/sdk": "1.4.0",
+    "commander": "14.0.2",
+    "smol-toml": "^1.8.0",
+    "yaml": "^2.9.0",
+    "zod": "4.1.11"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.36.0",
+    "@types/node": "24.5.2",
+    "eslint": "9.36.0",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "typescript-eslint": "8.44.1",
+    "vitest": "^3.2.7"
+  }
+}

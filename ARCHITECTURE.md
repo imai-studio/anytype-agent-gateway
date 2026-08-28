@@ -1,0 +1,191 @@
+# Architecture
+
+For the alternatives considered and the reasoning behind these boundaries, see [docs/architecture-decisions.md](docs/architecture-decisions.md).
+
+## Deployment invariant
+
+The current unit of deployment is one AAG process bound to one Anytype member and one runtime-backed agent. A configuration may include several spaces, chats, and discussion policies, but they all represent the same Anytype identity and the same OpenClaw agent or Codex ACP adapter.
+
+```text
+one machine / service account
+  └── one AAG process
+      ├── one Anytype API credential and member identity
+      ├── one OpenClaw agent or Codex ACP runtime
+      ├── many configured chat/discussion routes
+      └── one local SQLite state database
+```
+
+This keeps tagging and authorization legible: an Anytype member maps directly to the agent process that comes online. Deploy another isolated process/identity for another independently taggable agent.
+
+## Data flow
+
+```text
+Anytype SSE message event
+  → route baseline/idempotency check
+  → sender authorization and wake decision
+  → bounded channel/reply/object context
+  → runtime session prompt
+  → immediate Anytype reply + working reaction
+  → coalesced progress edits
+  → final edit, silence action, or failure edit
+```
+
+The public Anytype API is the primary transport. AAG uses it to resolve routes, list and retrieve messages, subscribe to server-sent events, create/edit/delete replies, toggle reactions, search objects, and fetch referenced-object summaries.
+
+Every route has a stable key:
+
+```text
+chat:<space-id>:<chat-id>
+discussion:<space-id>:<discussion-id>
+```
+
+On its first start, a route records the currently visible messages as handled before opening the event stream. This prevents installation from replaying historical messages. Before every stream connection, including reconnects, AAG lists recent messages and processes any unhandled gap; the stream then reconnects with exponential backoff. A message is recorded as handled after its dispatch path completes, while an in-memory claim suppresses concurrent duplicate delivery. The handled revision includes a content/mark fingerprint as well as Anytype's timestamp, so a final mention-bearing edit remains visible even when the placeholder and final edit share second-resolution timestamps.
+
+If dispatch was interrupted after the immediate reply was created but before its run record was committed, a retry looks for a bot-authored reply beneath the same trigger and resumes that projection instead of posting a duplicate. This is targeted reconciliation, not a durable distributed queue.
+
+## Controller and wake policy
+
+`AgentController` owns the active run per route. `wake.ts` classifies each incoming message as self, configured peer agent, or human, then applies that route's policy:
+
+- humans: `mention`, `mention-or-reply`, `every-message`, `prefix`, or `disabled`;
+- configured agents: `never`, `direct-mention`, or `every-message`;
+- both: `allowedUsers`, checked only against the stable creator/participant ID. The explicit `"*"` wildcard is supported but deliberately broad; display names never authorize a sender.
+
+Chat routes have no implicit wake block: each configured chat must declare one. Discussion discovery and wake behavior default to disabled until the space explicitly opts in.
+
+`agent.participantId` is required. Structured Anytype mention marks are authoritative for direct mentions, while a textual `@<name-or-alias>` fallback is also recognized. Self messages are ignored by participant ID.
+
+Because Anytype participant IDs may be space-scoped, `spaces[].participantId` can override the agent-level fallback for every route resolved from that space.
+
+Configured `coordination.peers` bind each peer's stable participant ID to a name and aliases. The prompt exposes only those peer names and requires the explicit output marker `[[AAG_MENTION:Peer Name]]`. On the final edit, AAG converts recognized markers to visible `@Peer Name` text with real Anytype mention marks; it marks at most `maxFanout` distinct peers. Unknown or over-limit markers remain literal.
+
+The coordination guard counts recent route activations in SQLite and stops waking after `maxActivationsPerThread` within `windowSeconds`. Messages from configured peer participants also follow their reply ancestry to calculate an agent hop count. Runs beyond `maxHops` are ignored. Outbound marks and inbound agent wake policies therefore use the same configured identity boundary.
+
+## Context assembly
+
+Context is bounded by three configuration values:
+
+- `historyMessages`: recent messages from the active chat/discussion;
+- `replyDepth`: the trigger's reply ancestry;
+- `referencedObjects`: objects referenced by marks on the trigger.
+
+For an object discussion, the owning object is added to referenced-object context. History is filtered to the trigger's root comment thread, and each root thread gets a distinct session/active-run key; separate comment threads under one object can therefore run independently. The runtime prompt includes route/sender metadata, the current message, reply ancestry, recent thread context, object names/Markdown, and declared project roots. Untrusted data is serialized as JSON inside a randomized boundary and explicitly described as conversation data rather than instructions.
+
+A runtime is not given the Anytype API key or OpenClaw Gateway token in the prompt. If it needs broader Anytype access through another tool integration, that access belongs to the runtime's own configuration and security boundary.
+
+## Run projection and steering
+
+Before the runtime starts, `RunProjection` sends `responses.workingText` as a reply to the trigger and applies `responses.workingReaction`. This gives the user an immediate durable acknowledgement.
+
+Runtime events are projected according to `responses.mode`:
+
+- `single`: keep the stable working reply and publish only the final text;
+- `milestones`: include tool lifecycle/status milestones;
+- `verbose`: include text deltas and status output as well.
+
+Edits are coalesced on a short timer and serialized through a per-projection promise chain, so a progress flush cannot overwrite a move or final edit. Final output is truncated to `responses.maxCharacters`, written to the same message, and the working reaction is removed.
+
+If a qualifying message arrives while the same chat or discussion-root thread has an active run, AAG treats it as steering. The old response is flushed and loses its working reaction; a new response is created as a reply to the follow-up and receives the reaction. Every response ID is retained in `run_messages`, so replying to an earlier frozen response remains a recognized follow-up. The runtime is steered and subsequent progress/final output is written to the new response. There is no queued second run for that thread.
+
+The configured runtime timeout races the result and cancels an overlong run. Shutdown aborts route streams, cancels all active handles, clears their working reactions, marks the visible replies interrupted, waits for their completion paths to settle, and only then closes SQLite and releases the process lock. On startup, each route also reconciles any run still recorded as `running`, clears its reaction, marks the reply interrupted, and closes the run as failed.
+
+The exact runtime result `[[AAG_STAY_SILENT]]` (optionally with a reason after a colon) maps to a silent result. AAG deletes, retains, or replaces the current placeholder according to `responses.silentPlaceholder`.
+
+## Runtime ports
+
+The runtime boundary is the internal `RuntimeDriver` interface:
+
+```text
+doctor() → diagnostic lines
+start(session key, prompt, event callback)
+  → result promise
+  → steer(message)
+  → cancel()
+```
+
+### OpenClaw
+
+`OpenClawDriver` loads the configured Gateway client module and opens an authenticated WebSocket connection as an operator with read/write scopes. The token comes from the configured environment variable or OpenClaw JSON config. It sends `agent`, observes agent/tool events keyed by run ID, waits with `agent.wait`, and falls back to `chat.history` when a terminal reply is absent. Steering uses `sessions.steer`; cancellation uses `sessions.abort`.
+
+The conversation session key is `aag:<route-or-thread-key>`. When `runtime.sessionKey` is configured, it is a prefix rather than a global replacement: `<configured-prefix>:aag:<route-or-thread-key>`. OpenClaw owns its agent lifecycle, memory, approvals, tools, and filesystem policy. AAG's project fields are advisory context for this adapter.
+
+The Gateway client is not assumed to be independently published by all OpenClaw distributions. A source deployment should point `gateway.clientModule` at the built `GatewayClient` module shipped with that OpenClaw installation.
+
+### Codex ACP
+
+`CodexAcpDriver` starts the configured `codex-acp` process over newline-delimited JSON streams. It initializes ACP and resumes the session ID stored for the AAG conversation key when the agent advertises `loadSession`. Missing or invalid saved sessions are replaced with a new session. Both loaded and new sessions use `defaultProject` as `cwd` and `allowedProjects` as `additionalDirectories`. History replayed by `session/load` is not projected as part of the new answer.
+
+Steering uses the ACP implementation's `_session/steering` extension. A rejected steering request fails the active run explicitly; AAG does not turn it into cancel-and-reprompt behavior. `runtime.permissions` defaults to `deny`, which cancels every permission request. `allow-once` selects an available one-run allow option and still cancels when none exists.
+
+`cwd` and `additionalDirectories` are capability hints to the ACP implementation. AAG reports Codex project enforcement as advisory; operators must configure the Codex sandbox and service-account boundaries separately.
+
+## State model
+
+The SQLite database uses WAL mode and contains:
+
+- `cursors`: whether each route has completed its first-start baseline;
+- `handled_messages`: route/message idempotency keys;
+- `runs`: trigger, current response, status, hop count, and timing metadata;
+- `run_messages`: every response emitted by a run, including frozen responses before a steer;
+- `discussions`: object-to-discussion mappings discovered through Heart.
+- `codex_acp_sessions`: the durable ACP session ID for each AAG conversation key.
+
+It is local coordination state, not a durable distributed work queue. The CLI also acquires `<state.path>.lock`, removes a stale lock only after verifying its PID is dead, and refuses to start when another local AAG process owns it. This is a host-local singleton, not cross-machine locking.
+
+## Object-discussion compatibility layer
+
+Anytype's public API currently does not expose the mapping from an object to its internal discussion chat. `aag-heart-adapter` isolates the private dependency behind a small JSON-over-stdio interface:
+
+```text
+AAG public object search
+  → adapter stdin { objectIds }
+  → Anytype Heart ObjectShow
+  → root details.discussionId
+  → adapter stdout { discussions }
+  → SQLite cache + normal Anytype chat route
+```
+
+The adapter is written in Go and pins `anytype-heart` `v0.50.10`. It authenticates to the local Heart gRPC service with the official CLI config's `sessionToken`. If `comments.createMissing` is enabled, it may call `ObjectAddDiscussion`; the default is read-only discovery.
+
+The discovery loop searches public objects, filters object types when configured, resolves unknown objects in bounded batches, caches successful mappings, and dynamically starts routes for the resulting discussion IDs. Objects with no discussion are revisited on later scans. A discussion route is further partitioned by root comment thread for context and runtime sessions. Because this is a private protocol, Anytype upgrades require explicit compatibility testing.
+
+## Network and identity boundaries
+
+A typical remote deployment has three separate local interfaces:
+
+- Anytype HTTP API, normally Desktop `127.0.0.1:31009` or an arbitrary loopback SSH-forward endpoint;
+- Anytype Heart gRPC, commonly the headless CLI service on a loopback address;
+- OpenClaw Gateway WebSocket, normally loopback on the runtime machine.
+
+AAG does not expose, encrypt, or tunnel these interfaces. The operator must keep them private or provide authenticated transport.
+
+The Anytype credential determines the member visible in chats and discussions. A desktop-created key acts as that desktop user; a first-class bot requires a dedicated CLI-created Anytype account, membership through explicit invite links, and its own revocable API key. One identity per service also makes self-message suppression and peer-agent classification deterministic.
+
+## Service lifecycle
+
+The CLI is the operational surface:
+
+```text
+identity create / join
+  → init (interactive safe config)
+  → validate
+  → doctor
+  → run (foreground end-to-end test)
+  → service install/status/logs/restart/stop
+```
+
+`init` writes a new mode-`0600` configuration and refuses to overwrite a file. It requires stable participant IDs, creates an explicit safe chat wake block, and defaults comments off and Codex permissions to deny.
+
+`service install` creates either a Linux user systemd unit or a macOS launchd agent using the exact Node executable, compiled CLI location, and absolute config path of the invoking installation. The macOS agent uses private log files and orders itself after the existing Anytype headless launch agent when the local API is configured. SIGINT/SIGTERM trigger the graceful cancellation path. The runtime's project/tool access remains a separate security concern.
+
+For a local headless API at `127.0.0.1:31012`, the installer creates `anytype.service` only when no such unit exists and orders AAG after it. Forwarded/remote API endpoints are not managed.
+
+## Explicit non-goals and current gaps
+
+- AAG is not an agent harness; it delegates reasoning, tools, memory, compaction, and approvals to OpenClaw or Codex.
+- It is not an AnySync replacement and does not implement Anytype synchronization.
+- It does not manage SSH tunnels, OpenClaw services, Anytype Desktop, or remote Anytype endpoints; its only Anytype lifecycle integration is the optional local headless systemd unit described above.
+- It does not guarantee exactly-once or durable retry semantics.
+- It does not attach files or emit rich Anytype blocks; progress and final projections are bounded plain text with optional mention marks.
+- It has no Windows service installer yet.
+- The Heart adapter is deliberately version-pinned and private-API dependent.

@@ -1,0 +1,22 @@
+# Reference unit only. Prefer:
+#   aag service install --config ~/.config/aag/agent.yaml
+# because it records the actual Node, compiled CLI, and config paths.
+[Unit]
+Description=Anytype Agent Gateway
+After=network-online.target anytype.service
+Wants=network-online.target anytype.service
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env aag run --config %h/.config/aag/agent.yaml
+Restart=on-failure
+RestartSec=5
+# SIGTERM makes AAG stop streams, cancel active runs, close SQLite, and release
+# its singleton lock. The timeout is a supervisor backstop.
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
