@@ -1,7 +1,6 @@
 # Anytype Agent Gateway
 
 [![CI](https://github.com/imai-studio/anytype-agent-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/imai-studio/anytype-agent-gateway/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@imai/aag.svg)](https://www.npmjs.com/package/@imai/aag)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Anytype Agent Gateway (AAG) runs one OpenClaw or Codex agent as one Anytype member. A long-lived `aag run` process watches the configured chats and object discussions, decides when that member should wake, supplies Anytype context to the runtime, and projects the run back into Anytype as an editable reply.
@@ -27,8 +26,8 @@ The current deployment model is deliberately simple: **one AAG process, one Anyt
 
 The repository includes two runtime adapters:
 
-- **OpenClaw native Gateway:** connects to OpenClaw's authenticated WebSocket Gateway, starts the configured agent/session, receives tool and text events, uses `sessions.steer` for follow-ups, and reads a terminal chat reply when necessary. Project access is advisory at the AAG layer and must be enforced by the OpenClaw agent/workspace/tool configuration.
-- **Codex over ACP:** starts `codex-acp`, persists and resumes one ACP session per Anytype conversation, streams agent/tool updates, and uses native ACP steering. A steering failure is surfaced as a failed run; it is never silently converted into cancellation and a new prompt. Permission requests are denied by default or may be configured for one-run approval. ACP project declarations are advisory rather than an operating-system sandbox.
+- **OpenClaw native Gateway.** AAG connects to OpenClaw's authenticated WebSocket Gateway, starts the configured agent and session, receives tool and text events, uses `sessions.steer` for follow-ups, and reads the final chat reply when needed. OpenClaw's agent, workspace, and tool settings must enforce project access.
+- **Codex over ACP.** AAG starts `codex-acp`, saves and resumes one ACP session per Anytype conversation, streams agent and tool updates, and uses ACP steering. AAG reports steering failures instead of canceling and sending the prompt again, which could repeat tool side effects. It denies permission requests by default or can allow one request for the current run. ACP project settings tell Codex which directories to use, but they do not restrict filesystem access.
 
 Claude Code is not part of this release.
 
@@ -45,12 +44,16 @@ Anytype Desktop normally exposes its API at `http://127.0.0.1:31009`. When AAG r
 
 ## Install
 
-Install the published CLI with pnpm:
+Install the CLI directly from GitHub with pnpm:
 
 ```bash
-pnpm add --global @imai/aag
+pnpm add --global github:imai-studio/anytype-agent-gateway
 aag --version
 ```
+
+The repository includes its compiled `dist` output, so this command does not need to run package build scripts. To install a specific revision, append a branch, tag, or commit, for example `github:imai-studio/anytype-agent-gateway#v0.1.0` after that tag exists.
+
+If you are handing this repository to Codex, OpenClaw, or another coding agent to configure, point it to [AGENTS.md](AGENTS.md) and [the agent setup runbook](docs/agent-setup.md). They define the required inputs, safe setup sequence, validation checks, and runtime-specific configuration.
 
 To build from source instead:
 
@@ -165,7 +168,7 @@ state:
   path: ~/.local/state/aag/state.sqlite
 ```
 
-`agent.participantId` is required and must be the bot member's stable Anytype participant ID. It is used for structured mention matching, self-message suppression, reaction reconciliation, and orphan-reply recovery. `agent.aliases` also permits textual forms such as `@claw`; structured Anytype mention marks are preferred.
+Set `agent.participantId` to the bot member's stable Anytype participant ID. AAG uses it to match structured mentions, ignore its own messages, reconcile reactions, and recover orphan replies. `agent.aliases` accepts textual forms such as `@claw`, but structured Anytype mention marks take priority.
 
 Anytype participant IDs can be space-scoped. When one identity joins multiple spaces, set `spaces[].participantId` for each space; it overrides `agent.participantId` for self-filtering and mention matching on that space's routes.
 
@@ -229,7 +232,7 @@ Use `comments.mode: filtered` with `includeObjectTypes`/`excludeObjectTypes` for
 - Prefer one dedicated Anytype identity and operating-system account per independently trusted agent. Invite it only to the spaces it needs and revoke its API key when retiring it.
 - Keep Anytype HTTP, Heart gRPC, and OpenClaw Gateway listeners on loopback or an authenticated private network. AAG does not add TLS or network authentication in front of them.
 - Sender allowlists and wake policies control activation; they are not filesystem sandboxes.
-- Codex and OpenClaw project lists are advisory at the AAG boundary. Enforce filesystem and tool access in the harness, sandbox, service account, or container. If the runtime can escape those boundaries, AAG cannot contain it.
+- Codex and OpenClaw project lists tell the runtime which directories to use. Enforce filesystem and tool access in the runtime settings, sandbox, service account, or container. AAG cannot contain a runtime that escapes those controls.
 - Prompts label channel/object content as untrusted, but content can still attempt prompt injection. Apply runtime tool and approval policies appropriate to the workspace.
 - SQLite contains message IDs, run metadata, and discovered object/discussion metadata. Protect the state directory as workspace metadata.
 
@@ -257,7 +260,7 @@ go build ./...
 
 ## Releases
 
-The registry package is [`@imai/aag`](https://www.npmjs.com/package/@imai/aag), while the installed command remains `aag`. Install it with pnpm, npm, or another compatible Node package manager. Release versions come from `package.json`. Publishing a GitHub release tagged `vX.Y.Z` runs the verified npm publishing workflow; the tag must exactly match the package version.
+Install AAG from GitHub for now. The command name is `aag`. We plan to publish the same CLI as `@imai/aag`, which will provide a shorter install command. `package.json` holds the release version. After npm trusted publishing is configured, a GitHub release tagged `vX.Y.Z` runs the publish workflow. The tag must match the package version exactly.
 
 The workflow uses npm trusted publishing through GitHub Actions OIDC, so release publishing does not require a long-lived npm token in the repository. The initial package publish and trusted-publisher registration are maintainer operations.
 

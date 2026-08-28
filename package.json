@@ -27,6 +27,7 @@
   },
   "files": [
     "dist",
+    "AGENTS.md",
     "ARCHITECTURE.md",
     "CONTRIBUTING.md",
     "LICENSE",
@@ -52,7 +53,6 @@
     "test:watch": "vitest",
     "smoke:codex": "tsx scripts/smoke-codex.ts",
     "check": "pnpm run build && pnpm run typecheck && pnpm run lint && pnpm test",
-    "prepack": "pnpm run build",
     "prepublishOnly": "pnpm run check",
     "start": "node dist/cli.js run"
   },
