@@ -66,8 +66,8 @@ func TestOutboundMessageUsesBlockContent(t *testing.T) {
 		ReplyTo: "trigger",
 		Marks:   []textMark{{Type: "mention", From: 0, To: 4, Param: "peer"}},
 	})
-	if message.GetMessage() != nil {
-		t.Fatal("legacy message content is invisible in object discussions")
+	if message.GetMessage() == nil || message.GetMessage().GetText() != "Working..." {
+		t.Fatal("Heart compatibility content is required alongside blocks")
 	}
 	if message.GetReplyToMessageId() != "trigger" || len(message.GetBlocks()) != 1 {
 		t.Fatalf("unexpected outbound message %#v", message)

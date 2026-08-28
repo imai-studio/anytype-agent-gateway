@@ -159,6 +159,10 @@ func outboundMessage(input mutationRequest) *model.ChatMessage {
 	}
 	return &model.ChatMessage{
 		ReplyToMessageId: input.ReplyTo,
+		// Heart v0.50.10 serializes this field even when Blocks are present.
+		// Populate both representations to avoid a nil-message panic while still
+		// giving object discussions their block-based content.
+		Message: &model.ChatMessageMessageContent{Text: input.Text, Style: model.BlockContentText_Paragraph, Marks: marks},
 		Blocks: []*model.ChatMessageMessageBlock{{
 			Content: &model.ChatMessageMessageBlockContentOfText{Text: &model.ChatMessageMessageBlockText{Text: input.Text, Style: model.BlockContentText_Paragraph, Marks: marks}},
 		}},
