@@ -1,17 +1,43 @@
-import { access, constants, realpath } from "node:fs/promises";
+import { access, constants, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { AnytypeClient } from "./anytype-client.js";
 import { loadConfig } from "./config.js";
 import { setRouteWake } from "./management.js";
 import { VERSION } from "./version.js";
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const propertyValueFields = [
+    "text",
+    "number",
+    "select",
+    "multi_select",
+    "date",
+    "files",
+    "checkbox",
+    "url",
+    "email",
+    "phone",
+    "objects",
+];
+const reservedPropertyKeys = new Set([
+    "archived",
+    "id",
+    "layout",
+    "object",
+    "space_id",
+    "type",
+    "type_key",
+]);
 export async function runMcpServer(configPath, context = {}) {
     const config = await loadConfig(configPath);
     if (!config.tools.anytype.enabled)
         throw new Error("Anytype tools are disabled in this AAG configuration");
     const anytype = await AnytypeClient.create(config);
     const routeId = context.routeId ?? process.env.AAG_ROUTE_ID;
-    const defaultSpaceId = context.spaceId ?? process.env.AAG_SPACE_ID ?? spaceFromRoute(routeId);
+    const defaultSpaceId = context.spaceId ??
+        process.env.AAG_SPACE_ID ??
+        spaceFromRoute(routeId) ??
+        soleAllowedSpace(config);
     const tools = toolDefinitions(config);
     const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
     for await (const line of lines) {
@@ -29,7 +55,11 @@ export async function runMcpServer(configPath, context = {}) {
         try {
             let result;
             if (request.method === "initialize")
-                result = { protocolVersion: request.params?.protocolVersion ?? "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "aag-anytype", version: VERSION } };
+                result = {
+                    protocolVersion: request.params?.protocolVersion ?? "2025-06-18",
+                    capabilities: { tools: { listChanged: false } },
+                    serverInfo: { name: "aag-anytype", version: VERSION },
+                };
             else if (request.method === "ping")
                 result = {};
             else if (request.method === "tools/list")
@@ -40,7 +70,12 @@ export async function runMcpServer(configPath, context = {}) {
                     result = { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
                 }
                 catch (error) {
-                    result = { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
+                    result = {
+                        content: [
+                            { type: "text", text: error instanceof Error ? error.message : String(error) },
+                        ],
+                        isError: true,
+                    };
                 }
             }
             else
@@ -49,45 +84,192 @@ export async function runMcpServer(configPath, context = {}) {
         }
         catch (error) {
             const rpc = error;
-            write({ jsonrpc: "2.0", id: request.id, error: { code: rpc.code ?? -32000, message: rpc.message } });
+            write({
+                jsonrpc: "2.0",
+                id: request.id,
+                error: { code: rpc.code ?? -32000, message: rpc.message },
+            });
         }
     }
 }
 export function toolDefinitions(config) {
     const readTools = [
-        { name: "aag_context", description: "Describe the current Anytype gateway route, permissions, formatting rules, and available capabilities.", inputSchema: objectSchema({}) },
-        { name: "anytype_search", description: "Search objects in an allowed Anytype space.", inputSchema: objectSchema({ space_id: stringSchema("Space ID; omit to use the current conversation space"), query: stringSchema("Text query"), types: { type: "array", items: { type: "string" } }, limit: { type: "integer", minimum: 1, maximum: 100 } }) },
-        { name: "anytype_get_object", description: "Read a complete Anytype object, including its Markdown body and properties.", inputSchema: objectSchema({ space_id: stringSchema(), object_id: stringSchema() }, ["object_id"]) }
+        {
+            name: "aag_context",
+            description: "Describe the current Anytype gateway route, permissions, formatting rules, and available capabilities.",
+            inputSchema: objectSchema({
+                route_id: stringSchema("Optional Anytype route when the MCP process is shared across conversations"),
+            }),
+        },
+        {
+            name: "anytype_search",
+            description: "Search objects in an allowed Anytype space.",
+            inputSchema: objectSchema({
+                space_id: stringSchema("Space ID; omit to use the current conversation space"),
+                query: stringSchema("Text query"),
+                types: { type: "array", items: { type: "string" } },
+                limit: { type: "integer", minimum: 1, maximum: 100 },
+            }),
+        },
+        {
+            name: "anytype_get_object",
+            description: "Read a complete Anytype object, including its type, Markdown body, and properties.",
+            inputSchema: objectSchema({ space_id: stringSchema(), object_id: stringSchema() }, [
+                "object_id",
+            ]),
+        },
+        {
+            name: "anytype_list_types",
+            description: "List the available Anytype types and their keys before creating or changing objects.",
+            inputSchema: objectSchema({ space_id: stringSchema() }),
+        },
+        {
+            name: "anytype_get_type",
+            description: "Get one Anytype type definition by ID, including its layout and configured properties.",
+            inputSchema: objectSchema({ space_id: stringSchema(), type_id: stringSchema() }, ["type_id"]),
+        },
+        {
+            name: "anytype_list_properties",
+            description: "List the available Anytype properties, keys, and formats before writing object properties.",
+            inputSchema: objectSchema({ space_id: stringSchema() }),
+        },
+        {
+            name: "anytype_get_property",
+            description: "Get one Anytype property definition by ID.",
+            inputSchema: objectSchema({ space_id: stringSchema(), property_id: stringSchema() }, [
+                "property_id",
+            ]),
+        },
+        {
+            name: "anytype_list_property_tags",
+            description: "List valid select or multi-select tags for an Anytype property.",
+            inputSchema: objectSchema({ space_id: stringSchema(), property_id: stringSchema() }, [
+                "property_id",
+            ]),
+        },
+        {
+            name: "anytype_list_templates",
+            description: "List templates available for an Anytype type before creating an object from a template.",
+            inputSchema: objectSchema({ space_id: stringSchema(), type_id: stringSchema() }, ["type_id"]),
+        },
+        {
+            name: "anytype_list_views",
+            description: "List the views configured on an Anytype collection or query.",
+            inputSchema: objectSchema({ space_id: stringSchema(), list_id: stringSchema() }, ["list_id"]),
+        },
+        {
+            name: "anytype_list_view_objects",
+            description: "List the objects currently visible in one Anytype collection or query view.",
+            inputSchema: objectSchema({
+                space_id: stringSchema(),
+                list_id: stringSchema(),
+                view_id: stringSchema(),
+                offset: { type: "integer", minimum: 0 },
+                limit: { type: "integer", minimum: 1, maximum: 100 },
+            }, ["list_id", "view_id"]),
+        },
     ];
     const managementTools = config.management.allowWakeChanges
-        ? [{ name: "aag_set_wake", description: "Change how this agent wakes in the current Anytype chat or discussion.", inputSchema: objectSchema({ humans: { type: "string", enum: ["mention", "mention-or-reply", "every-message", "prefix", "disabled"] }, prefix: stringSchema() }, ["humans"]) }]
+        ? [
+            {
+                name: "aag_set_wake",
+                description: "Change how this agent wakes in an Anytype chat or discussion. Pass route_id when the MCP process has no bound route.",
+                inputSchema: objectSchema({
+                    route_id: stringSchema("chat:<space-id>:<chat-id> or discussion:<space-id>:<discussion-id>"),
+                    humans: {
+                        type: "string",
+                        enum: ["mention", "mention-or-reply", "every-message", "prefix", "disabled"],
+                    },
+                    prefix: stringSchema(),
+                }, ["humans"]),
+            },
+        ]
         : [];
     if (!config.tools.anytype.allowWrite)
         return [...readTools, ...managementTools];
-    return [...readTools,
-        { name: "anytype_create_object", description: "Create an object in an allowed Anytype space. Returns a native Anytype link.", inputSchema: objectSchema({ space_id: stringSchema(), type_key: stringSchema("Anytype type key such as page, note, task, or collection"), name: stringSchema(), body: stringSchema("Markdown body"), template_id: stringSchema(), properties: { type: "array", items: { type: "object" } } }, ["type_key"]) },
-        { name: "anytype_update_object", description: "Update an existing Anytype object and return its native link.", inputSchema: objectSchema({ space_id: stringSchema(), object_id: stringSchema(), type_key: stringSchema(), name: stringSchema(), markdown: stringSchema(), properties: { type: "array", items: { type: "object" } } }, ["object_id"]) },
-        { name: "anytype_add_to_list", description: "Add objects to an Anytype collection.", inputSchema: objectSchema({ space_id: stringSchema(), list_id: stringSchema(), object_ids: { type: "array", items: { type: "string" }, minItems: 1 } }, ["list_id", "object_ids"]) },
-        { name: "anytype_upload_file", description: "Upload a file from an allowed project/file root into Anytype.", inputSchema: objectSchema({ space_id: stringSchema(), path: stringSchema("Absolute local file path") }, ["path"]) },
-        ...(config.tools.anytype.allowArchive ? [{ name: "anytype_archive_object", description: "Archive an Anytype object.", inputSchema: objectSchema({ space_id: stringSchema(), object_id: stringSchema() }, ["object_id"]) }] : []),
-        ...managementTools
+    return [
+        ...readTools,
+        {
+            name: "anytype_create_object",
+            description: "Create an object in an allowed Anytype space. Returns a native Anytype link and an AAG object reference suitable for chat output.",
+            inputSchema: objectSchema({
+                space_id: stringSchema(),
+                type_key: stringSchema("Anytype type key such as page, note, task, or collection"),
+                name: stringSchema(),
+                body: stringSchema("Markdown body"),
+                template_id: stringSchema(),
+                properties: propertyValuesSchema(),
+            }, ["type_key"]),
+        },
+        {
+            name: "anytype_update_object",
+            description: "Update an existing Anytype object's name, Markdown body, or properties without changing its type. Read it first and preserve unrelated values. Returns a native link and AAG object reference.",
+            inputSchema: objectSchema({
+                space_id: stringSchema(),
+                object_id: stringSchema(),
+                name: stringSchema(),
+                markdown: stringSchema(),
+                properties: propertyValuesSchema(),
+            }, ["object_id"]),
+        },
+        {
+            name: "anytype_add_to_list",
+            description: "Add objects to an Anytype collection.",
+            inputSchema: objectSchema({
+                space_id: stringSchema(),
+                list_id: stringSchema(),
+                object_ids: { type: "array", items: { type: "string" }, minItems: 1 },
+            }, ["list_id", "object_ids"]),
+        },
+        {
+            name: "anytype_remove_from_list",
+            description: "Remove one object from an Anytype collection without archiving the object.",
+            inputSchema: objectSchema({ space_id: stringSchema(), list_id: stringSchema(), object_id: stringSchema() }, ["list_id", "object_id"]),
+        },
+        {
+            name: "anytype_upload_file",
+            description: "Upload a file from an allowed project/file root into Anytype.",
+            inputSchema: objectSchema({ space_id: stringSchema(), path: stringSchema("Absolute local file path") }, ["path"]),
+        },
+        ...(config.tools.anytype.allowArchive
+            ? [
+                {
+                    name: "anytype_archive_object",
+                    description: "Archive an Anytype object.",
+                    inputSchema: objectSchema({ space_id: stringSchema(), object_id: stringSchema() }, [
+                        "object_id",
+                    ]),
+                },
+            ]
+            : []),
+        ...managementTools,
     ];
 }
 export async function callTool(anytype, config, configPath, routeId, defaultSpaceId, name, input) {
+    const requestedRouteId = typeof input.route_id === "string" && input.route_id ? baseRoute(input.route_id) : undefined;
+    const boundRouteId = routeId ? baseRoute(routeId) : undefined;
+    if (boundRouteId && requestedRouteId && requestedRouteId !== boundRouteId)
+        throw new Error("route_id must match the current Anytype conversation");
+    const effectiveRouteId = requestedRouteId ?? boundRouteId;
     if (name === "aag_context")
         return {
             gateway: "Anytype Agent Gateway",
-            route_id: routeId,
+            route_id: effectiveRouteId,
             space_id: defaultSpaceId,
             permissions: {
-                allowed_space_ids: config.tools.anytype.allowedSpaceIds.length ? config.tools.anytype.allowedSpaceIds : defaultSpaceId ? [defaultSpaceId] : [],
+                allowed_space_ids: config.tools.anytype.allowedSpaceIds.length
+                    ? config.tools.anytype.allowedSpaceIds
+                    : defaultSpaceId
+                        ? [defaultSpaceId]
+                        : [],
                 write: config.tools.anytype.allowWrite,
                 archive: config.tools.anytype.allowArchive,
-                wake_changes: config.management.allowWakeChanges && Boolean(routeId),
-                file_roots: config.tools.anytype.allowedFileRoots.length ? config.tools.anytype.allowedFileRoots : [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter(Boolean),
+                wake_changes: config.management.allowWakeChanges,
+                file_roots: config.tools.anytype.allowedFileRoots,
             },
             response_format: "Anytype rich text; use short paragraphs and simple lists, avoid Markdown tables and fenced code blocks",
-            object_links: "Use the native anytype:// link returned by object tools when referring to created or found objects",
+            object_links: "Use the returned object_ref token for a clickable Anytype object mention in chat; link is the native deep link fallback",
+            object_workflow: "Discover types and properties first, read the target before updating it, preserve unrelated properties, then use the returned native link in the Anytype reply",
             scheduling: config.runtime.kind === "openclaw"
                 ? "Use OpenClaw's native scheduler and keep delivery on the current bound session; AAG does not schedule jobs"
                 : "This Codex ACP connection has no native scheduled-task integration; AAG does not schedule jobs",
@@ -95,10 +277,19 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
     if (name === "aag_set_wake") {
         if (!config.management.allowWakeChanges)
             throw new Error("Wake changes are disabled");
-        if (!routeId)
-            throw new Error("This tool was not launched with an Anytype route context");
-        await setRouteWake({ configPath, routeId: baseRoute(routeId), humans: String(input.humans), ...(input.prefix ? { prefix: String(input.prefix) } : {}) });
-        return { route_id: baseRoute(routeId), humans: input.humans };
+        if (!effectiveRouteId)
+            throw new Error("route_id is required because this MCP process has no bound Anytype route");
+        const routeSpaceId = spaceFromRoute(effectiveRouteId);
+        if (!routeSpaceId)
+            throw new Error("route_id does not contain a valid Anytype space");
+        assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
+        await setRouteWake({
+            configPath,
+            routeId: effectiveRouteId,
+            humans: String(input.humans),
+            ...(input.prefix ? { prefix: String(input.prefix) } : {}),
+        });
+        return { route_id: effectiveRouteId, humans: input.humans };
     }
     const spaceId = String(input.space_id ?? defaultSpaceId ?? "");
     if (!spaceId)
@@ -108,24 +299,71 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
         const requestedLimit = Number(input.limit ?? 50);
         if (!Number.isFinite(requestedLimit) || requestedLimit < 1)
             throw new Error("limit must be a positive number");
-        return await anytype.searchSpace(spaceId, { query: String(input.query ?? ""), ...(Array.isArray(input.types) ? { types: input.types.map(String) } : {}), limit: Math.min(Math.trunc(requestedLimit), 100) });
+        const results = await anytype.searchSpace(spaceId, {
+            query: String(input.query ?? ""),
+            ...(Array.isArray(input.types) ? { types: input.types.map(String) } : {}),
+            limit: Math.min(Math.trunc(requestedLimit), 100),
+        });
+        return results.map((object) => withLink(object, spaceId));
     }
     if (name === "anytype_get_object")
         return withLink(await anytype.getObject(spaceId, required(input, "object_id")), spaceId);
+    if (name === "anytype_list_types")
+        return await anytype.listTypes(spaceId);
+    if (name === "anytype_get_type")
+        return await anytype.getType(spaceId, required(input, "type_id"));
+    if (name === "anytype_list_properties")
+        return await anytype.listProperties(spaceId);
+    if (name === "anytype_get_property")
+        return await anytype.getProperty(spaceId, required(input, "property_id"));
+    if (name === "anytype_list_property_tags")
+        return await anytype.listPropertyTags(spaceId, required(input, "property_id"));
+    if (name === "anytype_list_templates")
+        return await anytype.listTemplates(spaceId, required(input, "type_id"));
+    if (name === "anytype_list_views")
+        return await anytype.listViews(spaceId, required(input, "list_id"));
+    if (name === "anytype_list_view_objects")
+        return (await anytype.listViewObjects(spaceId, required(input, "list_id"), required(input, "view_id"), boundedPage(input))).map((object) => withLink(object, spaceId));
     if (!config.tools.anytype.allowWrite)
         throw new Error("Anytype writes are disabled for this agent");
-    if (name === "anytype_create_object")
-        return withLink(await anytype.createObject(spaceId, pick(input, ["type_key", "name", "body", "template_id", "properties"], ["type_key"])), spaceId);
-    if (name === "anytype_update_object")
-        return withLink(await anytype.updateObject(spaceId, required(input, "object_id"), pick(input, ["type_key", "name", "markdown", "properties"])), spaceId);
+    if (name === "anytype_create_object") {
+        const payload = pick(input, ["type_key", "name", "body", "template_id", "properties"], ["type_key"]);
+        if (payload.properties !== undefined)
+            payload.properties = validatedProperties(payload.properties);
+        return withLink(await anytype.createObject(spaceId, payload), spaceId);
+    }
+    if (name === "anytype_update_object") {
+        if (input.type_key !== undefined)
+            throw new Error("Changing an object's type is not allowed through anytype_update_object");
+        const payload = pick(input, ["name", "markdown", "properties"]);
+        if (payload.properties !== undefined)
+            payload.properties = validatedProperties(payload.properties);
+        if (!Object.keys(payload).length)
+            throw new Error("At least one of name, markdown, or properties is required");
+        return withLink(await anytype.updateObject(spaceId, required(input, "object_id"), payload), spaceId);
+    }
     if (name === "anytype_add_to_list") {
-        await anytype.addObjectsToList(spaceId, required(input, "list_id"), requiredArray(input, "object_ids"));
-        return { added: input.object_ids.length, list: anytypeLink(spaceId, input.list_id) };
+        const listId = required(input, "list_id");
+        await anytype.addObjectsToList(spaceId, listId, requiredArray(input, "object_ids"));
+        return {
+            added: input.object_ids.length,
+            list: anytypeLink(spaceId, listId),
+            list_ref: `[[AAG_OBJECT:${listId}|Open collection]]`,
+        };
+    }
+    if (name === "anytype_remove_from_list") {
+        const listId = required(input, "list_id");
+        const objectId = required(input, "object_id");
+        await anytype.removeObjectFromList(spaceId, listId, objectId);
+        return {
+            removed: objectId,
+            list: anytypeLink(spaceId, listId),
+            list_ref: `[[AAG_OBJECT:${listId}|Open collection]]`,
+        };
     }
     if (name === "anytype_upload_file") {
         const path = await allowedFile(config, required(input, "path"));
-        const file = await anytype.uploadFile(spaceId, path);
-        return { ...file, link: anytypeLink(spaceId, String(file.object_id ?? "")) };
+        return withLink(await anytype.uploadFile(spaceId, path), spaceId);
     }
     if (name === "anytype_archive_object") {
         if (!config.tools.anytype.allowArchive)
@@ -150,7 +388,14 @@ async function allowedFile(config, value) {
         throw new Error("File path must be absolute");
     const path = await realpath(value);
     await access(path, constants.R_OK);
-    const configured = config.tools.anytype.allowedFileRoots.length ? config.tools.anytype.allowedFileRoots : [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter(Boolean);
+    const info = await stat(path);
+    if (!info.isFile())
+        throw new Error("Upload path must be a regular file");
+    if (info.size > MAX_UPLOAD_BYTES)
+        throw new Error(`Upload exceeds the ${MAX_UPLOAD_BYTES / 1024 / 1024} MiB limit`);
+    const configured = config.tools.anytype.allowedFileRoots;
+    if (!configured.length)
+        throw new Error("File uploads require at least one explicit allowedFileRoots entry");
     for (const candidate of configured) {
         const root = await realpath(resolve(candidate)).catch(() => resolve(candidate));
         const child = relative(root, path);
@@ -159,20 +404,141 @@ async function allowedFile(config, value) {
     }
     throw new Error("File is outside this agent's allowed file roots");
 }
-function withLink(object, spaceId) { return { ...object, link: anytypeLink(spaceId, String(object.id ?? object.object_id ?? "")) }; }
-function anytypeLink(spaceId, objectId) { return `anytype://object/?objectId=${encodeURIComponent(objectId)}&spaceId=${encodeURIComponent(spaceId)}`; }
-function required(input, key) { const value = input[key]; if (typeof value !== "string" || !value)
-    throw new Error(`${key} is required`); return value; }
-function requiredArray(input, key) { if (!Array.isArray(input[key]) || input[key].length === 0)
-    throw new Error(`${key} is required`); return input[key].map(String); }
-function pick(input, keys, requiredKeys = []) { const value = {}; for (const key of keys)
-    if (input[key] !== undefined)
-        value[key] = input[key]; for (const key of requiredKeys)
-    if (value[key] === undefined)
-        throw new Error(`${key} is required`); return value; }
-function objectSchema(properties, required = []) { return { type: "object", properties, additionalProperties: false, ...(required.length ? { required } : {}) }; }
-function stringSchema(description) { return { type: "string", ...(description ? { description } : {}) }; }
-function rpcError(code, message) { return Object.assign(new Error(message), { code }); }
-function write(value) { process.stdout.write(`${JSON.stringify(value)}\n`); }
-function spaceFromRoute(routeId) { return /^(?:aag:)?(?:chat|discussion):([^:]+)/.exec(routeId ?? "")?.[1]; }
-function baseRoute(routeId) { return routeId.replace(/^aag:/, "").replace(/:g\d+$/, "").replace(/:root:.+$/, ""); }
+function withLink(object, spaceId) {
+    const objectId = String(object.id ?? object.object_id ?? object.object?.id ?? "");
+    if (!objectId)
+        throw new Error("Anytype returned an object without an ID");
+    const label = String(object.name ?? object.title ?? object.object?.name ?? "Open in Anytype")
+        .replace(/[\n\r|\]]/gu, " ")
+        .trim() || "Open in Anytype";
+    return {
+        ...object,
+        link: anytypeLink(spaceId, objectId),
+        object_ref: `[[AAG_OBJECT:${objectId}|${label}]]`,
+    };
+}
+function anytypeLink(spaceId, objectId) {
+    return `anytype://object?objectId=${encodeURIComponent(objectId)}&spaceId=${encodeURIComponent(spaceId)}`;
+}
+function required(input, key) {
+    const value = input[key];
+    if (typeof value !== "string" || !value)
+        throw new Error(`${key} is required`);
+    return value;
+}
+function requiredArray(input, key) {
+    if (!Array.isArray(input[key]) || input[key].length === 0)
+        throw new Error(`${key} is required`);
+    return input[key].map(String);
+}
+function boundedPage(input) {
+    const offset = Number(input.offset ?? 0);
+    const limit = Number(input.limit ?? 50);
+    if (!Number.isInteger(offset) || offset < 0)
+        throw new Error("offset must be a non-negative integer");
+    if (!Number.isInteger(limit) || limit < 1)
+        throw new Error("limit must be a positive integer");
+    return { offset, limit: Math.min(limit, 100) };
+}
+function pick(input, keys, requiredKeys = []) {
+    const value = {};
+    for (const key of keys)
+        if (input[key] !== undefined)
+            value[key] = input[key];
+    for (const key of requiredKeys)
+        if (value[key] === undefined)
+            throw new Error(`${key} is required`);
+    return value;
+}
+function objectSchema(properties, required = []) {
+    return {
+        type: "object",
+        properties,
+        additionalProperties: false,
+        ...(required.length ? { required } : {}),
+    };
+}
+function stringSchema(description) {
+    return { type: "string", ...(description ? { description } : {}) };
+}
+function propertyValuesSchema() {
+    const properties = {
+        key: stringSchema("Property key returned by anytype_list_properties or anytype_get_type"),
+        text: { type: "string" },
+        number: { type: "number" },
+        select: { type: "string" },
+        multi_select: { type: "array", items: { type: "string" } },
+        date: { type: "string" },
+        files: { type: "array", items: { type: "string" } },
+        checkbox: { type: "boolean" },
+        url: { type: "string" },
+        email: { type: "string" },
+        phone: { type: "string" },
+        objects: { type: "array", items: { type: "string" } },
+    };
+    return {
+        type: "array",
+        items: {
+            type: "object",
+            properties,
+            required: ["key"],
+            additionalProperties: false,
+            oneOf: propertyValueFields.map((field) => ({ required: [field] })),
+        },
+    };
+}
+function validatedProperties(value) {
+    if (!Array.isArray(value))
+        throw new Error("properties must be an array");
+    return value.map((item, index) => {
+        if (!item || typeof item !== "object" || Array.isArray(item))
+            throw new Error(`properties[${index}] must be an object`);
+        const property = item;
+        const key = typeof property.key === "string" ? property.key.trim() : "";
+        if (!key)
+            throw new Error(`properties[${index}].key is required`);
+        if (reservedPropertyKeys.has(key.toLowerCase()))
+            throw new Error(`Property key ${key} is reserved and cannot be changed through AAG`);
+        const fields = propertyValueFields.filter((field) => property[field] !== undefined);
+        if (fields.length !== 1)
+            throw new Error(`properties[${index}] must contain exactly one typed value`);
+        const allowed = new Set(["key", fields[0]]);
+        const extra = Object.keys(property).find((field) => !allowed.has(field));
+        if (extra)
+            throw new Error(`properties[${index}] contains unsupported field ${extra}`);
+        validatePropertyValue(fields[0], property[fields[0]], index);
+        return { key, [fields[0]]: property[fields[0]] };
+    });
+}
+function validatePropertyValue(field, value, index) {
+    if (field === "number" && typeof value !== "number")
+        throw new Error(`properties[${index}].number must be a number`);
+    if (field === "checkbox" && typeof value !== "boolean")
+        throw new Error(`properties[${index}].checkbox must be a boolean`);
+    if (["multi_select", "files", "objects"].includes(field) &&
+        (!Array.isArray(value) || value.some((item) => typeof item !== "string")))
+        throw new Error(`properties[${index}].${field} must be an array of strings`);
+    if (!["number", "checkbox", "multi_select", "files", "objects"].includes(field) &&
+        typeof value !== "string")
+        throw new Error(`properties[${index}].${field} must be a string`);
+}
+function rpcError(code, message) {
+    return Object.assign(new Error(message), { code });
+}
+function write(value) {
+    process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+function spaceFromRoute(routeId) {
+    return /^(?:aag:)?(?:chat|discussion):([^:]+)/.exec(routeId ?? "")?.[1];
+}
+function baseRoute(routeId) {
+    return routeId
+        .replace(/^aag:/, "")
+        .replace(/:g\d+$/, "")
+        .replace(/:root:.+$/, "");
+}
+function soleAllowedSpace(config) {
+    return config.tools.anytype.allowedSpaceIds.length === 1
+        ? config.tools.anytype.allowedSpaceIds[0]
+        : undefined;
+}

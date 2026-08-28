@@ -205,7 +205,7 @@ func runMutation(action string, args []string) {
 	if action != "send" && input.MessageID == "" {
 		fatal(errors.New("messageId is required"))
 	}
-	token, err := readToken(*configPath)
+	token, err := sessionToken(*configPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -328,7 +328,7 @@ func runResolve(args []string) {
 	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
 		fatal(fmt.Errorf("decode request: %w", err))
 	}
-	token, err := readToken(*configPath)
+	token, err := sessionToken(*configPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -359,7 +359,7 @@ func runHydrate(args []string) {
 	if input.ChatID == "" {
 		fatal(errors.New("chatId is required"))
 	}
-	token, err := readToken(*configPath)
+	token, err := sessionToken(*configPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -448,7 +448,8 @@ func resolve(client service.ClientCommandsClient, token, spaceID, objectID strin
 		return result{ObjectID: objectID, Error: shown.GetError().GetDescription()}
 	}
 	defer func() {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		closeParent := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("token", token))
+		closeCtx, closeCancel := context.WithTimeout(closeParent, 3*time.Second)
 		defer closeCancel()
 		_, _ = client.ObjectClose(closeCtx, &pb.RpcObjectCloseRequest{ContextId: objectID, ObjectId: objectID, SpaceId: spaceID})
 	}()
@@ -465,7 +466,9 @@ func resolve(client service.ClientCommandsClient, token, spaceID, objectID strin
 	if !create {
 		return result{ObjectID: objectID}
 	}
-	created, err := client.ObjectAddDiscussion(ctx, &pb.RpcObjectDiscussionAddRequest{ObjectId: objectID})
+	createCtx, createCancel := context.WithTimeout(metadata.NewOutgoingContext(context.Background(), metadata.Pairs("token", token)), 10*time.Second)
+	defer createCancel()
+	created, err := client.ObjectAddDiscussion(createCtx, &pb.RpcObjectDiscussionAddRequest{ObjectId: objectID})
 	if err != nil {
 		return result{ObjectID: objectID, Error: err.Error()}
 	}
@@ -488,6 +491,13 @@ func readToken(path string) (string, error) {
 		return "", errors.New("Anytype config has no sessionToken (headless keyring-backed configs are not supported by this adapter)")
 	}
 	return cfg.SessionToken, nil
+}
+
+func sessionToken(path string) (string, error) {
+	if token := strings.TrimSpace(os.Getenv("ANYTYPE_SESSION_TOKEN")); token != "" {
+		return token, nil
+	}
+	return readToken(path)
 }
 
 func defaultConfigPath() string {

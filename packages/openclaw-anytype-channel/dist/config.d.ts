@@ -18,7 +18,7 @@ export declare const anytypePluginConfigSchema: ChannelConfigSchema;
 export type AnytypeAccountConfig = z.infer<typeof AccountSchema>;
 export type CoreConfig = {
     channels?: {
-        anytype?: AnytypeAccountConfig & {
+        anytype?: Partial<AnytypeAccountConfig> & {
             accounts?: Record<string, Partial<AnytypeAccountConfig>>;
             defaultAccount?: string;
         };

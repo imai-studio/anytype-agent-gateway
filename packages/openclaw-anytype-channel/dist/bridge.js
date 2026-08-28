@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { BridgeBindingSchema, BridgeInboundSchema } from "./protocol.js";
+import { BridgeBindingSchema, BridgeInboundSchema, } from "./protocol.js";
 const MAX_BODY_BYTES = 1_048_576;
 function json(response, status, body) {
     response.writeHead(status, {
@@ -128,7 +128,7 @@ export class BridgeServer {
             return;
         }
         if (request.method === "POST" && url.pathname === "/v1/owned-runs") {
-            const body = await readJson(request);
+            const body = (await readJson(request));
             if (typeof body.runId !== "string" || !body.runId || body.runId.length > 512) {
                 json(response, 400, { error: "runId must be a non-empty string" });
                 return;
@@ -138,35 +138,53 @@ export class BridgeServer {
             return;
         }
         if (request.method === "GET" && url.pathname.startsWith("/v1/inbound/")) {
-            const id = decodeURIComponent(url.pathname.slice("/v1/inbound/".length));
+            const id = safeDecode(url.pathname.slice("/v1/inbound/".length));
+            if (id === undefined) {
+                json(response, 400, { error: "invalid_id" });
+                return;
+            }
             const status = this.#options.store.inboundStatus(id);
             json(response, status ? 200 : 404, status ?? { error: "not_found" });
             return;
         }
         if (request.method === "GET" && url.pathname === "/v1/outbox") {
             const requestedLimit = Number(url.searchParams.get("limit") ?? 50);
-            const limit = Number.isFinite(requestedLimit) ? Math.min(1_000, Math.max(1, Math.trunc(requestedLimit))) : 50;
+            const limit = Number.isFinite(requestedLimit)
+                ? Math.min(1_000, Math.max(1, Math.trunc(requestedLimit)))
+                : 50;
             const sessionKey = url.searchParams.get("sessionKey");
             const spaceId = url.searchParams.get("spaceId");
             const chatId = url.searchParams.get("chatId");
             const discussionRootId = url.searchParams.get("discussionRootId");
             const afterSequenceValue = Number(url.searchParams.get("afterSequence") ?? 0);
-            const afterSequence = Number.isSafeInteger(afterSequenceValue) && afterSequenceValue >= 0 ? afterSequenceValue : 0;
+            const afterSequence = Number.isSafeInteger(afterSequenceValue) && afterSequenceValue >= 0
+                ? afterSequenceValue
+                : 0;
             const deliveries = sessionKey && spaceId && chatId
-                ? this.#options.store.pendingDeliveriesFor({ sessionKey, route: { spaceId, chatId, ...(discussionRootId ? { discussionRootId } : {}) } }, Date.now(), limit, afterSequence)
+                ? this.#options.store.pendingDeliveriesFor({
+                    sessionKey,
+                    route: { spaceId, chatId, ...(discussionRootId ? { discussionRootId } : {}) },
+                }, Date.now(), limit, afterSequence)
                 : this.#options.store.pendingDeliveries(Date.now(), limit, afterSequence);
             json(response, 200, { deliveries });
             return;
         }
         const ack = /^\/v1\/outbox\/([^/]+)\/ack$/u.exec(url.pathname);
         if (request.method === "POST" && ack?.[1]) {
-            this.#options.store.acknowledgeDelivery(decodeURIComponent(ack[1]));
+            const id = safeDecode(ack[1]);
+            if (id === undefined) {
+                json(response, 400, { error: "invalid_id" });
+                return;
+            }
+            this.#options.store.acknowledgeDelivery(id);
             json(response, 200, { ok: true });
             return;
         }
         if (request.method === "POST" && url.pathname === "/v1/outbox/ack") {
-            const body = await readJson(request);
-            if (!Array.isArray(body.ids) || body.ids.length === 0 || body.ids.some(id => typeof id !== "string" || !id)) {
+            const body = (await readJson(request));
+            if (!Array.isArray(body.ids) ||
+                body.ids.length === 0 ||
+                body.ids.some((id) => typeof id !== "string" || !id)) {
                 json(response, 400, { error: "ids must be a non-empty string array" });
                 return;
             }
@@ -175,6 +193,14 @@ export class BridgeServer {
             return;
         }
         json(response, 404, { error: "not_found" });
+    }
+}
+function safeDecode(value) {
+    try {
+        return decodeURIComponent(value);
+    }
+    catch {
+        return undefined;
     }
 }
 export class DeliveryWorker {

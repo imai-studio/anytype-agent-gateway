@@ -114,7 +114,7 @@ responses:
 
 The installed package resolves its bundled `codex-acp` executable automatically. For OpenClaw, use `examples/openclaw-agent.yaml`, provide the absolute Gateway client-module path, and keep the Gateway token in the configured environment variable or protected OpenClaw config file.
 
-Object writes are off unless the configuration explicitly sets `tools.anytype.allowWrite: true`. Keep `allowedSpaceIds` and `allowedFileRoots` narrow. Archive is a separate permission.
+Object writes are off unless the configuration explicitly sets `tools.anytype.allowWrite: true`. Keep `allowedSpaceIds` and `allowedFileRoots` narrow. Uploads require an explicit root, resolve symlinks, accept regular files only, and are capped at 50 MiB. Archive is a separate permission.
 
 For OpenClaw, install the packaged native channel and configure its loopback bridge before validation:
 
@@ -123,6 +123,8 @@ aag openclaw plugin install
 ```
 
 Generate one random token of at least 24 characters. Prefer a mode-`0600` file selected by `runtime.channelBridge.tokenFile`; the environment variable selected by `tokenEnv` is also supported. Configure the same value as OpenClaw's `channels.anytype.bridgeToken`. Add `aag mcp --config /absolute/path/to/agent.yaml` to OpenClaw's native `mcp.servers` configuration so the OpenClaw agent receives the same scoped Anytype object tools as Codex. Do not expose the bridge listener beyond loopback.
+
+For object work, tell the agent to call `aag_context`, discover the space's types and properties, read the target object, and then mutate it. Select and multi-select values can be resolved through the property-tag tool, templates through the type-template tool, and collection membership through the view tools. Every found, created, or updated object returns an `object_ref` token that AAG turns into a clickable object reference. The accompanying `anytype://` link is a fallback.
 
 One configuration should describe one identity and one runtime agent. Use explicit routes or an explicit `chatDiscovery` policy; space membership alone must not turn on every conversation. When discovery is enabled, keep its wake policy mention-based and its sender allowlist narrow.
 

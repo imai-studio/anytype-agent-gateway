@@ -4,10 +4,17 @@ import { spawn } from "node:child_process";
 import { runProcess } from "./process.js";
 export async function createIdentity(options) {
     const env = { ...process.env, ...(options.dataPath ? { DATA_PATH: options.dataPath } : {}) };
-    await inherited(options.command, ["auth", "create", options.name, ...(options.dataPath ? ["--root-path", options.dataPath] : [])], env);
+    await inherited(options.command, [
+        "auth",
+        "create",
+        options.name,
+        ...(options.dataPath ? ["--root-path", options.dataPath] : []),
+    ], env);
     for (const invite of options.invites)
         await inherited(options.command, ["space", "join", invite], env);
-    const { stdout } = await runProcess(options.command, ["auth", "apikey", "create", `aag-${options.name}`], { env, timeoutMs: 30_000 }).catch(() => { throw new Error("Anytype CLI failed to create the revocable API key; inspect the CLI logs directly"); });
+    const { stdout } = await runProcess(options.command, ["auth", "apikey", "create", `aag-${options.name}`], { env, timeoutMs: 30_000 }).catch(() => {
+        throw new Error("Anytype CLI failed to create the revocable API key; inspect the CLI logs directly");
+    });
     const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
     const plain = stdout.replace(ansi, "");
     const matches = [...plain.matchAll(/(?:^|\n)\s*Key:\s*([^\s]+)\s*(?=\n|$)/gi)];
@@ -27,6 +34,6 @@ function inherited(command, args, env) {
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, { env, stdio: "inherit" });
         child.on("error", reject);
-        child.on("close", code => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)));
+        child.on("close", (code) => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)));
     });
 }

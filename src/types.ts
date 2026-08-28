@@ -79,8 +79,14 @@ export interface RuntimeDriver {
   readonly name: string;
   readonly projectEnforcement: "enforced" | "advisory" | "unknown";
   readonly capabilities: RuntimeCapabilities;
-  start(input: { sessionKey: string; prompt: string; turn?: RuntimeTurn }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;
-  observeSession?(input: { sessionKey: string; afterCursor?: string; conversation?: ConversationRef }, onOutput: (output: RuntimeSessionOutput) => Promise<void>): Promise<RuntimeSessionObserver>;
+  start(
+    input: { sessionKey: string; prompt: string; turn?: RuntimeTurn },
+    onEvent: (event: RuntimeEvent) => void,
+  ): Promise<ActiveRuntime>;
+  observeSession?(
+    input: { sessionKey: string; afterCursor?: string; conversation?: ConversationRef },
+    onOutput: (output: RuntimeSessionOutput) => Promise<void>,
+  ): Promise<RuntimeSessionObserver>;
   doctor(): Promise<string[]>;
   close?(): Promise<void>;
 }
@@ -89,15 +95,47 @@ export type AnytypeEvent = { type: string; payload?: { message?: ChatMessage } }
 
 export interface AnytypePort {
   getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage>;
-  listMessages(spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]>;
-  sendMessage(spaceId: string, chatId: string, input: { text: string; replyTo?: string; marks?: TextMark[] }): Promise<string>;
-  editMessage(spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[]): Promise<void>;
+  listMessages(
+    spaceId: string,
+    chatId: string,
+    limit: number,
+    afterOrderId?: string,
+  ): Promise<ChatMessage[]>;
+  sendMessage(
+    spaceId: string,
+    chatId: string,
+    input: { text: string; replyTo?: string; marks?: TextMark[] },
+  ): Promise<string>;
+  editMessage(
+    spaceId: string,
+    chatId: string,
+    messageId: string,
+    text: string,
+    marks?: TextMark[],
+  ): Promise<void>;
   deleteMessage(spaceId: string, chatId: string, messageId: string): Promise<void>;
-  ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean): Promise<void>;
+  ensureReaction(
+    spaceId: string,
+    chatId: string,
+    messageId: string,
+    emoji: string,
+    present: boolean,
+    participantId?: string,
+  ): Promise<void>;
   stream(spaceId: string, chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent>;
   resolveSpace(selector: { id?: string; name?: string }): Promise<{ id: string; name: string }>;
-  resolveChat(spaceId: string, selector: { id?: string; name?: string }): Promise<{ id: string; name: string }>;
+  resolveChat(
+    spaceId: string,
+    selector: { id?: string; name?: string },
+  ): Promise<{ id: string; name: string }>;
   listChats(spaceId: string): Promise<Array<{ id: string; name: string }>>;
-  getObject(spaceId: string, objectId: string): Promise<{ id: string; name?: string; markdown?: string }>;
-  searchObjects(spaceId: string, offset: number, limit: number): Promise<Array<{ id: string; name?: string; type?: string }>>;
+  getObject(
+    spaceId: string,
+    objectId: string,
+  ): Promise<{ id: string; name?: string; markdown?: string }>;
+  searchObjects(
+    spaceId: string,
+    offset: number,
+    limit: number,
+  ): Promise<Array<{ id: string; name?: string; type?: string }>>;
 }

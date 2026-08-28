@@ -35,9 +35,9 @@ Use a random bridge token of at least 24 characters. Keep it outside the reposit
       listenPort: 18791,
       bridgeToken: "${AAG_OPENCLAW_BRIDGE_TOKEN}",
       databasePath: "/home/anya/.openclaw/anytype/default.sqlite",
-      allowFrom: ["the-exact-anytype-participant-id"]
-    }
-  }
+      allowFrom: ["the-exact-anytype-participant-id"],
+    },
+  },
 }
 ```
 
@@ -92,7 +92,7 @@ After OpenClaw returns a run ID, AAG registers it through authenticated `POST /v
 
 The response is `202` for a new event or `200` for a duplicate. A failed dispatch can be retried by posting the same ID again. Check `GET /v1/inbound/:id` when AAG needs a delivery receipt.
 
-The route is converted to an opaque OpenClaw target. The discussion root becomes OpenClaw's native thread suffix, so all messages in the same discussion resolve to one session while the parent chat remains a different session. `/new` is passed through as an authorized native command; it resets OpenClaw context without changing the Anytype route.
+The route is converted to an opaque OpenClaw target. New targets persist the optional discussion root as a third encoded field and also use it as OpenClaw's native thread suffix; legacy two-field chat targets remain valid. This makes two root discussions under one object distinct even when transient thread context is unavailable. An explicit OpenClaw thread ID overrides the encoded root. `/new` is passed through as an authorized native command; it resets OpenClaw context without changing the Anytype route.
 
 ### OpenClaw to AAG
 
@@ -100,7 +100,7 @@ The payload kind is either `agent-event` or `message-final`. `agent-event` prese
 
 AAG pulls `GET /v1/outbox`. Standalone final records are acknowledged with `POST /v1/outbox/:id/ack`; a run's event records are retained until its terminal event and acknowledged atomically with `POST /v1/outbox/ack`. A process restart therefore reconstructs the run from the plugin's durable records instead of losing already-seen chunks.
 
-Delivered records are retained for seven days. Pending records with no matching live route or no terminal lifecycle event expire after 30 days, preventing abandoned bindings from growing the outbox forever.
+Delivered records are retained for seven days. Pending records with no matching live route or no terminal lifecycle event expire after 30 days, preventing abandoned bindings from growing the outbox forever. Plaintext thinking events are ephemeral: live thinking remains available for streaming, while abandoned pending thinking expires after one hour.
 
 ## Native scheduling and external continuation
 
@@ -115,6 +115,9 @@ For a proactive job that has never received an Anytype message, use OpenClaw's n
 - OpenClaw emits sanitized thinking events, not hidden model chain-of-thought. AAG may display only the safe progress text present in those events.
 - The final channel delivery and assistant event stream describe the same run. AAG must deduplicate using the idempotency key and reconcile by session/run/output cycle.
 - A session becomes eligible for event mirroring only after its route binding exists. This prevents output from unrelated OpenClaw sessions leaking into Anytype.
+- Pull recovery matches deliveries carrying `sessionKey` only against that exact active key. Route fallback applies only to deliveries without a session key, so output from a pre-`/new` generation cannot leak into the replacement session.
+- AAG binds the route only after OpenClaw accepts a run, using the canonical `agent:<id>:...` session key returned in that acknowledgement. The requested alias is not written to the plugin binding table.
+- Unacknowledged outbound records are durable across restarts. Delivered records and owned-run markers are retained for seven days; abandoned pending records are retained for 30 days, except plaintext thinking events, which expire after one hour. Cleanup never cancels or times out an OpenClaw run.
 - One plugin process may host multiple configured accounts, but every account needs a distinct loopback port and SQLite path.
 
 ## Package checks

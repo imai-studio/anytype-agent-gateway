@@ -34,7 +34,7 @@ export declare class DiscussionAnytypePort implements AnytypePort {
     }): Promise<string>;
     editMessage(_spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[]): Promise<void>;
     deleteMessage(_spaceId: string, chatId: string, messageId: string): Promise<void>;
-    ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean): Promise<void>;
+    ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean, participantId?: string): Promise<void>;
     stream(spaceId: string, chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent>;
     resolveSpace(selector: {
         id?: string;

@@ -25,13 +25,19 @@ interface LaunchdPlistOptions {
 export async function installService(configPath: string): Promise<void> {
   if (process.platform === "linux") return installSystemdService(configPath);
   if (process.platform === "darwin") return installLaunchdService(configPath);
-  throw new Error("Service installation supports Linux systemd user services and macOS launchd agents");
+  throw new Error(
+    "Service installation supports Linux systemd user services and macOS launchd agents",
+  );
 }
 
-export async function serviceCommand(command: "status" | "restart" | "stop" | "logs"): Promise<void> {
+export async function serviceCommand(
+  command: "status" | "restart" | "stop" | "logs",
+): Promise<void> {
   if (process.platform === "linux") return systemdCommand(command);
   if (process.platform === "darwin") return launchdCommand(command);
-  throw new Error("Service management supports Linux systemd user services and macOS launchd agents");
+  throw new Error(
+    "Service management supports Linux systemd user services and macOS launchd agents",
+  );
 }
 
 async function installSystemdService(configPath: string): Promise<void> {
@@ -39,10 +45,21 @@ async function installSystemdService(configPath: string): Promise<void> {
   const config = await loadConfig(configPath);
   const localAnytype = usesLocalHeadlessAnytype(config.anytype.apiBase);
   const executable = resolve(dirname(fileURLToPath(import.meta.url)), "cli.js");
-  await Promise.all([access(resolve(configPath), constants.R_OK), access(executable, constants.R_OK), access(resolve(process.execPath), constants.X_OK)]);
+  await Promise.all([
+    access(resolve(configPath), constants.R_OK),
+    access(executable, constants.R_OK),
+    access(resolve(process.execPath), constants.X_OK),
+  ]);
   const target = `${home}/.config/systemd/user/${systemdServiceName}`;
-  if (localAnytype) await installAnytypeUnitIfMissing(home, config.anytype.cli.command, config.anytype.cli.dataPath);
-  const dependencies = localAnytype ? " network-online.target anytype.service" : " network-online.target";
+  if (localAnytype)
+    await installAnytypeUnitIfMissing(
+      home,
+      config.anytype.cli.command,
+      config.anytype.cli.dataPath,
+    );
+  const dependencies = localAnytype
+    ? " network-online.target anytype.service"
+    : " network-online.target";
   const pathEnvironment = servicePathEnvironment(process.execPath);
   const unit = `[Unit]\nDescription=Anytype Agent Gateway\nAfter=${dependencies.trim()}\nWants=${dependencies.trim()}\n\n[Service]\nType=simple\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(executable)} run --config ${systemdQuote(resolve(configPath))}\nEnvironment=${systemdQuote(`PATH=${pathEnvironment}`)}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
   await mkdir(dirname(target), { recursive: true });
@@ -53,7 +70,10 @@ async function installSystemdService(configPath: string): Promise<void> {
 }
 
 async function systemdCommand(command: "status" | "restart" | "stop" | "logs"): Promise<void> {
-  const args = command === "logs" ? ["--user", "-u", systemdServiceName, "-f"] : ["--user", ...(command === "status" ? ["--no-pager"] : []), command, systemdServiceName];
+  const args =
+    command === "logs"
+      ? ["--user", "-u", systemdServiceName, "-f"]
+      : ["--user", ...(command === "status" ? ["--no-pager"] : []), command, systemdServiceName];
   await spawnInherited(command === "logs" ? "journalctl" : "systemctl", args, command);
 }
 
@@ -66,7 +86,7 @@ async function installLaunchdService(configPath: string): Promise<void> {
   await Promise.all([
     access(absoluteConfigPath, constants.R_OK),
     access(cliPath, constants.R_OK),
-    access(nodePath, constants.X_OK)
+    access(nodePath, constants.X_OK),
   ]);
 
   const launchAgentsDirectory = join(home, "Library", "LaunchAgents");
@@ -89,7 +109,7 @@ async function installLaunchdService(configPath: string): Promise<void> {
     stdoutPath,
     stderrPath,
     pathEnvironment: launchdPathEnvironment(nodePath),
-    ...(dependency ? { dependencyLabel: dependency.label } : {})
+    ...(dependency ? { dependencyLabel: dependency.label } : {}),
   });
   await writePrivateFileAtomic(target, plist);
 
@@ -117,8 +137,22 @@ async function launchdCommand(command: "status" | "restart" | "stop" | "logs"): 
     return;
   }
   if (command === "logs") {
-    await access(plistPath, constants.R_OK).catch(() => { throw new Error("AAG launch agent is not installed; run `aag service install --config <path>` first"); });
-    await spawnInherited("/usr/bin/tail", ["-n", "100", "-F", join(logsDirectory, "gateway.log"), join(logsDirectory, "gateway.error.log")], command);
+    await access(plistPath, constants.R_OK).catch(() => {
+      throw new Error(
+        "AAG launch agent is not installed; run `aag service install --config <path>` first",
+      );
+    });
+    await spawnInherited(
+      "/usr/bin/tail",
+      [
+        "-n",
+        "100",
+        "-F",
+        join(logsDirectory, "gateway.log"),
+        join(logsDirectory, "gateway.error.log"),
+      ],
+      command,
+    );
     return;
   }
   if (command === "stop") {
@@ -129,14 +163,19 @@ async function launchdCommand(command: "status" | "restart" | "stop" | "logs"): 
     return;
   }
 
-  await access(plistPath, constants.R_OK).catch(() => { throw new Error("AAG launch agent is not installed; run `aag service install --config <path>` first"); });
+  await access(plistPath, constants.R_OK).catch(() => {
+    throw new Error(
+      "AAG launch agent is not installed; run `aag service install --config <path>` first",
+    );
+  });
   const installedPlist = await readFile(plistPath, "utf8");
   if (installedPlist.includes("<key>OtherJobEnabled</key>")) {
     const dependency = await readAnytypeLaunchAgent(home);
     await ensureLaunchdJob(domain, dependency.label, dependency.path);
   }
   await runProcess("/bin/launchctl", ["enable", serviceTarget]);
-  if (!await launchdJobIsLoaded(serviceTarget)) await bootstrapLaunchd(domain, plistPath, serviceTarget);
+  if (!(await launchdJobIsLoaded(serviceTarget)))
+    await bootstrapLaunchd(domain, plistPath, serviceTarget);
   await runProcess("/bin/launchctl", ["kickstart", "-k", serviceTarget]);
 }
 
@@ -185,7 +224,9 @@ export function buildLaunchdPlist(options: LaunchdPlistOptions): string {
 
 function usesLocalHeadlessAnytype(apiBase: string): boolean {
   const apiUrl = new URL(apiBase);
-  return ["127.0.0.1", "localhost", "::1"].includes(apiUrl.hostname) && (apiUrl.port || "80") === "31012";
+  return (
+    ["127.0.0.1", "localhost", "::1"].includes(apiUrl.hostname) && (apiUrl.port || "80") === "31012"
+  );
 }
 
 function launchdDomain(): string {
@@ -197,9 +238,18 @@ function launchdDomain(): string {
 async function readAnytypeLaunchAgent(home: string): Promise<{ label: string; path: string }> {
   const path = join(home, "Library", "LaunchAgents", anytypeLaunchAgentName);
   await access(path, constants.R_OK).catch(() => {
-    throw new Error(`Local Anytype API requires the existing headless launch agent at ${path}; run \`anytype service install\` first`);
+    throw new Error(
+      `Local Anytype API requires the existing headless launch agent at ${path}; run \`anytype service install\` first`,
+    );
   });
-  const { stdout } = await runProcess("/usr/bin/plutil", ["-extract", "Label", "raw", "-o", "-", path]);
+  const { stdout } = await runProcess("/usr/bin/plutil", [
+    "-extract",
+    "Label",
+    "raw",
+    "-o",
+    "-",
+    path,
+  ]);
   const label = stdout.trim();
   if (!label) throw new Error(`Anytype launch agent has no Label: ${path}`);
   return { label, path };
@@ -208,7 +258,8 @@ async function readAnytypeLaunchAgent(home: string): Promise<{ label: string; pa
 async function ensureLaunchdJob(domain: string, label: string, plistPath: string): Promise<void> {
   const serviceTarget = `${domain}/${label}`;
   await runProcess("/bin/launchctl", ["enable", serviceTarget]);
-  if (!await launchdJobIsLoaded(serviceTarget)) await bootstrapLaunchd(domain, plistPath, serviceTarget);
+  if (!(await launchdJobIsLoaded(serviceTarget)))
+    await bootstrapLaunchd(domain, plistPath, serviceTarget);
   await runProcess("/bin/launchctl", ["kickstart", serviceTarget]);
 }
 
@@ -221,13 +272,21 @@ async function launchdJobIsLoaded(serviceTarget: string): Promise<boolean> {
   }
 }
 
-async function bootstrapLaunchd(domain: string, plistPath: string, serviceTarget: string): Promise<void> {
-  try { await runProcess("/bin/launchctl", ["bootstrap", domain, plistPath]); }
-  catch (error) {
-    await new Promise(resolvePromise => setTimeout(resolvePromise, 250));
+async function bootstrapLaunchd(
+  domain: string,
+  plistPath: string,
+  serviceTarget: string,
+): Promise<void> {
+  try {
+    await runProcess("/bin/launchctl", ["bootstrap", domain, plistPath]);
+  } catch (error) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
     if (await launchdJobIsLoaded(serviceTarget)) return;
-    try { await runProcess("/bin/launchctl", ["bootstrap", domain, plistPath]); }
-    catch { throw error; }
+    try {
+      await runProcess("/bin/launchctl", ["bootstrap", domain, plistPath]);
+    } catch {
+      throw error;
+    }
   }
 }
 
@@ -235,18 +294,31 @@ async function waitForLaunchdUnloaded(serviceTarget: string): Promise<void> {
   // launchd may keep a booted-out KeepAlive job visible for several seconds
   // while it tears down the process and dependency graph.
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (!await launchdJobIsLoaded(serviceTarget)) return;
-    await new Promise(resolvePromise => setTimeout(resolvePromise, 100));
+    if (!(await launchdJobIsLoaded(serviceTarget))) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
   throw new Error(`launchd did not unload ${serviceTarget}`);
 }
 
 function servicePathEnvironment(nodePath: string): string {
-  const paths = [dirname(nodePath), ...(process.env.PATH ?? "").split(":"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
-  return [...new Set(paths.filter(path => path && isAbsolute(path)).map(path => resolve(path)))].join(":");
+  const paths = [
+    dirname(nodePath),
+    ...(process.env.PATH ?? "").split(":"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ];
+  return [
+    ...new Set(paths.filter((path) => path && isAbsolute(path)).map((path) => resolve(path))),
+  ].join(":");
 }
 
-function launchdPathEnvironment(nodePath: string): string { return servicePathEnvironment(nodePath); }
+function launchdPathEnvironment(nodePath: string): string {
+  return servicePathEnvironment(nodePath);
+}
 
 async function ensurePrivateLogFile(path: string): Promise<void> {
   const handle = await open(path, "a", 0o600);
@@ -255,7 +327,10 @@ async function ensurePrivateLogFile(path: string): Promise<void> {
 }
 
 async function writePrivateFileAtomic(target: string, contents: string): Promise<void> {
-  const temporary = join(dirname(target), `.${basename(target)}.${process.pid}.${randomUUID()}.tmp`);
+  const temporary = join(
+    dirname(target),
+    `.${basename(target)}.${process.pid}.${randomUUID()}.tmp`,
+  );
   try {
     const handle = await open(temporary, "wx", 0o600);
     try {
@@ -276,19 +351,37 @@ async function spawnInherited(command: string, args: string[], description: stri
   await new Promise<void>((resolvePromise, reject) => {
     const childProcess = spawn(command, args, { stdio: "inherit" });
     childProcess.on("error", reject);
-    childProcess.on("close", code => code === 0 ? resolvePromise() : reject(new Error(`${description} exited ${code}`)));
+    childProcess.on("close", (code) =>
+      code === 0 ? resolvePromise() : reject(new Error(`${description} exited ${code}`)),
+    );
   });
 }
 
 function xmlEscape(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
-function systemdQuote(value: string): string { return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`; }
+function systemdQuote(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
 
-async function installAnytypeUnitIfMissing(home: string, command: string, dataPath?: string): Promise<void> {
+async function installAnytypeUnitIfMissing(
+  home: string,
+  command: string,
+  dataPath?: string,
+): Promise<void> {
   const target = `${home}/.config/systemd/user/anytype.service`;
-  try { await access(target); return; } catch { /* Create only when no operator-owned unit exists. */ }
+  try {
+    await access(target);
+    return;
+  } catch {
+    /* Create only when no operator-owned unit exists. */
+  }
   const environment = dataPath ? `Environment=${systemdQuote(`DATA_PATH=${dataPath}`)}\n` : "";
   const unit = `[Unit]\nDescription=Anytype headless service for AAG\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\n${environment}ExecStart=${systemdQuote(command)} serve --quiet\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
   await mkdir(dirname(target), { recursive: true });

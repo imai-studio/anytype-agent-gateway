@@ -65,6 +65,10 @@ describe("BridgeServer", () => {
       headers: { authorization: "Bearer test-token-that-is-long-enough" },
     });
     expect(await status.json()).toEqual({ status: "delivered" });
+    const malformed = await fetch(`${url}/v1/inbound/%E0%A4%A`, {
+      headers: { authorization: "Bearer test-token-that-is-long-enough" },
+    });
+    expect(malformed.status).toBe(400);
   });
 
   it("exposes durable pull and explicit acknowledgement for AAG recovery", async () => {
@@ -98,35 +102,118 @@ describe("BridgeServer", () => {
     expect(store.pendingDeliveries()).toEqual([]);
   });
 
-  it("filters pull recovery by either the bound session or the exact Anytype route", async () => {
+  it("requires exact session identity when present and uses route only for unbound deliveries", async () => {
     const store = makeStore();
-    const matchingRoute = createDelivery({ sourceKey: "route", accountId: "default", route: { spaceId: "space", chatId: "chat" }, kind: "message-final", message: { text: "scheduled" } });
-    const matchingSession = createDelivery({ sourceKey: "session", accountId: "default", sessionKey: "native", route: { spaceId: "other", chatId: "other" }, kind: "agent-event", agentEvent: { runId: "run", seq: 1, stream: "lifecycle", timestamp: 1, data: { phase: "completed" } } });
-    const unrelated = createDelivery({ sourceKey: "unrelated", accountId: "default", route: { spaceId: "elsewhere", chatId: "elsewhere" }, kind: "message-final", message: { text: "no" } });
+    const matchingRoute = createDelivery({
+      sourceKey: "route",
+      accountId: "default",
+      route: { spaceId: "space", chatId: "chat" },
+      kind: "message-final",
+      message: { text: "scheduled" },
+    });
+    const matchingSession = createDelivery({
+      sourceKey: "session",
+      accountId: "default",
+      sessionKey: "native",
+      route: { spaceId: "other", chatId: "other" },
+      kind: "agent-event",
+      agentEvent: {
+        runId: "run",
+        seq: 1,
+        stream: "lifecycle",
+        timestamp: 1,
+        data: { phase: "completed" },
+      },
+    });
+    const staleGeneration = createDelivery({
+      sourceKey: "stale-session",
+      accountId: "default",
+      sessionKey: "native:old-generation",
+      route: { spaceId: "space", chatId: "chat" },
+      kind: "agent-event",
+      agentEvent: {
+        runId: "old-run",
+        seq: 1,
+        stream: "assistant",
+        timestamp: 1,
+        data: { text: "must not leak after /new" },
+      },
+    });
+    const unrelated = createDelivery({
+      sourceKey: "unrelated",
+      accountId: "default",
+      route: { spaceId: "elsewhere", chatId: "elsewhere" },
+      kind: "message-final",
+      message: { text: "no" },
+    });
     store.putDelivery(matchingRoute);
     store.putDelivery(matchingSession);
+    store.putDelivery(staleGeneration);
     store.putDelivery(unrelated);
-    const server = new BridgeServer({ host: "127.0.0.1", port: 0, token: "test-token-that-is-long-enough", store, onInbound: async () => undefined });
+    const server = new BridgeServer({
+      host: "127.0.0.1",
+      port: 0,
+      token: "test-token-that-is-long-enough",
+      store,
+      onInbound: async () => undefined,
+    });
     servers.push(server);
     await server.start();
     const query = new URLSearchParams({ sessionKey: "native", spaceId: "space", chatId: "chat" });
-    const response = await fetch(`http://127.0.0.1:${server.address()!.port}/v1/outbox?${query}`, { headers: { authorization: "Bearer test-token-that-is-long-enough" } });
-    const body = await response.json() as { deliveries: Array<{ id: string }> };
-    expect(body.deliveries.map(delivery => delivery.id).sort()).toEqual([matchingRoute.id, matchingSession.id].sort());
+    const response = await fetch(`http://127.0.0.1:${server.address()!.port}/v1/outbox?${query}`, {
+      headers: { authorization: "Bearer test-token-that-is-long-enough" },
+    });
+    const body = (await response.json()) as { deliveries: Array<{ id: string }> };
+    expect(body.deliveries.map((delivery) => delivery.id).sort()).toEqual(
+      [matchingRoute.id, matchingSession.id].sort(),
+    );
   });
 
   it("acknowledges a completed run's event records atomically", async () => {
     const store = makeStore();
-    const first = createDelivery({ sourceKey: "batch-1", accountId: "default", route: { spaceId: "space", chatId: "chat" }, kind: "agent-event", agentEvent: { runId: "run", seq: 1, stream: "assistant", timestamp: 1, data: { delta: "hello" } } });
-    const terminal = createDelivery({ sourceKey: "batch-2", accountId: "default", route: { spaceId: "space", chatId: "chat" }, kind: "agent-event", agentEvent: { runId: "run", seq: 2, stream: "lifecycle", timestamp: 2, data: { phase: "completed" } } });
+    const first = createDelivery({
+      sourceKey: "batch-1",
+      accountId: "default",
+      route: { spaceId: "space", chatId: "chat" },
+      kind: "agent-event",
+      agentEvent: {
+        runId: "run",
+        seq: 1,
+        stream: "assistant",
+        timestamp: 1,
+        data: { delta: "hello" },
+      },
+    });
+    const terminal = createDelivery({
+      sourceKey: "batch-2",
+      accountId: "default",
+      route: { spaceId: "space", chatId: "chat" },
+      kind: "agent-event",
+      agentEvent: {
+        runId: "run",
+        seq: 2,
+        stream: "lifecycle",
+        timestamp: 2,
+        data: { phase: "completed" },
+      },
+    });
     store.putDelivery(first);
     store.putDelivery(terminal);
-    const server = new BridgeServer({ host: "127.0.0.1", port: 0, token: "test-token-that-is-long-enough", store, onInbound: async () => undefined });
+    const server = new BridgeServer({
+      host: "127.0.0.1",
+      port: 0,
+      token: "test-token-that-is-long-enough",
+      store,
+      onInbound: async () => undefined,
+    });
     servers.push(server);
     await server.start();
     const response = await fetch(`http://127.0.0.1:${server.address()!.port}/v1/outbox/ack`, {
       method: "POST",
-      headers: { authorization: "Bearer test-token-that-is-long-enough", "content-type": "application/json" },
+      headers: {
+        authorization: "Bearer test-token-that-is-long-enough",
+        "content-type": "application/json",
+      },
       body: JSON.stringify({ ids: [first.id, terminal.id] }),
     });
     expect(response.status).toBe(200);
@@ -165,12 +252,21 @@ describe("BridgeServer", () => {
 
   it("persists owned run registration across AAG restarts", async () => {
     const store = makeStore();
-    const server = new BridgeServer({ host: "127.0.0.1", port: 0, token: "test-token-that-is-long-enough", store, onInbound: async () => undefined });
+    const server = new BridgeServer({
+      host: "127.0.0.1",
+      port: 0,
+      token: "test-token-that-is-long-enough",
+      store,
+      onInbound: async () => undefined,
+    });
     servers.push(server);
     await server.start();
     const response = await fetch(`http://127.0.0.1:${server.address()!.port}/v1/owned-runs`, {
       method: "POST",
-      headers: { authorization: "Bearer test-token-that-is-long-enough", "content-type": "application/json" },
+      headers: {
+        authorization: "Bearer test-token-that-is-long-enough",
+        "content-type": "application/json",
+      },
       body: JSON.stringify({ runId: "owned-run" }),
     });
     expect(response.status).toBe(200);

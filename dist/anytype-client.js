@@ -6,6 +6,7 @@ export class AnytypeClient {
     headers;
     participantId;
     localReactions = new Set();
+    reactionTails = new Map();
     writeTail = Promise.resolve();
     constructor(base, headers, participantId) {
         this.base = base;
@@ -34,9 +35,15 @@ export class AnytypeClient {
         for (let attempt = 0; attempt < attempts; attempt += 1) {
             try {
                 const timeout = streaming ? undefined : AbortSignal.timeout(15_000);
-                const signal = timeout && init.signal ? AbortSignal.any([timeout, init.signal]) : timeout ?? init.signal;
+                const signal = timeout && init.signal
+                    ? AbortSignal.any([timeout, init.signal])
+                    : (timeout ?? init.signal);
                 const contentHeaders = init.body instanceof FormData ? {} : { "Content-Type": "application/json" };
-                const response = await fetch(`${this.base}${path}`, { ...init, ...(signal ? { signal } : {}), headers: { ...this.headers, ...contentHeaders, ...init.headers } });
+                const response = await fetch(`${this.base}${path}`, {
+                    ...init,
+                    ...(signal ? { signal } : {}),
+                    headers: { ...this.headers, ...contentHeaders, ...init.headers },
+                });
                 if (response.ok)
                     return response;
                 const retryable = response.status === 429 || (method === "GET" && response.status >= 500);
@@ -46,7 +53,7 @@ export class AnytypeClient {
                 if (attempt + 1 >= attempts || !retryable)
                     throw error;
                 lastError = error;
-                await new Promise(resolve => setTimeout(resolve, retryAfter ?? 250 * 2 ** attempt));
+                await new Promise((resolve) => setTimeout(resolve, retryAfter ?? 250 * 2 ** attempt));
                 continue;
             }
             catch (error) {
@@ -54,7 +61,7 @@ export class AnytypeClient {
                 if (attempt + 1 >= attempts || init.signal?.aborted || method !== "GET")
                     throw error;
             }
-            await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
+            await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
         }
         throw lastError;
     }
@@ -76,15 +83,18 @@ export class AnytypeClient {
     }
     async listChats(spaceId) {
         const chats = await this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/chats`);
-        return chats.map(chat => ({ id: chat.id, name: chat.name ?? chat.id }));
+        return chats.map((chat) => ({ id: chat.id, name: chat.name ?? chat.id }));
     }
     async getMessage(spaceId, chatId, messageId) {
-        const json = await (await this.request(this.messagePath(spaceId, chatId, messageId))).json();
+        const json = (await (await this.request(this.messagePath(spaceId, chatId, messageId))).json());
         return json.message;
     }
     async listMessages(spaceId, chatId, limit, afterOrderId) {
-        const query = new URLSearchParams({ limit: String(limit), ...(afterOrderId ? { after_order_id: afterOrderId } : {}) });
-        const json = await (await this.request(`${this.messagesPath(spaceId, chatId)}?${query}`)).json();
+        const query = new URLSearchParams({
+            limit: String(limit),
+            ...(afterOrderId ? { after_order_id: afterOrderId } : {}),
+        });
+        const json = (await (await this.request(`${this.messagesPath(spaceId, chatId)}?${query}`)).json());
         return json.messages ?? [];
     }
     async sendMessage(spaceId, chatId, input) {
@@ -93,33 +103,61 @@ export class AnytypeClient {
             body.reply_to_message_id = input.replyTo;
         if (input.marks?.length)
             body.marks = input.marks;
-        const json = await (await this.request(this.messagesPath(spaceId, chatId), { method: "POST", body: JSON.stringify(body) })).json();
+        const json = (await (await this.request(this.messagesPath(spaceId, chatId), {
+            method: "POST",
+            body: JSON.stringify(body),
+        })).json());
         if (!json.message_id)
             throw new Error("Anytype returned no message_id");
         return json.message_id;
     }
     async editMessage(spaceId, chatId, messageId, text, marks) {
-        await this.request(this.messagePath(spaceId, chatId, messageId), { method: "PATCH", body: JSON.stringify({ text, style: "paragraph", ...(marks?.length ? { marks } : {}) }) });
+        await this.request(this.messagePath(spaceId, chatId, messageId), {
+            method: "PATCH",
+            body: JSON.stringify({ text, style: "paragraph", ...(marks?.length ? { marks } : {}) }),
+        });
     }
     async deleteMessage(spaceId, chatId, messageId) {
         await this.request(this.messagePath(spaceId, chatId, messageId), { method: "DELETE" });
     }
-    async ensureReaction(spaceId, chatId, messageId, emoji, present) {
+    async ensureReaction(spaceId, chatId, messageId, emoji, present, participantId = this.participantId) {
+        const key = `${spaceId}:${chatId}:${messageId}:${emoji}`;
+        const previous = this.reactionTails.get(key) ?? Promise.resolve();
+        const current = previous.then(() => this.ensureReactionNow(spaceId, chatId, messageId, emoji, present, participantId));
+        const tail = current.catch(() => undefined);
+        this.reactionTails.set(key, tail);
+        try {
+            await current;
+        }
+        finally {
+            if (this.reactionTails.get(key) === tail)
+                this.reactionTails.delete(key);
+        }
+    }
+    async ensureReactionNow(spaceId, chatId, messageId, emoji, present, participantId) {
         const message = await this.getMessage(spaceId, chatId, messageId);
         const reactors = message.reactions?.[emoji] ?? [];
         const key = `${spaceId}:${chatId}:${messageId}:${emoji}`;
-        const remoteMatch = this.participantId ? reactors.some(reactor => sameIdentity(reactor, this.participantId)) : false;
+        const remoteMatch = participantId
+            ? reactors.some((reactor) => sameIdentity(reactor, participantId))
+            : false;
         const already = remoteMatch || this.localReactions.has(key);
         if (already === present)
             return;
-        await this.request(`${this.messagePath(spaceId, chatId, messageId)}/reactions`, { method: "POST", body: JSON.stringify({ emoji }) });
+        await this.request(`${this.messagePath(spaceId, chatId, messageId)}/reactions`, {
+            method: "POST",
+            body: JSON.stringify({ emoji }),
+        });
         if (present)
             this.localReactions.add(key);
         else
             this.localReactions.delete(key);
     }
     async *stream(spaceId, chatId, signal) {
-        const response = await this.request(`${this.messagesPath(spaceId, chatId)}/stream?limit=50`, { headers: { Accept: "text/event-stream", "Anytype-Heartbeat-Seconds": "15" }, signal });
+        const response = await this.request(`${this.messagesPath(spaceId, chatId)}/stream?limit=50`, {
+            headers: { Accept: "text/event-stream", "Anytype-Heartbeat-Seconds": "15" },
+            signal,
+        });
         if (!response.body)
             throw new Error("Anytype event stream had no body");
         const decoder = new TextDecoder();
@@ -148,57 +186,114 @@ export class AnytypeClient {
         }
     }
     async getObject(spaceId, objectId) {
-        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`)).json();
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`)).json());
         const object = json.object ?? json;
-        return { id: object.id ?? objectId, ...(object.name ? { name: object.name } : {}), ...(object.markdown ? { markdown: object.markdown } : {}) };
+        return { ...object, id: object.id ?? objectId };
+    }
+    async listTypes(spaceId) {
+        return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/types`);
+    }
+    async getType(spaceId, typeId) {
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/types/${encodeURIComponent(typeId)}`)).json());
+        return json.type ?? json;
+    }
+    async listProperties(spaceId) {
+        return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/properties`);
+    }
+    async getProperty(spaceId, propertyId) {
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/properties/${encodeURIComponent(propertyId)}`)).json());
+        return json.property ?? json;
+    }
+    async listPropertyTags(spaceId, propertyId) {
+        return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/properties/${encodeURIComponent(propertyId)}/tags`);
+    }
+    async listTemplates(spaceId, typeId) {
+        return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/types/${encodeURIComponent(typeId)}/templates`);
     }
     async searchObjects(spaceId, offset, limit) {
-        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?offset=${offset}&limit=${limit}`, { method: "POST", body: JSON.stringify({ query: "" }) })).json();
-        return (json.data ?? []).map((item) => ({ id: item.id, ...(item.name ? { name: item.name } : {}), ...(item.type?.key ? { type: item.type.key } : item.type ? { type: String(item.type) } : {}) }));
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?offset=${offset}&limit=${limit}`, { method: "POST", body: JSON.stringify({ query: "" }) })).json());
+        return (json.data ?? []).map((item) => ({
+            id: item.id,
+            ...(item.name ? { name: item.name } : {}),
+            ...(item.type?.key ? { type: item.type.key } : item.type ? { type: String(item.type) } : {}),
+        }));
     }
     async searchSpace(spaceId, input) {
-        const query = new URLSearchParams({ offset: String(input.offset ?? 0), limit: String(input.limit ?? 100) });
-        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?${query}`, { method: "POST", body: JSON.stringify({ query: input.query ?? "", ...(input.types?.length ? { types: input.types } : {}) }) })).json();
+        const query = new URLSearchParams({
+            offset: String(input.offset ?? 0),
+            limit: String(input.limit ?? 100),
+        });
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?${query}`, {
+            method: "POST",
+            body: JSON.stringify({
+                query: input.query ?? "",
+                ...(input.types?.length ? { types: input.types } : {}),
+            }),
+        })).json());
         return Array.isArray(json.data) ? json.data : [];
     }
     async createObject(spaceId, input) {
-        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects`, { method: "POST", body: JSON.stringify(input) })).json();
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects`, {
+            method: "POST",
+            body: JSON.stringify(input),
+        })).json());
         return json.object ?? json;
     }
     async updateObject(spaceId, objectId, input) {
-        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "PATCH", body: JSON.stringify(input) })).json();
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "PATCH", body: JSON.stringify(input) })).json());
         return json.object ?? json;
     }
     async archiveObject(spaceId, objectId) {
-        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "DELETE" })).json();
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "DELETE" })).json());
         return json.object ?? json;
     }
     async addObjectsToList(spaceId, listId, objectIds) {
         await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/objects`, { method: "POST", body: JSON.stringify({ objects: objectIds }) });
     }
+    async listViews(spaceId, listId) {
+        return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/views`);
+    }
+    async listViewObjects(spaceId, listId, viewId, page = { offset: 0, limit: 50 }) {
+        const path = `/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/views/${encodeURIComponent(viewId)}/objects?offset=${page.offset}&limit=${page.limit}`;
+        const json = (await (await this.request(path)).json());
+        if (!Array.isArray(json.data))
+            throw new Error(`Anytype ${path} returned an invalid list payload`);
+        return json.data;
+    }
+    async removeObjectFromList(spaceId, listId, objectId) {
+        await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/objects/${encodeURIComponent(objectId)}`, { method: "DELETE" });
+    }
     async uploadFile(spaceId, path) {
         const form = new FormData();
         form.append("file", await openAsBlob(path), basename(path));
-        return await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/files`, { method: "POST", body: form })).json();
+        return (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/files`, {
+            method: "POST",
+            body: form,
+        })).json());
     }
-    messagesPath(spaceId, chatId) { return `/v1/spaces/${encodeURIComponent(spaceId)}/chats/${encodeURIComponent(chatId)}/messages`; }
-    messagePath(spaceId, chatId, messageId) { return `${this.messagesPath(spaceId, chatId)}/${encodeURIComponent(messageId)}`; }
+    messagesPath(spaceId, chatId) {
+        return `/v1/spaces/${encodeURIComponent(spaceId)}/chats/${encodeURIComponent(chatId)}/messages`;
+    }
+    messagePath(spaceId, chatId, messageId) {
+        return `${this.messagesPath(spaceId, chatId)}/${encodeURIComponent(messageId)}`;
+    }
     async listPages(path) {
         const items = [];
         const seen = new Set();
         for (let offset = 0, pageNumber = 0; pageNumber < 100; pageNumber += 1) {
             const separator = path.includes("?") ? "&" : "?";
-            const json = await (await this.request(`${path}${separator}offset=${offset}&limit=100`)).json();
+            const json = (await (await this.request(`${path}${separator}offset=${offset}&limit=100`)).json());
             if (!Array.isArray(json.data))
                 throw new Error(`Anytype ${path} returned an invalid list payload`);
-            const page = json.data.filter(item => typeof item?.id === "string" && !seen.has(item.id));
+            const rawPage = json.data;
+            if (!rawPage.length)
+                break;
+            const page = rawPage.filter((item) => typeof item?.id === "string" && !seen.has(item.id));
             for (const item of page) {
                 seen.add(item.id);
                 items.push(item);
             }
-            if (!page.length)
-                break;
-            offset += page.length;
+            offset += rawPage.length;
         }
         return items;
     }
@@ -215,7 +310,9 @@ function retryAfterMs(value) {
 async function readWithIdleTimeout(reader, signal, timeoutMs) {
     let timer;
     let abort;
-    const timeout = new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`Anytype event stream idle for ${Math.round(timeoutMs / 1000)} seconds`)), timeoutMs); });
+    const timeout = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Anytype event stream idle for ${Math.round(timeoutMs / 1000)} seconds`)), timeoutMs);
+    });
     const aborted = new Promise((_resolve, reject) => {
         abort = () => reject(signal.reason ?? new Error("Anytype event stream aborted"));
         if (signal.aborted)
@@ -234,7 +331,11 @@ async function readWithIdleTimeout(reader, signal, timeoutMs) {
     }
 }
 export function parseSseBlock(block) {
-    const data = block.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+    const data = block
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
     if (!data)
         return undefined;
     const value = JSON.parse(data);

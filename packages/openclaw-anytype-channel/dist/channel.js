@@ -1,7 +1,7 @@
 import { buildChannelOutboundSessionRoute, buildThreadAwareOutboundSessionRoute, createChatChannelPlugin, } from "openclaw/plugin-sdk/channel-core";
 import { createMessageReceiptFromOutboundResults, defineChannelMessageAdapter, } from "openclaw/plugin-sdk/channel-outbound";
 import { DEFAULT_ACCOUNT_ID, anytypePluginConfigSchema, listAnytypeAccountIds, resolveAnytypeAccount, resolveDefaultAnytypeAccountId, } from "./config.js";
-import { decodeRouteTarget, encodeRouteTarget } from "./protocol.js";
+import { decodeRouteTarget, encodeRouteTarget, resolveTargetRoute, } from "./protocol.js";
 export const CHANNEL_ID = "anytype";
 export function createAnytypeChannel(params) {
     const message = defineChannelMessageAdapter({
@@ -16,15 +16,12 @@ export function createAnytypeChannel(params) {
         },
         send: {
             text: async (context) => {
-                const base = decodeRouteTarget(context.to);
-                const threadId = context.threadId == null ? undefined : String(context.threadId);
+                const route = resolveTargetRoute(context.to, context.threadId);
+                const threadId = route.discussionRootId;
                 const result = await params.sendText({
                     cfg: context.cfg,
                     ...(context.accountId === undefined ? {} : { accountId: context.accountId }),
-                    route: {
-                        ...base,
-                        ...(threadId ? { discussionRootId: threadId } : {}),
-                    },
+                    route,
                     text: context.text,
                     ...(context.replyToId ? { replyToId: context.replyToId } : {}),
                 });
@@ -84,7 +81,7 @@ export function createAnytypeChannel(params) {
                     hint: "route:<base64url>",
                 },
                 resolveOutboundSessionRoute: ({ cfg, agentId, accountId, target, replyToId, threadId, currentSessionKey, }) => {
-                    const route = decodeRouteTarget(target);
+                    const route = resolveTargetRoute(target, threadId);
                     const normalizedTarget = encodeRouteTarget(route);
                     const baseRoute = buildChannelOutboundSessionRoute({
                         cfg,
@@ -99,7 +96,7 @@ export function createAnytypeChannel(params) {
                     return buildThreadAwareOutboundSessionRoute({
                         route: baseRoute,
                         ...(replyToId === undefined ? {} : { replyToId }),
-                        ...(threadId === undefined ? {} : { threadId }),
+                        ...(route.discussionRootId ? { threadId: route.discussionRootId } : {}),
                         ...(currentSessionKey === undefined ? {} : { currentSessionKey }),
                         canRecoverCurrentThread: () => true,
                     });
@@ -108,6 +105,7 @@ export function createAnytypeChannel(params) {
                     const decoded = decodeRouteTarget(rawId);
                     return {
                         id: decoded.chatId,
+                        ...(decoded.discussionRootId ? { threadId: decoded.discussionRootId } : {}),
                         baseConversationId: decoded.chatId,
                         parentConversationCandidates: [decoded.chatId],
                     };
@@ -121,14 +119,11 @@ export function createAnytypeChannel(params) {
             attachedResults: {
                 channel: CHANNEL_ID,
                 sendText: async ({ cfg, to, text, accountId, threadId, replyToId }) => {
-                    const route = decodeRouteTarget(to);
+                    const route = resolveTargetRoute(to, threadId);
                     const result = await params.sendText({
                         cfg: cfg,
                         ...(accountId === undefined ? {} : { accountId }),
-                        route: {
-                            ...route,
-                            ...(threadId == null ? {} : { discussionRootId: String(threadId) }),
-                        },
+                        route,
                         text,
                         ...(replyToId ? { replyToId } : {}),
                     });

@@ -5,10 +5,12 @@
 Description=Anytype Agent Gateway
 After=network-online.target anytype.service
 Wants=network-online.target anytype.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:%h/.pnpm-global/bin:%h/.local/share/pnpm:%h/.local/share/pnpm/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/env aag run --config %h/.config/aag/agent.yaml
 Restart=on-failure
 RestartSec=5

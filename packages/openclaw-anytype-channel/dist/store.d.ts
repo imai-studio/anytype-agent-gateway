@@ -26,6 +26,7 @@ export declare class BridgeStore {
     }, now?: number, limit?: number, afterSequence?: number): StoredDelivery[];
     pruneDelivered(before: number): number;
     pruneExpiredPending(before: number): number;
+    pruneExpiredThinking(before: number): number;
     acknowledgeDelivery(id: string, now?: number): void;
     acknowledgeDeliveries(ids: string[], now?: number): void;
     retryDelivery(id: string, error: string, now?: number): void;

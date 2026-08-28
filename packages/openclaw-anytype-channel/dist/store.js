@@ -106,7 +106,9 @@ export class BridgeStore {
         };
     }
     markOwnedRun(runId, now = Date.now()) {
-        this.#db.prepare("INSERT OR REPLACE INTO bridge_owned_runs(run_id,created_at) VALUES(?,?)").run(runId, now);
+        this.#db
+            .prepare("INSERT OR REPLACE INTO bridge_owned_runs(run_id,created_at) VALUES(?,?)")
+            .run(runId, now);
     }
     isOwnedRun(runId) {
         return Boolean(this.#db.prepare("SELECT 1 FROM bridge_owned_runs WHERE run_id=?").get(runId));
@@ -146,6 +148,8 @@ export class BridgeStore {
            AND (
              json_extract(payload, '$.sessionKey') = ?
              OR (
+               json_extract(payload, '$.sessionKey') IS NULL
+               AND
                json_extract(payload, '$.route.spaceId') = ?
                AND json_extract(payload, '$.route.chatId') = ?
                AND COALESCE(json_extract(payload, '$.route.discussionRootId'), '') = ?
@@ -162,11 +166,23 @@ export class BridgeStore {
         }));
     }
     pruneDelivered(before) {
-        return Number(this.#db.prepare("DELETE FROM bridge_outbound WHERE status = 'delivered' AND updated_at < ?").run(before)
-            .changes);
+        return Number(this.#db
+            .prepare("DELETE FROM bridge_outbound WHERE status = 'delivered' AND updated_at < ?")
+            .run(before).changes);
     }
     pruneExpiredPending(before) {
-        return Number(this.#db.prepare("DELETE FROM bridge_outbound WHERE status = 'pending' AND created_at < ?").run(before).changes);
+        return Number(this.#db
+            .prepare("DELETE FROM bridge_outbound WHERE status = 'pending' AND created_at < ?")
+            .run(before).changes);
+    }
+    pruneExpiredThinking(before) {
+        return Number(this.#db
+            .prepare(`DELETE FROM bridge_outbound
+           WHERE status = 'pending'
+             AND created_at < ?
+             AND json_extract(payload, '$.kind') = 'agent-event'
+             AND json_extract(payload, '$.agentEvent.stream') = 'thinking'`)
+            .run(before).changes);
     }
     acknowledgeDelivery(id, now = Date.now()) {
         this.#db
@@ -189,9 +205,7 @@ export class BridgeStore {
         }
     }
     retryDelivery(id, error, now = Date.now()) {
-        const row = this.#db
-            .prepare("SELECT attempts FROM bridge_outbound WHERE id = ?")
-            .get(id);
+        const row = this.#db.prepare("SELECT attempts FROM bridge_outbound WHERE id = ?").get(id);
         const attempts = Number(row?.attempts ?? 0) + 1;
         const delay = Math.min(60_000, 500 * 2 ** Math.min(attempts - 1, 7));
         this.#db

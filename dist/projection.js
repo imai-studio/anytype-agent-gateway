@@ -21,19 +21,32 @@ export class RunProjection {
         this.responseId = responseId;
         this.reactionTargetId = reactionTargetId;
         this.replyTargetId = replyTargetId;
-        this.activeCycle = { id: crypto.randomUUID(), state: "transient", sourceId: undefined, text: config.responses.workingText, replyToMessageId: replyTargetId, messageId: responseId, completed: false };
+        this.activeCycle = {
+            id: crypto.randomUUID(),
+            state: "transient",
+            sourceId: undefined,
+            text: config.responses.workingText,
+            replyToMessageId: replyTargetId,
+            messageId: responseId,
+            completed: false,
+        };
         this.cycles.push(this.activeCycle);
         this.createdMessageIds.add(responseId);
         this.addMentionTargets(mentionTargets);
     }
     static async create(anytype, config, conversation, triggerId, replyTargetId = triggerId, mentionTargets = []) {
-        await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
+        await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true, conversation.selfParticipantId);
         try {
-            const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, { text: config.responses.workingText, replyTo: replyTargetId });
+            const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, {
+                text: config.responses.workingText,
+                replyTo: replyTargetId,
+            });
             return new RunProjection(anytype, config, conversation, responseId, triggerId, replyTargetId, mentionTargets);
         }
         catch (error) {
-            await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, false).catch(() => undefined);
+            await anytype
+                .ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, false, conversation.selfParticipantId)
+                .catch(() => undefined);
             throw error;
         }
     }
@@ -43,10 +56,12 @@ export class RunProjection {
             projection.activeCycle.state = "text";
             projection.activeCycle.text = text;
         }
-        await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
+        await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true, conversation.selfParticipantId);
         return projection;
     }
-    get messageId() { return this.responseId; }
+    get messageId() {
+        return this.responseId;
+    }
     trackMessages(callback) {
         this.onMessage = callback;
         for (const messageId of this.createdMessageIds)
@@ -75,14 +90,21 @@ export class RunProjection {
                 previous.deleted = true;
                 this.emitCycle(previous);
             }
-            await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false);
+            await this.setWorkingReaction(this.reactionTargetId, false);
             this.replyTargetId = replyTargetId;
             this.reactionTargetId = triggerId;
-            const cycle = { id: crypto.randomUUID(), state: "transient", sourceId: undefined, text: this.config.responses.workingText, replyToMessageId: replyTargetId, completed: false };
+            const cycle = {
+                id: crypto.randomUUID(),
+                state: "transient",
+                sourceId: undefined,
+                text: this.config.responses.workingText,
+                replyToMessageId: replyTargetId,
+                completed: false,
+            };
             this.cycles.push(cycle);
             this.activeCycle = cycle;
             await this.createCycleMessageNow(cycle);
-            await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, true);
+            await this.setWorkingReaction(this.reactionTargetId, true);
             return this.responseId;
         });
     }
@@ -106,7 +128,7 @@ export class RunProjection {
         this.closed = true;
         this.cancelScheduledEdit();
         return this.enqueue(async () => {
-            await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false);
+            await this.setWorkingReaction(this.reactionTargetId, false);
             if (result.silent) {
                 if (this.config.responses.silentPlaceholder === "delete")
                     for (const cycle of this.cycles) {
@@ -139,17 +161,37 @@ export class RunProjection {
                 }
                 return "silent";
             }
-            const textCycles = this.cycles.filter(cycle => cycle.state === "text" && !cycle.deleted);
+            const textCycles = this.cycles.filter((cycle) => cycle.state === "text" && !cycle.deleted);
             if (this.activeCycle.state !== "text") {
-                this.activeCycle.state = "text";
-                this.activeCycle.sourceId = "terminal-result";
-                this.activeCycle.text = result.text || "Completed without a text response.";
+                const streamed = textCycles
+                    .map((cycle) => cycle.text.trim())
+                    .filter(Boolean)
+                    .join("\n\n");
+                const terminal = result.text.trim();
+                const tail = streamed && terminal.startsWith(streamed)
+                    ? terminal.slice(streamed.length).trim()
+                    : terminal;
+                if (textCycles.length > 0 && (!tail || sameRenderedText(streamed, terminal))) {
+                    if (this.activeCycle.messageId && !this.activeCycle.deleted)
+                        await this.anytype.deleteMessage(this.conversation.spaceId, this.conversation.chatId, this.activeCycle.messageId);
+                    this.activeCycle.deleted = true;
+                }
+                else {
+                    this.activeCycle.state = "text";
+                    this.activeCycle.sourceId = "terminal-result";
+                    this.activeCycle.text = tail || "Completed without a text response.";
+                }
             }
             else if (result.text && textCycles.length === 1) {
                 this.activeCycle.text = result.text;
             }
-            else if (result.text && textCycles.length > 1 && !textCycles.some(cycle => sameRenderedText(cycle.text, result.text))) {
-                const joined = textCycles.map(cycle => cycle.text.trim()).filter(Boolean).join("\n\n");
+            else if (result.text &&
+                textCycles.length > 1 &&
+                !textCycles.some((cycle) => sameRenderedText(cycle.text, result.text))) {
+                const joined = textCycles
+                    .map((cycle) => cycle.text.trim())
+                    .filter(Boolean)
+                    .join("\n\n");
                 const last = textCycles.at(-1);
                 if (sameRenderedText(joined, result.text)) {
                     // The runtime returned all streamed text parts flattened together.
@@ -171,7 +213,9 @@ export class RunProjection {
         this.closed = true;
         this.cancelScheduledEdit();
         await this.enqueue(async () => {
-            await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false).catch(() => undefined);
+            await this.setWorkingReaction(this.reactionTargetId, false).catch(() => undefined);
+            if (this.activeCycle.state === "text")
+                await this.editCycleNow(this.activeCycle);
             const message = error instanceof Error ? error.message : String(error);
             await this.writeTerminalNotice(`Agent run failed: ${message.slice(0, 1000)}`);
             this.activeCycle.failed = true;
@@ -182,7 +226,9 @@ export class RunProjection {
         this.closed = true;
         this.cancelScheduledEdit();
         await this.enqueue(async () => {
-            await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false).catch(() => undefined);
+            await this.setWorkingReaction(this.reactionTargetId, false).catch(() => undefined);
+            if (this.activeCycle.state === "text")
+                await this.editCycleNow(this.activeCycle);
             await this.writeTerminalNotice(message);
             this.activeCycle.failed = true;
             this.emitCycle(this.activeCycle);
@@ -209,14 +255,28 @@ export class RunProjection {
                 this.schedule(current);
             return;
         }
-        this.startCycle({ id: crypto.randomUUID(), state: "text", sourceId, text, replyToMessageId: this.replyTargetId, completed: false });
+        this.startCycle({
+            id: crypto.randomUUID(),
+            state: "text",
+            sourceId,
+            text,
+            replyToMessageId: this.replyTargetId,
+            completed: false,
+        });
     }
     updateThinking(text, sourceId, replace) {
         if (!text && !replace)
             return;
         const current = this.activeCycle;
         if (current.state === "text") {
-            this.startCycle({ id: crypto.randomUUID(), state: "thinking", sourceId, text, replyToMessageId: this.replyTargetId, completed: false });
+            this.startCycle({
+                id: crypto.randomUUID(),
+                state: "thinking",
+                sourceId,
+                text,
+                replyToMessageId: this.replyTargetId,
+                completed: false,
+            });
             return;
         }
         if (current.state === "transient") {
@@ -272,8 +332,10 @@ export class RunProjection {
         const raw = cycle.text || this.config.responses.workingText;
         const labeled = cycle.state === "thinking" ? `Thinking…\n\n${raw}` : raw;
         const rendered = renderForAnytype(labeled, this.config, [...this.mentionTargets.values()]);
-        const text = truncateResponse(rendered.text, this.config.responses.maxCharacters);
-        return { text, marks: rendered.marks.filter(mark => (mark.to ?? 0) <= text.length) };
+        return truncateRendered(rendered, this.config.responses.maxCharacters);
+    }
+    setWorkingReaction(messageId, present) {
+        return this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, messageId, this.config.responses.workingReaction, present, this.conversation.selfParticipantId);
     }
     async flushCycle(cycle) {
         await this.enqueue(() => this.editCycleNow(cycle));
@@ -308,7 +370,16 @@ export class RunProjection {
         this.activeCycle.completed = true;
         this.emitCycle(this.activeCycle);
         const messageId = await this.anytype.sendMessage(this.conversation.spaceId, this.conversation.chatId, { text, replyTo: this.replyTargetId });
-        const cycle = { id: crypto.randomUUID(), state: "transient", sourceId: "terminal-notice", text, replyToMessageId: this.replyTargetId, messageId, completed: false, failed: true };
+        const cycle = {
+            id: crypto.randomUUID(),
+            state: "transient",
+            sourceId: "terminal-notice",
+            text,
+            replyToMessageId: this.replyTargetId,
+            messageId,
+            completed: false,
+            failed: true,
+        };
         this.cycles.push(cycle);
         this.activeCycle = cycle;
         this.responseId = messageId;
@@ -328,8 +399,20 @@ export class RunProjection {
             id: cycle.id,
             messageId: cycle.messageId,
             replyToMessageId: cycle.replyToMessageId,
-            phase: cycle.failed ? "error" : cycle.state === "thinking" ? "thinking" : cycle.state === "text" ? "answer" : "working",
-            state: cycle.deleted ? "deleted" : cycle.failed ? "failed" : cycle.completed ? "complete" : "open",
+            phase: cycle.failed
+                ? "error"
+                : cycle.state === "thinking"
+                    ? "thinking"
+                    : cycle.state === "text"
+                        ? "answer"
+                        : "working",
+            state: cycle.deleted
+                ? "deleted"
+                : cycle.failed
+                    ? "failed"
+                    : cycle.completed
+                        ? "complete"
+                        : "open",
             text: cycle.text,
         });
     }
@@ -337,14 +420,23 @@ export class RunProjection {
 function sameRenderedText(left, right) {
     return left.trim().replace(/\s+/g, " ") === right.trim().replace(/\s+/g, " ");
 }
-function truncateResponse(text, maxCharacters) {
-    if (text.length <= maxCharacters)
-        return text;
+function truncateRendered(rendered, maxCharacters) {
+    if (rendered.text.length <= maxCharacters)
+        return { text: rendered.text, marks: clampMarks(rendered.marks, rendered.text.length) };
     const notice = "\n\n[Response truncated by AAG]";
-    let prefix = text.slice(0, Math.max(0, maxCharacters - notice.length));
+    let prefix = rendered.text.slice(0, Math.max(0, maxCharacters - notice.length));
     if (prefix && /[\uD800-\uDBFF]/.test(prefix.at(-1)))
         prefix = prefix.slice(0, -1);
-    return `${prefix}${notice}`;
+    return { text: `${prefix}${notice}`, marks: clampMarks(rendered.marks, prefix.length) };
+}
+function clampMarks(marks, contentLength) {
+    return marks.flatMap((mark) => {
+        if (mark.from === undefined || mark.to === undefined)
+            return [];
+        const from = Math.max(0, Math.min(mark.from, contentLength));
+        const to = Math.max(from, Math.min(mark.to, contentLength));
+        return to > from ? [{ ...mark, from, to }] : [];
+    });
 }
 export function renderCoordination(text, config, dynamicTargets = []) {
     const peers = new Map();
@@ -352,7 +444,11 @@ export function renderCoordination(text, config, dynamicTargets = []) {
         for (const name of [peer.name, ...peer.aliases])
             peers.set(name.toLocaleLowerCase(), peer);
     for (const target of dynamicTargets)
-        peers.set(target.name.toLocaleLowerCase(), { name: target.name, participantId: target.participantId, aliases: [] });
+        peers.set(target.name.toLocaleLowerCase(), {
+            name: target.name,
+            participantId: target.participantId,
+            aliases: [],
+        });
     const marks = [];
     const tagged = new Set();
     const matcher = /\[\[AAG_MENTION:([^\]\n]+)\]\]/gi;
@@ -362,20 +458,26 @@ export function renderCoordination(text, config, dynamicTargets = []) {
         rendered += text.slice(cursor, match.index);
         cursor = match.index + match[0].length;
         const peer = peers.get((match[1] ?? "").trim().replace(/^@/, "").toLocaleLowerCase());
-        if (!peer || (!tagged.has(peer.participantId) && tagged.size >= config.coordination.maxFanout)) {
+        if (!peer ||
+            (!tagged.has(peer.participantId) && tagged.size >= config.coordination.maxFanout)) {
             rendered += match[0];
             continue;
         }
         const mention = `@${peer.name}`;
         if (!tagged.has(peer.participantId)) {
-            marks.push({ type: "mention", from: rendered.length, to: rendered.length + mention.length, param: peer.participantId });
+            marks.push({
+                type: "mention",
+                from: rendered.length,
+                to: rendered.length + mention.length,
+                param: peer.participantId,
+            });
             tagged.add(peer.participantId);
         }
         rendered += mention;
     }
     rendered += text.slice(cursor);
-    const occupied = marks.map(mark => [mark.from ?? 0, mark.to ?? 0]);
-    const uniqueTargets = new Map([...peers.values()].map(target => [target.participantId, target]));
+    const occupied = marks.map((mark) => [mark.from ?? 0, mark.to ?? 0]);
+    const uniqueTargets = new Map([...peers.values()].map((target) => [target.participantId, target]));
     for (const target of uniqueTargets.values()) {
         const matcher = new RegExp(`@${escapeRegExp(target.name)}(?![\\p{L}\\p{N}_])`, "giu");
         for (let match = matcher.exec(rendered); match; match = matcher.exec(rendered)) {
@@ -412,7 +514,8 @@ function normalizeMarkdown(text, existingMarks) {
                 index += heading[0].length;
                 continue;
             }
-            if ((text.startsWith("- ", index) || text.startsWith("* ", index)) && !text.startsWith("**", index)) {
+            if ((text.startsWith("- ", index) || text.startsWith("* ", index)) &&
+                !text.startsWith("**", index)) {
                 boundaries[index] = output.length;
                 boundaries[index + 1] = output.length + 1;
                 output += "• ";
@@ -420,12 +523,50 @@ function normalizeMarkdown(text, existingMarks) {
                 continue;
             }
         }
+        if (text.startsWith("```", index)) {
+            const header = /^```[^\n`]*\n/.exec(text.slice(index));
+            const contentStart = index + (header?.[0].length ?? 3);
+            const closeAt = text.indexOf("```", contentStart);
+            if (closeAt >= contentStart) {
+                const rawContent = text.slice(contentStart, closeAt);
+                const content = rawContent.endsWith("\n") ? rawContent.slice(0, -1) : rawContent;
+                for (let offset = index; offset < contentStart; offset += 1)
+                    boundaries[offset] = output.length;
+                const from = output.length;
+                output += content;
+                for (let offset = 0; offset <= rawContent.length; offset += 1)
+                    boundaries[contentStart + offset] = from + Math.min(offset, content.length);
+                if (content)
+                    marks.push({ type: "keyboard", from, to: output.length });
+                for (let offset = 0; offset < 3; offset += 1)
+                    boundaries[closeAt + offset] = output.length;
+                index = closeAt + 3;
+                continue;
+            }
+        }
+        const objectReference = /^\[\[AAG_OBJECT:([^|\]\n]+)\|([^\]\n]+)\]\]/i.exec(text.slice(index));
+        if (objectReference) {
+            const objectId = objectReference[1].trim();
+            const label = objectReference[2].trim();
+            const from = output.length;
+            output += label;
+            marks.push({ type: "object", from, to: output.length, param: objectId });
+            for (let offset = 0; offset < objectReference[0].length; offset += 1)
+                boundaries[index + offset] = offset === 0 ? from : output.length;
+            index += objectReference[0].length;
+            continue;
+        }
         const formats = [
-            { open: "**", close: "**", type: "bold" }, { open: "__", close: "__", type: "bold" },
-            { open: "~~", close: "~~", type: "strikethrough" }, { open: "`", close: "`", type: "keyboard" },
-            { open: "*", close: "*", type: "italic" }, { open: "_", close: "_", type: "italic" }
+            { open: "**", close: "**", type: "bold" },
+            { open: "__", close: "__", type: "bold" },
+            { open: "~~", close: "~~", type: "strikethrough" },
+            { open: "`", close: "`", type: "keyboard" },
+            { open: "*", close: "*", type: "italic" },
+            { open: "_", close: "_", type: "italic" },
         ];
-        const format = formats.find(candidate => text.startsWith(candidate.open, index) && text.indexOf(candidate.close, index + candidate.open.length) > index + candidate.open.length);
+        const format = formats.find((candidate) => text.startsWith(candidate.open, index) &&
+            text.indexOf(candidate.close, index + candidate.open.length) >
+                index + candidate.open.length);
         if (format) {
             const closeAt = text.indexOf(format.close, index + format.open.length);
             for (let offset = 0; offset < format.open.length; offset += 1)
@@ -441,13 +582,14 @@ function normalizeMarkdown(text, existingMarks) {
             index = closeAt + format.close.length;
             continue;
         }
-        const link = /^\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/.exec(text.slice(index));
+        const link = /^\[([^\]\n]+)\]\(((?:https?|anytype):\/\/[^)\s]+)\)/.exec(text.slice(index));
         if (link) {
             const from = output.length;
             output += link[1];
             marks.push({ type: "link", from, to: output.length, param: link[2] });
             for (let offset = 0; offset < link[0].length; offset += 1)
-                boundaries[index + offset] = offset <= link[1].length ? from + Math.max(0, offset - 1) : output.length;
+                boundaries[index + offset] =
+                    offset <= link[1].length ? from + Math.max(0, offset - 1) : output.length;
             index += link[0].length;
             continue;
         }
@@ -456,7 +598,13 @@ function normalizeMarkdown(text, existingMarks) {
     }
     boundaries[text.length] = output.length;
     for (const mark of existingMarks)
-        marks.push({ ...mark, ...(mark.from !== undefined ? { from: boundaries[mark.from] ?? mark.from } : {}), ...(mark.to !== undefined ? { to: boundaries[mark.to] ?? mark.to } : {}) });
+        marks.push({
+            ...mark,
+            ...(mark.from !== undefined ? { from: boundaries[mark.from] ?? mark.from } : {}),
+            ...(mark.to !== undefined ? { to: boundaries[mark.to] ?? mark.to } : {}),
+        });
     return { text: output, marks };
 }
-function escapeRegExp(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

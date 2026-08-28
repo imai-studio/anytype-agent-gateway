@@ -6,6 +6,7 @@ export declare class AnytypeClient implements AnytypePort {
     private readonly headers;
     private readonly participantId?;
     private readonly localReactions;
+    private readonly reactionTails;
     private writeTail;
     private constructor();
     static create(config: AgentConfig): Promise<AnytypeClient>;
@@ -38,13 +39,18 @@ export declare class AnytypeClient implements AnytypePort {
     }): Promise<string>;
     editMessage(spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[]): Promise<void>;
     deleteMessage(spaceId: string, chatId: string, messageId: string): Promise<void>;
-    ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean): Promise<void>;
+    ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean, participantId?: string | undefined): Promise<void>;
+    private ensureReactionNow;
     stream(spaceId: string, chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent>;
-    getObject(spaceId: string, objectId: string): Promise<{
+    getObject(spaceId: string, objectId: string): Promise<JsonRecord & {
         id: string;
-        name?: string;
-        markdown?: string;
     }>;
+    listTypes(spaceId: string): Promise<JsonRecord[]>;
+    getType(spaceId: string, typeId: string): Promise<JsonRecord>;
+    listProperties(spaceId: string): Promise<JsonRecord[]>;
+    getProperty(spaceId: string, propertyId: string): Promise<JsonRecord>;
+    listPropertyTags(spaceId: string, propertyId: string): Promise<JsonRecord[]>;
+    listTemplates(spaceId: string, typeId: string): Promise<JsonRecord[]>;
     searchObjects(spaceId: string, offset: number, limit: number): Promise<Array<{
         id: string;
         name?: string;
@@ -73,6 +79,12 @@ export declare class AnytypeClient implements AnytypePort {
     }): Promise<JsonRecord>;
     archiveObject(spaceId: string, objectId: string): Promise<JsonRecord>;
     addObjectsToList(spaceId: string, listId: string, objectIds: string[]): Promise<void>;
+    listViews(spaceId: string, listId: string): Promise<JsonRecord[]>;
+    listViewObjects(spaceId: string, listId: string, viewId: string, page?: {
+        offset: number;
+        limit: number;
+    }): Promise<JsonRecord[]>;
+    removeObjectFromList(spaceId: string, listId: string, objectId: string): Promise<void>;
     uploadFile(spaceId: string, path: string): Promise<JsonRecord>;
     private messagesPath;
     private messagePath;

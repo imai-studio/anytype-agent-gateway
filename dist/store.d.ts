@@ -29,7 +29,14 @@ export declare class Store {
         threadKey: string;
         triggerId: string;
         responseId: string;
+        startedAt: number;
     }>;
+    runningRunForThread(threadKey: string): {
+        id: string;
+        routeId: string;
+        triggerId: string;
+        responseId: string;
+    } | undefined;
     finishRun(id: string, status: "done" | "failed" | "silent" | "cancelled"): void;
     recentActivations(routeId: string, threadKey: string, since: number): number;
     prune(before: number): void;
@@ -52,8 +59,11 @@ export declare class Store {
     deleteCodexAcpSession(sessionKey: string): void;
     sessionGeneration(threadKey: string): number;
     resetSession(threadKey: string): number;
-    wakeOverride(routeId: string): string | undefined;
-    setWakeOverride(routeId: string, humans: string): void;
+    wakeOverride(routeId: string): {
+        humans: string;
+        prefix?: string;
+    } | undefined;
+    setWakeOverride(routeId: string, humans: string, prefix?: string): void;
     sessionBinding(threadKey: string): SessionBinding | undefined;
     bindingForNativeSession(runtime: AgentRuntime, nativeSession: {
         key?: string;
@@ -108,6 +118,7 @@ export declare class Store {
     }, now?: number): OutboundItem;
     outbound(id: string): OutboundItem | undefined;
     outboundByDedupeKey(dedupeKey: string): OutboundItem | undefined;
+    setOutboundTargetMessage(id: string, targetMessageId: string, workerId?: string, now?: number): boolean;
     claimOutbound(workerId: string, options?: {
         limit?: number;
         leaseMs?: number;
@@ -121,6 +132,7 @@ export declare class Store {
         now?: number;
     }): boolean;
     deleteOutbound(id: string): boolean;
+    outboundStatusCounts(): Record<OutboundItem["status"], number>;
     isProactiveDelivered(runtime: AgentRuntime, nativeSessionKey: string, nativeEventId: string): boolean;
     markProactiveDelivered(delivery: Omit<ProactiveDelivery, "deliveredAt">, now?: number): boolean;
     bridgeCursor(bridgeId: string, streamKey: string): string | undefined;

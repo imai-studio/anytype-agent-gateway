@@ -22,51 +22,328 @@ function client() {
   return {
     resolveSpace: vi.fn(),
     searchSpace: vi.fn().mockResolvedValue([{ id: "found" }]),
-    getObject: vi.fn().mockResolvedValue({ id: "object-1", name: "Note" }),
+    getObject: vi.fn().mockResolvedValue({
+      id: "object-1",
+      name: "Note",
+      type: { key: "page" },
+      properties: [{ key: "status", text: "Open" }],
+    }),
+    listTypes: vi.fn().mockResolvedValue([{ id: "type-page", key: "page" }]),
+    getType: vi
+      .fn()
+      .mockResolvedValue({ id: "type-page", key: "page", properties: [{ key: "status" }] }),
+    listProperties: vi
+      .fn()
+      .mockResolvedValue([{ id: "property-status", key: "status", format: "select" }]),
+    getProperty: vi
+      .fn()
+      .mockResolvedValue({ id: "property-status", key: "status", format: "select" }),
+    listPropertyTags: vi.fn().mockResolvedValue([{ id: "tag-open", name: "Open" }]),
+    listTemplates: vi.fn().mockResolvedValue([{ id: "template-daily", name: "Daily" }]),
+    listViews: vi.fn().mockResolvedValue([{ id: "view-board", name: "Board" }]),
+    listViewObjects: vi.fn().mockResolvedValue([{ id: "task-1", name: "Task" }]),
     createObject: vi.fn().mockResolvedValue({ id: "created", name: "Created" }),
     updateObject: vi.fn().mockResolvedValue({ id: "updated" }),
     addObjectsToList: vi.fn().mockResolvedValue(undefined),
-    uploadFile: vi.fn().mockResolvedValue({ object_id: "file-object" }),
+    removeObjectFromList: vi.fn().mockResolvedValue(undefined),
+    uploadFile: vi.fn().mockResolvedValue({ object: { id: "file-object", name: "Asset" } }),
     archiveObject: vi.fn().mockResolvedValue({ id: "archived" }),
   } as unknown as AnytypeClient;
 }
 
 describe("AAG Anytype MCP policy", () => {
   it("reports its gateway context without exposing the API key", async () => {
-    const result = await callTool(client(), config(), "/config.yaml", "chat:space-1:chat", "space-1", "aag_context", {});
-    expect(result).toMatchObject({ gateway: "Anytype Agent Gateway", route_id: "chat:space-1:chat", space_id: "space-1" });
+    const result = await callTool(
+      client(),
+      config(),
+      "/config.yaml",
+      "chat:space-1:chat",
+      "space-1",
+      "aag_context",
+      {},
+    );
+    expect(result).toMatchObject({
+      gateway: "Anytype Agent Gateway",
+      route_id: "chat:space-1:chat",
+      space_id: "space-1",
+    });
     expect(JSON.stringify(result)).not.toContain("/private/key");
   });
 
   it("enforces the space allowlist before making a request", async () => {
     const anytype = client();
-    await expect(callTool(anytype, config({ tools: { anytype: { allowedSpaceIds: ["space-1"] } } }), "/config.yaml", undefined, undefined, "anytype_search", { space_id: "space-2", query: "x" })).rejects.toThrow("not allowed");
+    await expect(
+      callTool(
+        anytype,
+        config({ tools: { anytype: { allowedSpaceIds: ["space-1"] } } }),
+        "/config.yaml",
+        undefined,
+        undefined,
+        "anytype_search",
+        { space_id: "space-2", query: "x" },
+      ),
+    ).rejects.toThrow("not allowed");
     expect((anytype as any).searchSpace).not.toHaveBeenCalled();
+  });
+
+  it("returns native links for search results", async () => {
+    await expect(
+      callTool(client(), config(), "/config.yaml", undefined, "space-1", "anytype_search", {
+        query: "x",
+      }),
+    ).resolves.toEqual([
+      {
+        id: "found",
+        link: "anytype://object?objectId=found&spaceId=space-1",
+        object_ref: "[[AAG_OBJECT:found|Open in Anytype]]",
+      },
+    ]);
   });
 
   it("returns a native Anytype link for created objects", async () => {
     const anytype = client();
-    const result = await callTool(anytype, config(), "/config.yaml", undefined, "space-1", "anytype_create_object", { type_key: "page", name: "Daily note" });
-    expect(result).toMatchObject({ id: "created", link: "anytype://object/?objectId=created&spaceId=space-1" });
+    const result = await callTool(
+      anytype,
+      config(),
+      "/config.yaml",
+      undefined,
+      "space-1",
+      "anytype_create_object",
+      { type_key: "page", name: "Daily note" },
+    );
+    expect(result).toMatchObject({
+      id: "created",
+      link: "anytype://object?objectId=created&spaceId=space-1",
+      object_ref: "[[AAG_OBJECT:created|Created]]",
+    });
+  });
+
+  it("exposes schema discovery and complete object data without write permission", async () => {
+    const anytype = client();
+    const readOnly = config({ tools: { anytype: { enabled: true, allowWrite: false } } });
+    await expect(
+      callTool(anytype, readOnly, "/config.yaml", undefined, "space-1", "anytype_list_types", {}),
+    ).resolves.toEqual([{ id: "type-page", key: "page" }]);
+    await expect(
+      callTool(anytype, readOnly, "/config.yaml", undefined, "space-1", "anytype_get_type", {
+        type_id: "type-page",
+      }),
+    ).resolves.toMatchObject({ properties: [{ key: "status" }] });
+    await expect(
+      callTool(
+        anytype,
+        readOnly,
+        "/config.yaml",
+        undefined,
+        "space-1",
+        "anytype_list_properties",
+        {},
+      ),
+    ).resolves.toMatchObject([{ format: "select" }]);
+    await expect(
+      callTool(
+        anytype,
+        readOnly,
+        "/config.yaml",
+        undefined,
+        "space-1",
+        "anytype_list_property_tags",
+        { property_id: "property-status" },
+      ),
+    ).resolves.toEqual([{ id: "tag-open", name: "Open" }]);
+    await expect(
+      callTool(anytype, readOnly, "/config.yaml", undefined, "space-1", "anytype_list_templates", {
+        type_id: "type-page",
+      }),
+    ).resolves.toEqual([{ id: "template-daily", name: "Daily" }]);
+    await expect(
+      callTool(anytype, readOnly, "/config.yaml", undefined, "space-1", "anytype_list_views", {
+        list_id: "collection",
+      }),
+    ).resolves.toEqual([{ id: "view-board", name: "Board" }]);
+    await expect(
+      callTool(
+        anytype,
+        readOnly,
+        "/config.yaml",
+        undefined,
+        "space-1",
+        "anytype_list_view_objects",
+        { list_id: "collection", view_id: "view-board" },
+      ),
+    ).resolves.toEqual([
+      {
+        id: "task-1",
+        name: "Task",
+        link: "anytype://object?objectId=task-1&spaceId=space-1",
+        object_ref: "[[AAG_OBJECT:task-1|Task]]",
+      },
+    ]);
+    await expect(
+      callTool(anytype, readOnly, "/config.yaml", undefined, "space-1", "anytype_get_object", {
+        object_id: "object-1",
+      }),
+    ).resolves.toMatchObject({
+      type: { key: "page" },
+      properties: [{ key: "status", text: "Open" }],
+    });
   });
 
   it("blocks every mutation when writes are disabled", async () => {
-    await expect(callTool(client(), config({ tools: { anytype: { allowWrite: false } } }), "/config.yaml", undefined, "space-1", "anytype_update_object", { object_id: "object-1", name: "No" })).rejects.toThrow("writes are disabled");
+    await expect(
+      callTool(
+        client(),
+        config({ tools: { anytype: { allowWrite: false } } }),
+        "/config.yaml",
+        undefined,
+        "space-1",
+        "anytype_update_object",
+        { object_id: "object-1", name: "No" },
+      ),
+    ).rejects.toThrow("writes are disabled");
+  });
+
+  it("validates typed property values and prevents type changes on update", async () => {
+    const anytype = client();
+    await callTool(
+      anytype,
+      config(),
+      "/config.yaml",
+      undefined,
+      "space-1",
+      "anytype_update_object",
+      {
+        object_id: "object-1",
+        properties: [
+          { key: "status", select: "tag-open" },
+          { key: "done", checkbox: true },
+        ],
+      },
+    );
+    expect((anytype as any).updateObject).toHaveBeenCalledWith("space-1", "object-1", {
+      properties: [
+        { key: "status", select: "tag-open" },
+        { key: "done", checkbox: true },
+      ],
+    });
+    await expect(
+      callTool(anytype, config(), "/config.yaml", undefined, "space-1", "anytype_update_object", {
+        object_id: "object-1",
+        type_key: "participant",
+      }),
+    ).rejects.toThrow("type is not allowed");
+    await expect(
+      callTool(anytype, config(), "/config.yaml", undefined, "space-1", "anytype_update_object", {
+        object_id: "object-1",
+        properties: [{ key: "archived", checkbox: true }],
+      }),
+    ).rejects.toThrow("reserved");
+    await expect(
+      callTool(anytype, config(), "/config.yaml", undefined, "space-1", "anytype_update_object", {
+        object_id: "object-1",
+        properties: [{ key: "status", select: "open", text: "also" }],
+      }),
+    ).rejects.toThrow("exactly one");
+  });
+
+  it("fails file uploads closed when no explicit roots are configured", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aag-mcp-no-roots-"));
+    const path = join(directory, "asset.txt");
+    await writeFile(path, "asset");
+    await expect(
+      callTool(client(), config(), "/config.yaml", undefined, "space-1", "anytype_upload_file", {
+        path,
+      }),
+    ).rejects.toThrow("explicit allowedFileRoots");
+  });
+
+  it("returns a usable object reference for a nested file response", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aag-mcp-upload-"));
+    const path = join(directory, "asset.txt");
+    await writeFile(path, "asset");
+    await expect(
+      callTool(
+        client(),
+        config({ tools: { anytype: { allowWrite: true, allowedFileRoots: [directory] } } }),
+        "/config.yaml",
+        undefined,
+        "space-1",
+        "anytype_upload_file",
+        { path },
+      ),
+    ).resolves.toMatchObject({
+      link: "anytype://object?objectId=file-object&spaceId=space-1",
+      object_ref: "[[AAG_OBJECT:file-object|Asset]]",
+    });
   });
 
   it("keeps implicit access on the current conversation space", async () => {
-    const scoped = config({ spaces: [{ id: "space-1" }, { id: "space-2" }], tools: { anytype: { allowWrite: true } } });
-    await expect(callTool(client(), scoped, "/config.yaml", "chat:space-1:chat", "space-1", "anytype_get_object", { space_id: "space-2", object_id: "object" })).rejects.toThrow("No cross-space");
+    const scoped = config({
+      spaces: [{ id: "space-1" }, { id: "space-2" }],
+      tools: { anytype: { allowWrite: true } },
+    });
+    await expect(
+      callTool(
+        client(),
+        scoped,
+        "/config.yaml",
+        "chat:space-1:chat",
+        "space-1",
+        "anytype_get_object",
+        { space_id: "space-2", object_id: "object" },
+      ),
+    ).rejects.toThrow("No cross-space");
   });
 
   it("advertises route wake management independently of object writes", () => {
-    const managed = config({ management: { allowWakeChanges: true }, tools: { anytype: { allowWrite: false } } });
-    expect(toolDefinitions(managed).map(tool => tool.name)).toContain("aag_set_wake");
+    const managed = config({
+      management: { allowWakeChanges: true },
+      tools: { anytype: { allowWrite: false } },
+    });
+    expect(toolDefinitions(managed).map((tool) => tool.name)).toContain("aag_set_wake");
+  });
+
+  it("cannot change wake policy outside the bound Anytype conversation", async () => {
+    const managed = config({ management: { allowWakeChanges: true } });
+    await expect(
+      callTool(
+        client(),
+        managed,
+        "/config.yaml",
+        "chat:space-1:current-chat",
+        "space-1",
+        "aag_set_wake",
+        { route_id: "chat:space-1:other-chat", humans: "every-message" },
+      ),
+    ).rejects.toThrow("must match the current Anytype conversation");
+  });
+
+  it("keeps archive independent from general write permission", async () => {
+    const noArchive = config({ tools: { anytype: { allowWrite: true, allowArchive: false } } });
+    expect(toolDefinitions(noArchive).map((tool) => tool.name)).not.toContain(
+      "anytype_archive_object",
+    );
+    await expect(
+      callTool(
+        client(),
+        noArchive,
+        "/config.yaml",
+        undefined,
+        "space-1",
+        "anytype_archive_object",
+        { object_id: "object-1" },
+      ),
+    ).rejects.toThrow("Archiving is disabled");
   });
 
   it("rejects a non-numeric search limit before calling Anytype", async () => {
     const anytype = client();
-    await expect(callTool(anytype, config(), "/config.yaml", undefined, "space-1", "anytype_search", { query: "x", limit: "many" })).rejects.toThrow("positive number");
+    await expect(
+      callTool(anytype, config(), "/config.yaml", undefined, "space-1", "anytype_search", {
+        query: "x",
+        limit: "many",
+      }),
+    ).rejects.toThrow("positive number");
     expect((anytype as any).searchSpace).not.toHaveBeenCalled();
   });
 
@@ -80,6 +357,16 @@ describe("AAG Anytype MCP policy", () => {
     await writeFile(secret, "secret");
     const link = join(allowed, "escape.txt");
     await symlink(secret, link);
-    await expect(callTool(client(), config({ tools: { anytype: { allowWrite: true, allowedFileRoots: [allowed] } } }), "/config.yaml", undefined, "space-1", "anytype_upload_file", { path: link })).rejects.toThrow("outside");
+    await expect(
+      callTool(
+        client(),
+        config({ tools: { anytype: { allowWrite: true, allowedFileRoots: [allowed] } } }),
+        "/config.yaml",
+        undefined,
+        "space-1",
+        "anytype_upload_file",
+        { path: link },
+      ),
+    ).rejects.toThrow("outside");
   });
 });

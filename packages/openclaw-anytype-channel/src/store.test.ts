@@ -79,13 +79,118 @@ describe("BridgeStore", () => {
   it("paginates pending records by the durable SQLite insertion sequence", () => {
     const store = makeStore();
     for (let index = 0; index < 1_001; index += 1) {
-      store.putDelivery(createDelivery({ sourceKey: `page:${index}`, accountId: "default", route: inbound.route, kind: "message-final", message: { text: String(index) }, createdAt: 100 }), 100);
+      store.putDelivery(
+        createDelivery({
+          sourceKey: `page:${index}`,
+          accountId: "default",
+          route: inbound.route,
+          kind: "message-final",
+          message: { text: String(index) },
+          createdAt: 100,
+        }),
+        100,
+      );
     }
     const first = store.pendingDeliveries(100, 1_000);
     const second = store.pendingDeliveries(100, 1_000, first.at(-1)!.storeSequence);
     expect(first).toHaveLength(1_000);
     expect(second).toHaveLength(1);
     expect(second[0]!.storeSequence).toBeGreaterThan(first.at(-1)!.storeSequence);
+    store.close();
+  });
+
+  it("retains recent nonterminal events and bounds abandoned pending history by age", () => {
+    const store = makeStore();
+    const old = createDelivery({
+      sourceKey: "old-delta",
+      accountId: "default",
+      sessionKey: "native",
+      route: inbound.route,
+      kind: "agent-event",
+      agentEvent: {
+        runId: "still-no-terminal-event",
+        seq: 1,
+        stream: "assistant",
+        timestamp: 1,
+        data: { delta: "partial" },
+      },
+    });
+    const recent = createDelivery({
+      sourceKey: "recent-delta",
+      accountId: "default",
+      sessionKey: "native",
+      route: inbound.route,
+      kind: "agent-event",
+      agentEvent: {
+        runId: "active-run",
+        seq: 1,
+        stream: "thinking",
+        timestamp: 200,
+        data: { delta: "working" },
+      },
+    });
+    store.putDelivery(old, 10);
+    store.putDelivery(recent, 200);
+    expect(store.pruneExpiredPending(100)).toBe(1);
+    expect(store.pendingDeliveries(300)).toEqual([
+      expect.objectContaining({ id: recent.id, kind: "agent-event" }),
+    ]);
+    store.close();
+  });
+
+  it("expires abandoned thinking sooner without pruning live thinking", () => {
+    const store = makeStore();
+    const oldThinking = createDelivery({
+      sourceKey: "old-thinking",
+      accountId: "default",
+      sessionKey: "native",
+      route: inbound.route,
+      kind: "agent-event",
+      agentEvent: {
+        runId: "abandoned-run",
+        seq: 1,
+        stream: "thinking",
+        timestamp: 10,
+        data: { delta: "private scratch work" },
+      },
+    });
+    const recentThinking = createDelivery({
+      sourceKey: "recent-thinking",
+      accountId: "default",
+      sessionKey: "native",
+      route: inbound.route,
+      kind: "agent-event",
+      agentEvent: {
+        runId: "live-run",
+        seq: 1,
+        stream: "thinking",
+        timestamp: 200,
+        data: { delta: "still working" },
+      },
+    });
+    const oldAssistant = createDelivery({
+      sourceKey: "old-assistant",
+      accountId: "default",
+      sessionKey: "native",
+      route: inbound.route,
+      kind: "agent-event",
+      agentEvent: {
+        runId: "recoverable-run",
+        seq: 1,
+        stream: "assistant",
+        timestamp: 10,
+        data: { delta: "partial answer" },
+      },
+    });
+    store.putDelivery(oldThinking, 10);
+    store.putDelivery(recentThinking, 200);
+    store.putDelivery(oldAssistant, 10);
+
+    expect(store.pruneExpiredThinking(100)).toBe(1);
+    expect(store.pendingDeliveries(300)).toEqual([
+      expect.objectContaining({ id: recentThinking.id }),
+      expect.objectContaining({ id: oldAssistant.id }),
+    ]);
     store.close();
   });
 });

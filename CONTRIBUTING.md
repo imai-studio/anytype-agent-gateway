@@ -19,6 +19,8 @@ go vet ./...
 
 Keep credentials and machine-local configuration outside the repository. Use the example configurations as templates and never commit Anytype API keys, OpenClaw gateway tokens, session tokens, state databases, or local invite links.
 
+Run `pnpm format` before committing. The repository pins Prettier and keeps its shared style in `.prettierrc.json`; `pnpm run check` rejects source, documentation, and configuration files that do not match it. Generated `dist/` files and Go sources are excluded because the build and `gofmt` own their formatting.
+
 ## Pull requests
 
 - Keep changes focused and include tests for behavior changes.

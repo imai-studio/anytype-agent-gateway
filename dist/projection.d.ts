@@ -52,6 +52,7 @@ export declare class RunProjection {
     private schedule;
     private cancelScheduledEdit;
     private currentDisplay;
+    private setWorkingReaction;
     private flushCycle;
     private editCycleNow;
     private createCycleMessageNow;

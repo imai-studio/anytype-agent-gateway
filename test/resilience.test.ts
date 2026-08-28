@@ -4,7 +4,14 @@ import { Gateway } from "../src/gateway.js";
 import { CodexAcpDriver } from "../src/runtime/codex-acp.js";
 import { Store } from "../src/store.js";
 import type { HeartDiscussionAdapter } from "../src/discussions.js";
-import type { AnytypeEvent, ChatMessage } from "../src/types.js";
+import type {
+  ActiveRuntime,
+  AnytypeEvent,
+  ChatMessage,
+  RuntimeDriver,
+  RuntimeSessionObserver,
+  RuntimeSessionOutput,
+} from "../src/types.js";
 import { FakeAnytype, FakeRuntime, incoming } from "./fakes.js";
 
 describe("failure containment", () => {
@@ -43,7 +50,9 @@ describe("failure containment", () => {
     }
     class ClosingRuntime extends FakeRuntime {
       closed = false;
-      async close(): Promise<void> { this.closed = true; }
+      async close(): Promise<void> {
+        this.closed = true;
+      }
     }
     const anytype = new FailingAnytype();
     const runtime = new ClosingRuntime();
@@ -51,11 +60,23 @@ describe("failure containment", () => {
       version: 1,
       agent: { name: "AAG", participantId: "bot" },
       anytype: { apiKeyFile: "/tmp/key" },
-      spaces: ["First", "Second"].map(name => ({ name, chats: [{ name: "chat", wake: { humans: "mention", agents: "never", allowedUsers: ["human"] } }] })),
-      runtime: { kind: "openclaw" }
+      spaces: ["First", "Second"].map((name) => ({
+        name,
+        chats: [
+          { name: "chat", wake: { humans: "mention", agents: "never", allowedUsers: ["human"] } },
+        ],
+      })),
+      runtime: { kind: "openclaw" },
     });
     const store = new Store(":memory:");
-    const gateway = new Gateway(anytype, runtime, config, store, {} as HeartDiscussionAdapter, () => undefined);
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      () => undefined,
+    );
     await expect(gateway.start()).rejects.toThrow("second space failed");
     expect(runtime.closed).toBe(true);
     store.close();
@@ -66,15 +87,33 @@ describe("failure containment", () => {
       listCalls = 0;
       override async listChats(): Promise<Array<{ id: string; name: string }>> {
         this.listCalls += 1;
-        return this.listCalls === 1 ? [{ id: "existing", name: "Existing" }] : [{ id: "existing", name: "Existing" }, { id: "new-chat", name: "New chat" }];
+        return this.listCalls === 1
+          ? [{ id: "existing", name: "Existing" }]
+          : [
+              { id: "existing", name: "Existing" },
+              { id: "new-chat", name: "New chat" },
+            ];
       }
-      override async listMessages(_spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]> {
+      override async listMessages(
+        _spaceId: string,
+        chatId: string,
+        limit: number,
+        afterOrderId?: string,
+      ): Promise<ChatMessage[]> {
         if (chatId !== "new-chat") return [];
-        const values = afterOrderId ? this.messages.filter(message => message.order_id && message.order_id > afterOrderId) : this.messages;
+        const values = afterOrderId
+          ? this.messages.filter((message) => message.order_id && message.order_id > afterOrderId)
+          : this.messages;
         return values.slice(-limit);
       }
-      override async *stream(_spaceId: string, _chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent> {
-        await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
         if (!signal.aborted) yield { type: "unreachable" };
       }
     }
@@ -85,12 +124,32 @@ describe("failure containment", () => {
       version: 1,
       agent: { name: "AAG", participantId: "bot" },
       anytype: { apiKeyFile: "/tmp/key" },
-      spaces: [{ name: "Test", chatDiscovery: { enabled: true, discoveryIntervalSeconds: 10, wake: { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["human-1"] } } }],
-      runtime: { kind: "openclaw" }
+      spaces: [
+        {
+          name: "Test",
+          chatDiscovery: {
+            enabled: true,
+            discoveryIntervalSeconds: 10,
+            wake: {
+              humans: "mention-or-reply",
+              agents: "direct-mention",
+              allowedUsers: ["human-1"],
+            },
+          },
+        },
+      ],
+      runtime: { kind: "openclaw" },
     });
     config.spaces[0]!.chatDiscovery.discoveryIntervalSeconds = 0.01;
     const store = new Store(":memory:");
-    const gateway = new Gateway(anytype, runtime, config, store, {} as HeartDiscussionAdapter, () => undefined);
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      () => undefined,
+    );
     const running = gateway.start();
     await eventually(() => expect(runtime.starts).toHaveLength(1));
     expect(runtime.starts[0]?.sessionKey).toBe("aag:chat:space:new-chat");
@@ -105,17 +164,34 @@ describe("failure containment", () => {
       override async searchObjects(): Promise<Array<{ id: string; name?: string; type?: string }>> {
         return [{ id: "todo", name: "Payments testing", type: "issue" }];
       }
-      override async listMessages(_spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]> {
+      override async listMessages(
+        _spaceId: string,
+        chatId: string,
+        limit: number,
+        afterOrderId?: string,
+      ): Promise<ChatMessage[]> {
         if (chatId !== "discussion") return [];
-        const values = afterOrderId ? this.messages.filter(message => message.order_id && message.order_id > afterOrderId) : this.messages;
+        const values = afterOrderId
+          ? this.messages.filter((message) => message.order_id && message.order_id > afterOrderId)
+          : this.messages;
         return values.slice(-limit);
       }
-      override async sendMessage(spaceId: string, chatId: string, input: { text: string; replyTo?: string }): Promise<string> {
+      override async sendMessage(
+        spaceId: string,
+        chatId: string,
+        input: { text: string; replyTo?: string },
+      ): Promise<string> {
         this.sentTo.push({ chatId, ...(input.replyTo ? { replyTo: input.replyTo } : {}) });
         return super.sendMessage(spaceId, chatId, input);
       }
-      override async *stream(_spaceId: string, _chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent> {
-        await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
         if (!signal.aborted) yield { type: "unreachable" };
       }
     }
@@ -124,12 +200,24 @@ describe("failure containment", () => {
       sentTo: Array<{ chatId: string; replyTo?: string }> = [];
       async resolve(): Promise<Array<{ objectId: string; discussionId?: string }>> {
         this.calls += 1;
-        return this.calls === 1 ? [{ objectId: "todo" }] : [{ objectId: "todo", discussionId: "discussion" }];
+        return this.calls === 1
+          ? [{ objectId: "todo" }]
+          : [{ objectId: "todo", discussionId: "discussion" }];
       }
       async hydrateMessages(_chatId: string, messages: ChatMessage[]): Promise<ChatMessage[]> {
-        return messages.map(message => ({ ...message, content: { text: "Anya can u see this note?", marks: [{ type: "mention", param: "heart-identity" }] }, mentioned: true }));
+        return messages.map((message) => ({
+          ...message,
+          content: {
+            text: "Anya can u see this note?",
+            marks: [{ type: "mention", param: "heart-identity" }],
+          },
+          mentioned: true,
+        }));
       }
-      async sendMessage(chatId: string, input: { text: string; replyTo?: string }): Promise<string> {
+      async sendMessage(
+        chatId: string,
+        input: { text: string; replyTo?: string },
+      ): Promise<string> {
         this.sentTo.push({ chatId, ...(input.replyTo ? { replyTo: input.replyTo } : {}) });
         return "heart-reply";
       }
@@ -137,24 +225,243 @@ describe("failure containment", () => {
       async deleteMessage(): Promise<void> {}
     }
     const anytype = new DiscussingAnytype();
-    anytype.messages.push(incoming({ id: "first-discussion-tag", order_id: "001", content: { text: "" } }));
+    anytype.messages.push(
+      incoming({ id: "first-discussion-tag", order_id: "001", content: { text: "" } }),
+    );
     const runtime = new FakeRuntime();
     const config = configSchema.parse({
       version: 1,
       agent: { name: "AAG", participantId: "bot" },
       anytype: { apiKeyFile: "/tmp/key" },
-      spaces: [{ name: "Test", comments: { mode: "all", discoveryIntervalSeconds: 10, createMissing: false, wake: { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] } } }],
-      runtime: { kind: "openclaw" }
+      spaces: [
+        {
+          name: "Test",
+          comments: {
+            mode: "all",
+            discoveryIntervalSeconds: 10,
+            createMissing: false,
+            wake: { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] },
+          },
+        },
+      ],
+      runtime: { kind: "openclaw" },
     });
     config.spaces[0]!.comments.discoveryIntervalSeconds = 0.01;
     const store = new Store(":memory:");
     const adapter = new AppearingDiscussionAdapter();
-    const gateway = new Gateway(anytype, runtime, config, store, adapter as unknown as HeartDiscussionAdapter, () => undefined);
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      adapter as unknown as HeartDiscussionAdapter,
+      () => undefined,
+    );
     const running = gateway.start();
     await eventually(() => expect(runtime.starts).toHaveLength(1));
-    expect(runtime.starts[0]?.sessionKey).toBe("aag:discussion:space:discussion:root:first-discussion-tag");
+    expect(runtime.starts[0]?.sessionKey).toBe(
+      "aag:discussion:space:discussion:root:first-discussion-tag",
+    );
     expect(runtime.starts[0]?.prompt).toContain("Anya can u see this note?");
-    expect(adapter.sentTo).toContainEqual({ chatId: "discussion", replyTo: "first-discussion-tag" });
+    expect(adapter.sentTo).toContainEqual({
+      chatId: "discussion",
+      replyTo: "first-discussion-tag",
+    });
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("skips one failed discussion object while keeping successful routes online", async () => {
+    class MixedDiscussionAnytype extends FakeAnytype {
+      override async searchObjects(): Promise<Array<{ id: string; name?: string; type?: string }>> {
+        return [
+          { id: "broken", name: "Broken" },
+          { id: "healthy", name: "Healthy" },
+        ];
+      }
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        if (!signal.aborted) yield { type: "unreachable" };
+      }
+    }
+    class MixedDiscussionAdapter {
+      async resolve(
+        _spaceId: string,
+        objects: Array<{ id: string }>,
+      ): Promise<Array<{ objectId: string; discussionId?: string; error?: string }>> {
+        return objects.map((object) =>
+          object.id === "broken"
+            ? { objectId: object.id, error: "object has no discussion relation" }
+            : { objectId: object.id, discussionId: "healthy-discussion" },
+        );
+      }
+      async hydrateMessages(_chatId: string, messages: ChatMessage[]): Promise<ChatMessage[]> {
+        return messages;
+      }
+    }
+    const anytype = new MixedDiscussionAnytype();
+    const runtime = new FakeRuntime();
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [
+        {
+          id: "space",
+          comments: {
+            mode: "all",
+            discoveryIntervalSeconds: 10,
+            wake: { humans: "mention", agents: "never", allowedUsers: ["human-1"] },
+          },
+        },
+      ],
+      runtime: { kind: "openclaw" },
+    });
+    config.spaces[0]!.comments.discoveryIntervalSeconds = 0.01;
+    const store = new Store(":memory:");
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      new MixedDiscussionAdapter() as unknown as HeartDiscussionAdapter,
+      (event, fields) => logs.push({ event, ...(fields ? { fields } : {}) }),
+    );
+    const running = gateway.start();
+    await eventually(() =>
+      expect(store.listDiscussions("space")).toContainEqual({
+        objectId: "healthy",
+        discussionId: "healthy-discussion",
+        objectName: "Healthy",
+      }),
+    );
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: "discussion_resolution_failed",
+        fields: expect.objectContaining({ objectId: "broken" }),
+      }),
+    );
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("restores a native observer before reconciling an interrupted observable run", async () => {
+    class WaitingAnytype extends FakeAnytype {
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        if (!signal.aborted) yield { type: "unreachable" };
+      }
+    }
+    class ObservableRuntime implements RuntimeDriver {
+      readonly name = "openclaw";
+      readonly projectEnforcement = "enforced" as const;
+      readonly capabilities = {
+        steering: true,
+        thinking: true,
+        multipleOutputParts: true,
+        sessionObservation: true,
+        nativeScheduling: true,
+      } as const;
+      output: ((value: RuntimeSessionOutput) => Promise<void>) | undefined;
+      async doctor(): Promise<string[]> {
+        return [];
+      }
+      async start(): Promise<ActiveRuntime> {
+        throw new Error("A new run should not start during recovery");
+      }
+      async observeSession(
+        _input: { sessionKey: string },
+        onOutput: (output: RuntimeSessionOutput) => Promise<void>,
+      ): Promise<RuntimeSessionObserver> {
+        this.output = onOutput;
+        return { close: async () => undefined };
+      }
+    }
+    const anytype = new WaitingAnytype();
+    const trigger = incoming({ id: "trigger" });
+    const response: ChatMessage = {
+      id: "response",
+      creator: "bot",
+      reply_to_message_id: "trigger",
+      content: { text: "Working…" },
+    };
+    anytype.messages.push(trigger, response);
+    const runtime = new ObservableRuntime();
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [
+        {
+          id: "space",
+          chats: [
+            { id: "chat", wake: { humans: "mention", agents: "never", allowedUsers: ["human-1"] } },
+          ],
+        },
+      ],
+      runtime: { kind: "openclaw" },
+    });
+    const store = new Store(":memory:");
+    store.createRun({
+      id: "interrupted",
+      routeId: "chat:space:chat",
+      threadKey: "chat:space:chat",
+      triggerId: "trigger",
+      responseId: "response",
+      hop: 0,
+    });
+    store.saveSessionBinding({
+      threadKey: "chat:space:chat",
+      routeId: "chat:space:chat",
+      spaceId: "space",
+      chatId: "chat",
+      runtime: "openclaw",
+      nativeSessionKey: "aag:chat:space:chat",
+      generation: 0,
+      state: "active",
+    });
+    const logs: string[] = [];
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      (event) => logs.push(event),
+    );
+    const running = gateway.start();
+    await eventually(() => expect(runtime.output).toBeDefined());
+    expect(logs).toContain("run_reconcile_deferred");
+    expect(store.runningRuns("chat:space:chat")).toHaveLength(1);
+
+    await runtime.output!({
+      id: "terminal-event",
+      cursor: "cursor-1",
+      events: [{ type: "text-delta", text: "Recovered final" }],
+      result: { text: "Recovered final" },
+    });
+    await eventually(() =>
+      expect(anytype.messages.find((message) => message.id === "response")?.content?.text).toBe(
+        "Recovered final",
+      ),
+    );
+    expect(store.runningRuns("chat:space:chat")).toEqual([]);
+    expect(anytype.reactions).toContainEqual({ id: "trigger", emoji: "👀", present: false });
     gateway.stop();
     await running;
     store.close();
@@ -162,11 +469,21 @@ describe("failure containment", () => {
 
   it("does not steer historical message-added events replayed after catchup", async () => {
     const old = incoming({ id: "old", order_id: "001" });
-    const latest = incoming({ id: "latest", order_id: "002", content: { text: "@AAG newest", marks: [{ type: "mention", param: "bot" }] } });
+    const latest = incoming({
+      id: "latest",
+      order_id: "002",
+      content: { text: "@AAG newest", marks: [{ type: "mention", param: "bot" }] },
+    });
     class ReplayingAnytype extends FakeAnytype {
-      override async *stream(_spaceId: string, _chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent> {
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
         yield { type: "message_added", payload: { message: old } };
-        await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
       }
     }
     const anytype = new ReplayingAnytype();
@@ -176,39 +493,134 @@ describe("failure containment", () => {
       version: 1,
       agent: { name: "AAG", participantId: "bot" },
       anytype: { apiKeyFile: "/tmp/key" },
-      spaces: [{ name: "Test", chats: [{ name: "Chat", wake: { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["human-1"] } }] }],
-      runtime: { kind: "openclaw" }
+      spaces: [
+        {
+          name: "Test",
+          chats: [
+            {
+              name: "Chat",
+              wake: {
+                humans: "mention-or-reply",
+                agents: "direct-mention",
+                allowedUsers: ["human-1"],
+              },
+            },
+          ],
+        },
+      ],
+      runtime: { kind: "openclaw" },
     });
     const store = new Store(":memory:");
     store.initialize("chat:space:chat", "001");
     store.markHandled("chat:space:chat", "old", old.created_at);
-    const gateway = new Gateway(anytype, runtime, config, store, {} as HeartDiscussionAdapter, () => undefined);
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      () => undefined,
+    );
     const running = gateway.start();
     await eventually(() => expect(runtime.starts).toHaveLength(1));
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     expect(runtime.steers).toEqual([]);
     gateway.stop();
     await running;
     store.close();
   });
 
+  it("does not compare opaque Anytype order IDs lexically before processing a stream event", async () => {
+    const message = incoming({ id: "fractional", order_id: "!!00" });
+    class FractionalOrderAnytype extends FakeAnytype {
+      streamed = false;
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        if (!this.streamed) {
+          this.streamed = true;
+          yield { type: "message_added", payload: { message } };
+        }
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      }
+    }
+    const anytype = new FractionalOrderAnytype();
+    const runtime = new FakeRuntime();
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [
+        {
+          name: "Test",
+          chats: [
+            {
+              name: "Chat",
+              wake: { humans: "mention", agents: "never", allowedUsers: ["human-1"] },
+            },
+          ],
+        },
+      ],
+      runtime: { kind: "openclaw" },
+    });
+    const store = new Store(":memory:");
+    store.initialize("chat:space:chat", "zzzz");
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      () => undefined,
+    );
+    const running = gateway.start();
+    await eventually(() => expect(runtime.starts).toHaveLength(1));
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
   it("contains a Codex ACP spawn failure without an unhandled rejection", async () => {
-    const driver = new CodexAcpDriver({ kind: "codex", command: "/definitely/missing/codex-acp", args: [], allowedProjects: [], environment: {}, timeoutSeconds: 2, permissions: "deny" });
+    const driver = new CodexAcpDriver({
+      kind: "codex",
+      command: "/definitely/missing/codex-acp",
+      args: [],
+      allowedProjects: [],
+      environment: {},
+      timeoutSeconds: 2,
+      permissions: "deny",
+    });
     const unhandled: unknown[] = [];
-    const listener = (error: unknown) => { unhandled.push(error); };
+    const listener = (error: unknown) => {
+      unhandled.push(error);
+    };
     process.on("unhandledRejection", listener);
     try {
-      await expect(driver.start({ sessionKey: "failure", prompt: "hello" }, () => undefined)).rejects.toBeDefined();
-      await new Promise(resolve => setImmediate(resolve));
+      await expect(
+        driver.start({ sessionKey: "failure", prompt: "hello" }, () => undefined),
+      ).rejects.toBeDefined();
+      await new Promise((resolve) => setImmediate(resolve));
       expect(unhandled).toEqual([]);
-    } finally { process.off("unhandledRejection", listener); }
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
   });
 });
 
 async function eventually(assertion: () => void): Promise<void> {
   let last: unknown;
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    try { assertion(); return; } catch (error) { last = error; await new Promise(resolve => setTimeout(resolve, 5)); }
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      last = error;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
   }
   throw last;
 }

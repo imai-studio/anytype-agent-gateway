@@ -6,7 +6,9 @@ import plugin, { AnytypeChannelRuntime } from "./index.js";
 
 describe("OpenClaw plugin registration", () => {
   it("ships startup and cold-path channel metadata", () => {
-    const manifest = JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8")) as any;
+    const manifest = JSON.parse(
+      readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+    ) as any;
     expect(manifest.activation?.onStartup).toBe(true);
     expect(manifest.channelConfigs?.anytype?.schema?.properties).toMatchObject({
       bridgeToken: { type: "string", minLength: 24 },
@@ -88,7 +90,11 @@ describe("native session event observation", () => {
       stream: "assistant",
       ts: 1_001,
       sessionKey: "agent:anya:anytype:channel:bound",
-      data: { text: "scheduled output", rawPrompt: "must not be persisted", apiKey: "must not leak" },
+      data: {
+        text: "scheduled output",
+        rawPrompt: "must not be persisted",
+        apiKey: "must not leak",
+      },
     });
     expect(account.store.pendingDeliveries(Date.now() + 2_000)).toEqual([
       expect.objectContaining({
@@ -96,7 +102,11 @@ describe("native session event observation", () => {
         route: { spaceId: "space", chatId: "chat" },
         kind: "agent-event",
         owned: true,
-        agentEvent: expect.objectContaining({ runId: "scheduled-run", seq: 5, data: { text: "scheduled output" } }),
+        agentEvent: expect.objectContaining({
+          runId: "scheduled-run",
+          seq: 5,
+          data: { text: "scheduled output" },
+        }),
       }),
     ]);
     await runtime.stopAll();

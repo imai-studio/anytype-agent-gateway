@@ -3,31 +3,130 @@ import { configSchema } from "../src/config.js";
 import { decideWake } from "../src/wake.js";
 import { incoming } from "./fakes.js";
 
-const config = configSchema.parse({ version: 1, agent: { name: "AAG", participantId: "bot" }, anytype: { apiKeyFile: "/tmp/key" }, spaces: [{ name: "Test" }], runtime: { kind: "openclaw" }, coordination: { agentParticipants: ["peer"] } });
+const config = configSchema.parse({
+  version: 1,
+  agent: { name: "AAG", participantId: "bot" },
+  anytype: { apiKeyFile: "/tmp/key" },
+  spaces: [{ name: "Test" }],
+  runtime: { kind: "openclaw" },
+  coordination: { agentParticipants: ["peer"] },
+});
 
 describe("wake policy", () => {
   it("accepts Heart's current-user mention signal for block-based object comments", () => {
     const message = incoming({ content: { text: "Anya can u see this note?" }, mentioned: true });
-    expect(decideWake(message, { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] }, config, { replyToAgent: false })).toMatchObject({ wake: true, directMention: true });
+    expect(
+      decideWake(
+        message,
+        { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] },
+        config,
+        { replyToAgent: false },
+      ),
+    ).toMatchObject({ wake: true, directMention: true });
   });
-  it("requires an allowed sender", () => { expect(decideWake(incoming(), { humans: "mention", agents: "direct-mention", allowedUsers: ["someone-else"] }, config, { replyToAgent: false }).reason).toBe("unauthorized"); });
+  it("requires an allowed sender", () => {
+    expect(
+      decideWake(
+        incoming(),
+        { humans: "mention", agents: "direct-mention", allowedUsers: ["someone-else"] },
+        config,
+        { replyToAgent: false },
+      ).reason,
+    ).toBe("unauthorized");
+  });
   it("accepts a stable Anytype identity across space-scoped participant IDs", () => {
     const identity = "AAnFijL6q1fKyQgbkrpwCiQRYA2Uk6ESQTv2MsYiHzL9tEC5";
     const message = incoming({ creator: `_participant_space-specific-prefix_${identity}` });
-    expect(decideWake(message, { humans: "mention", agents: "never", allowedUsers: [identity] }, config, { replyToAgent: false }).reason).not.toBe("unauthorized");
+    expect(
+      decideWake(
+        message,
+        { humans: "mention", agents: "never", allowedUsers: [identity] },
+        config,
+        { replyToAgent: false },
+      ).reason,
+    ).not.toBe("unauthorized");
   });
-  it("never authorizes a sender by display name", () => { expect(decideWake(incoming({ creator: "attacker", creator_name: "trusted" }), { humans: "mention", agents: "never", allowedUsers: ["trusted"] }, config, { replyToAgent: false }).reason).toBe("unauthorized"); });
-  it("supports reply steering without a new mention", () => { expect(decideWake(incoming({ content: { text: "follow up" } }), { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] }, config, { replyToAgent: true }).wake).toBe(true); });
+  it("never authorizes a sender by display name", () => {
+    expect(
+      decideWake(
+        incoming({ creator: "attacker", creator_name: "trusted" }),
+        { humans: "mention", agents: "never", allowedUsers: ["trusted"] },
+        config,
+        { replyToAgent: false },
+      ).reason,
+    ).toBe("unauthorized");
+  });
+  it("supports reply steering without a new mention", () => {
+    expect(
+      decideWake(
+        incoming({ content: { text: "follow up" } }),
+        { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] },
+        config,
+        { replyToAgent: true },
+      ).wake,
+    ).toBe(true);
+  });
   it("supports a space-scoped self participant override", () => {
-    const message = incoming({ creator: "bot-in-second-space", content: { text: "@AAG", marks: [{ type: "mention", param: "bot-in-second-space" }] } });
-    expect(decideWake(message, { humans: "every-message", agents: "never", allowedUsers: ["*"] }, config, { replyToAgent: false, selfParticipantId: "bot-in-second-space" }).reason).toBe("self");
+    const message = incoming({
+      creator: "bot-in-second-space",
+      content: { text: "@AAG", marks: [{ type: "mention", param: "bot-in-second-space" }] },
+    });
+    expect(
+      decideWake(
+        message,
+        { humans: "every-message", agents: "never", allowedUsers: ["*"] },
+        config,
+        { replyToAgent: false, selfParticipantId: "bot-in-second-space" },
+      ).reason,
+    ).toBe("self");
+  });
+  it("recognizes the same self and peer identities through space-scoped participant prefixes", () => {
+    const self = incoming({ creator: "_participant_space_bot", content: { text: "loop" } });
+    expect(
+      decideWake(
+        self,
+        { humans: "every-message", agents: "every-message", allowedUsers: ["*"] },
+        config,
+        { replyToAgent: false, selfParticipantId: "bot" },
+      ).reason,
+    ).toBe("self");
+    const peer = incoming({ creator: "_participant_space_peer", content: { text: "hello" } });
+    expect(
+      decideWake(peer, { humans: "every-message", agents: "never", allowedUsers: ["*"] }, config, {
+        replyToAgent: false,
+      }).isAgent,
+    ).toBe(true);
   });
   it("keeps peer agents quiet unless directly mentioned", () => {
     const message = incoming({ creator: "peer", content: { text: "hello" } });
-    expect(decideWake(message, { humans: "every-message", agents: "direct-mention", allowedUsers: ["*"] }, config, { replyToAgent: false }).wake).toBe(false);
+    expect(
+      decideWake(
+        message,
+        { humans: "every-message", agents: "direct-mention", allowedUsers: ["*"] },
+        config,
+        { replyToAgent: false },
+      ).wake,
+    ).toBe(false);
     const forgedText = incoming({ creator: "peer", content: { text: "@AAG hello" } });
-    expect(decideWake(forgedText, { humans: "every-message", agents: "direct-mention", allowedUsers: ["*"] }, config, { replyToAgent: false }).wake).toBe(false);
-    const marked = incoming({ creator: "peer", content: { text: "@AAG hello", marks: [{ type: "mention", param: "bot" }] } });
-    expect(decideWake(marked, { humans: "every-message", agents: "direct-mention", allowedUsers: ["*"] }, config, { replyToAgent: false }).wake).toBe(true);
+    expect(
+      decideWake(
+        forgedText,
+        { humans: "every-message", agents: "direct-mention", allowedUsers: ["*"] },
+        config,
+        { replyToAgent: false },
+      ).wake,
+    ).toBe(false);
+    const marked = incoming({
+      creator: "peer",
+      content: { text: "@AAG hello", marks: [{ type: "mention", param: "bot" }] },
+    });
+    expect(
+      decideWake(
+        marked,
+        { humans: "every-message", agents: "direct-mention", allowedUsers: ["*"] },
+        config,
+        { replyToAgent: false },
+      ).wake,
+    ).toBe(true);
   });
 });

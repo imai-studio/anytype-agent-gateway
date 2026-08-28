@@ -8,15 +8,25 @@ export class HeartDiscussionAdapter {
         if (!objects.length)
             return [];
         const { command, grpcAddress } = this.config.anytype.heartAdapter;
-        const args = ["resolve", "--space-id", spaceId, "--grpc-address", grpcAddress, ...(createMissing ? ["--create-missing"] : [])];
+        const args = [
+            "resolve",
+            "--space-id",
+            spaceId,
+            "--grpc-address",
+            grpcAddress,
+            ...(createMissing ? ["--create-missing"] : []),
+        ];
         if (this.config.anytype.cli.configPath)
             args.push("--config", this.config.anytype.cli.configPath);
-        const { stdout } = await runProcess(command, args, { stdin: `${JSON.stringify({ objectIds: objects.map(object => object.id) })}\n`, timeoutMs: Math.max(30_000, objects.length * 12_000) });
+        const { stdout } = await runProcess(command, args, {
+            stdin: `${JSON.stringify({ objectIds: objects.map((object) => object.id) })}\n`,
+            timeoutMs: Math.max(30_000, objects.length * 12_000),
+        });
         const result = JSON.parse(stdout);
         return result.discussions;
     }
     async hydrateMessages(chatId, messages) {
-        const pending = messages.filter(message => !message.content?.text);
+        const pending = messages.filter((message) => !message.content?.text);
         if (!pending.length)
             return messages;
         const { command, grpcAddress } = this.config.anytype.heartAdapter;
@@ -24,12 +34,12 @@ export class HeartDiscussionAdapter {
         if (this.config.anytype.cli.configPath)
             args.push("--config", this.config.anytype.cli.configPath);
         const { stdout } = await runProcess(command, args, {
-            stdin: `${JSON.stringify({ chatId, messageIds: pending.map(message => message.id) })}\n`,
-            timeoutMs: Math.max(30_000, pending.length * 2_000)
+            stdin: `${JSON.stringify({ chatId, messageIds: pending.map((message) => message.id) })}\n`,
+            timeoutMs: Math.max(30_000, pending.length * 2_000),
         });
         const result = JSON.parse(stdout);
-        const hydrated = new Map(result.messages.map(message => [message.id, message]));
-        return messages.map(message => {
+        const hydrated = new Map(result.messages.map((message) => [message.id, message]));
+        return messages.map((message) => {
             const full = hydrated.get(message.id);
             if (!full)
                 return message;
@@ -38,12 +48,17 @@ export class HeartDiscussionAdapter {
                 ...full,
                 ...message,
                 ...(content ? { content } : {}),
-                ...(full.mentioned ? { mentioned: true } : {})
+                ...(full.mentioned ? { mentioned: true } : {}),
             };
         });
     }
     async sendMessage(chatId, input) {
-        const result = await this.mutate("send", { chatId, text: input.text, ...(input.replyTo ? { replyTo: input.replyTo } : {}), ...(input.marks?.length ? { marks: input.marks } : {}) });
+        const result = await this.mutate("send", {
+            chatId,
+            text: input.text,
+            ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+            ...(input.marks?.length ? { marks: input.marks } : {}),
+        });
         if (!result.messageId)
             throw new Error("Heart returned no messageId");
         return result.messageId;
@@ -59,7 +74,10 @@ export class HeartDiscussionAdapter {
         const args = [action, "--grpc-address", grpcAddress];
         if (this.config.anytype.cli.configPath)
             args.push("--config", this.config.anytype.cli.configPath);
-        const { stdout } = await runProcess(command, args, { stdin: `${JSON.stringify(input)}\n`, timeoutMs: 30_000 });
+        const { stdout } = await runProcess(command, args, {
+            stdin: `${JSON.stringify(input)}\n`,
+            timeoutMs: 30_000,
+        });
         return stdout.trim() ? JSON.parse(stdout) : {};
     }
 }
@@ -77,10 +95,18 @@ export class DiscussionAnytypePort {
     async listMessages(spaceId, chatId, limit, afterOrderId) {
         return this.heart.hydrateMessages(chatId, await this.base.listMessages(spaceId, chatId, limit, afterOrderId));
     }
-    async sendMessage(_spaceId, chatId, input) { return this.heart.sendMessage(chatId, input); }
-    async editMessage(_spaceId, chatId, messageId, text, marks) { await this.heart.editMessage(chatId, messageId, text, marks); }
-    async deleteMessage(_spaceId, chatId, messageId) { await this.heart.deleteMessage(chatId, messageId); }
-    async ensureReaction(spaceId, chatId, messageId, emoji, present) { await this.base.ensureReaction(spaceId, chatId, messageId, emoji, present); }
+    async sendMessage(_spaceId, chatId, input) {
+        return this.heart.sendMessage(chatId, input);
+    }
+    async editMessage(_spaceId, chatId, messageId, text, marks) {
+        await this.heart.editMessage(chatId, messageId, text, marks);
+    }
+    async deleteMessage(_spaceId, chatId, messageId) {
+        await this.heart.deleteMessage(chatId, messageId);
+    }
+    async ensureReaction(spaceId, chatId, messageId, emoji, present, participantId) {
+        await this.base.ensureReaction(spaceId, chatId, messageId, emoji, present, participantId);
+    }
     async *stream(spaceId, chatId, signal) {
         for await (const event of this.base.stream(spaceId, chatId, signal)) {
             const message = event.payload?.message;
@@ -92,9 +118,19 @@ export class DiscussionAnytypePort {
             yield { ...event, payload: { ...event.payload, message: hydrated } };
         }
     }
-    async resolveSpace(selector) { return this.base.resolveSpace(selector); }
-    async resolveChat(spaceId, selector) { return this.base.resolveChat(spaceId, selector); }
-    async listChats(spaceId) { return this.base.listChats(spaceId); }
-    async getObject(spaceId, objectId) { return this.base.getObject(spaceId, objectId); }
-    async searchObjects(spaceId, offset, limit) { return this.base.searchObjects(spaceId, offset, limit); }
+    async resolveSpace(selector) {
+        return this.base.resolveSpace(selector);
+    }
+    async resolveChat(spaceId, selector) {
+        return this.base.resolveChat(spaceId, selector);
+    }
+    async listChats(spaceId) {
+        return this.base.listChats(spaceId);
+    }
+    async getObject(spaceId, objectId) {
+        return this.base.getObject(spaceId, objectId);
+    }
+    async searchObjects(spaceId, offset, limit) {
+        return this.base.searchObjects(spaceId, offset, limit);
+    }
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { defineChannelPluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import { BridgeServer, DeliveryWorker, createDelivery } from "./bridge.js";
+import { BridgeServer, createDelivery } from "./bridge.js";
 import { createAnytypeChannel } from "./channel.js";
 import {
   anytypePluginConfigSchema,
@@ -16,7 +16,6 @@ type AccountRuntime = {
   account: ResolvedAnytypeAccount;
   store: BridgeStore;
   server: BridgeServer;
-  worker: DeliveryWorker;
   pruneTimer: NodeJS.Timeout;
 };
 
@@ -39,17 +38,17 @@ export class AnytypeChannelRuntime {
     store.pruneDelivered(Date.now() - 7 * 24 * 60 * 60 * 1000);
     store.pruneOwnedRuns(Date.now() - 7 * 24 * 60 * 60 * 1000);
     store.pruneExpiredPending(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const pruneTimer = setInterval(() => {
-      store.pruneDelivered(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      store.pruneOwnedRuns(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      store.pruneExpiredPending(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    }, 24 * 60 * 60 * 1000);
+    store.pruneExpiredThinking(Date.now() - 60 * 60 * 1000);
+    const pruneTimer = setInterval(
+      () => {
+        store.pruneDelivered(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        store.pruneOwnedRuns(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        store.pruneExpiredPending(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        store.pruneExpiredThinking(Date.now() - 60 * 60 * 1000);
+      },
+      24 * 60 * 60 * 1000,
+    );
     pruneTimer.unref?.();
-    const worker = new DeliveryWorker({
-      store,
-      token: account.bridgeToken,
-      log: (level, message) => this.#log(level, message),
-    });
     const server = new BridgeServer({
       host: account.listenHost,
       port: account.listenPort,
@@ -58,7 +57,7 @@ export class AnytypeChannelRuntime {
       log: (level, message) => this.#log(level, message),
       onInbound: async (inbound) => this.#dispatch(account, store, inbound),
     });
-    const runtime = { account, store, worker, server, pruneTimer };
+    const runtime = { account, store, server, pruneTimer };
     this.#accounts.set(account.accountId, runtime);
     return runtime;
   }
@@ -66,7 +65,6 @@ export class AnytypeChannelRuntime {
   async startAccount(cfg: CoreConfig, accountId?: string | null): Promise<AccountRuntime> {
     const runtime = this.runtimeFor(cfg, accountId);
     await runtime.server.start();
-    runtime.worker.start();
     return runtime;
   }
 
@@ -75,7 +73,6 @@ export class AnytypeChannelRuntime {
     if (!runtime) return;
     this.#accounts.delete(accountId);
     clearInterval(runtime.pruneTimer);
-    runtime.worker.stop();
     await runtime.server.stop();
     runtime.store.close();
   }
@@ -95,9 +92,7 @@ export class AnytypeChannelRuntime {
   }): string {
     const runtime = this.runtimeFor(params.cfg, params.accountId);
     const delivery = createDelivery({
-      sourceKey:
-        params.sourceKey ??
-        `final:${runtime.account.accountId}:${randomUUID()}`,
+      sourceKey: params.sourceKey ?? `final:${runtime.account.accountId}:${randomUUID()}`,
       accountId: runtime.account.accountId,
       route: params.route,
       ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
@@ -108,7 +103,6 @@ export class AnytypeChannelRuntime {
       },
     });
     runtime.store.putDelivery(delivery);
-    void runtime.worker.flush();
     return delivery.id;
   }
 
@@ -146,7 +140,6 @@ export class AnytypeChannelRuntime {
           createdAt: event.ts,
         }),
       );
-      void runtime.worker.flush();
       return;
     }
   }
@@ -185,12 +178,16 @@ export class AnytypeChannelRuntime {
   }
 }
 
-function sanitizeAgentEventData(stream: string, data: Record<string, unknown>): Record<string, unknown> {
-  const keys = stream === "assistant" || stream === "thinking"
-    ? ["delta", "text", "itemId", "partId", "messageId", "phase", "replace"]
-    : stream === "tool"
-      ? ["name", "toolName", "status", "phase"]
-      : ["itemId", "partId", "messageId", "status", "phase", "state", "text"];
+function sanitizeAgentEventData(
+  stream: string,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const keys =
+    stream === "assistant" || stream === "thinking"
+      ? ["delta", "text", "itemId", "partId", "messageId", "phase", "replace"]
+      : stream === "tool"
+        ? ["name", "toolName", "status", "phase"]
+        : ["itemId", "partId", "messageId", "status", "phase", "state", "text"];
   const sanitized: Record<string, unknown> = {};
   for (const key of keys) {
     const value = data[key];

@@ -10,7 +10,7 @@ describe("buildLaunchdPlist", () => {
       stdoutPath: "/Users/test/Library/Logs/AnytypeAgentGateway/gateway.log",
       stderrPath: "/Users/test/Library/Logs/AnytypeAgentGateway/gateway.error.log",
       pathEnvironment: "/opt/node/bin:/usr/bin:/bin",
-      dependencyLabel: "anytype"
+      dependencyLabel: "anytype",
     });
 
     expect(plist).toContain("<string>/opt/node/bin/node</string>");
@@ -27,11 +27,11 @@ describe("buildLaunchdPlist", () => {
     const plist = buildLaunchdPlist({
       nodePath: "/node&one",
       cliPath: "/cli<two>",
-      configPath: "/config\"three\"",
+      configPath: '/config"three"',
       stdoutPath: "/log'out",
       stderrPath: "/log&err",
       pathEnvironment: "/bin&tools",
-      dependencyLabel: "any&type"
+      dependencyLabel: "any&type",
     });
 
     expect(plist).toContain("/node&amp;one");
@@ -48,7 +48,7 @@ describe("buildLaunchdPlist", () => {
       configPath: "/config.yaml",
       stdoutPath: "/stdout.log",
       stderrPath: "/stderr.log",
-      pathEnvironment: "/usr/bin:/bin"
+      pathEnvironment: "/usr/bin:/bin",
     });
 
     expect(plist).not.toContain("OtherJobEnabled");

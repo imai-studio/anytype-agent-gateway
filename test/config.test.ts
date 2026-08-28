@@ -37,21 +37,40 @@ describe("loadConfig", () => {
   it("rejects prefix wake without a prefix", async () => {
     const dir = await mkdtemp(join(tmpdir(), "aag-config-"));
     const path = join(dir, "bad.yaml");
-    await writeFile(path, yaml.replace("runtime: { kind: openclaw }", "runtime: { kind: openclaw }\n").replace("wake: { humans: mention, agents: never, allowedUsers: [human-1] }", "wake: { humans: prefix, agents: never, allowedUsers: [human-1] }"));
+    await writeFile(
+      path,
+      yaml
+        .replace("runtime: { kind: openclaw }", "runtime: { kind: openclaw }\n")
+        .replace(
+          "wake: { humans: mention, agents: never, allowedUsers: [human-1] }",
+          "wake: { humans: prefix, agents: never, allowedUsers: [human-1] }",
+        ),
+    );
     await expect(loadConfig(path)).rejects.toThrow("wake.prefix");
   });
 
   it("requires an explicit wake policy when comments are enabled", async () => {
     const dir = await mkdtemp(join(tmpdir(), "aag-config-"));
     const path = join(dir, "comments.yaml");
-    await writeFile(path, yaml.replace("chats:\n      - name: sandbox\n        wake: { humans: mention, agents: never, allowedUsers: [human-1] }", "comments: { mode: all }"));
+    await writeFile(
+      path,
+      yaml.replace(
+        "chats:\n      - name: sandbox\n        wake: { humans: mention, agents: never, allowedUsers: [human-1] }",
+        "comments: { mode: all }",
+      ),
+    );
     await expect(loadConfig(path)).rejects.toThrow("comments.wake");
   });
 
   it("requires an explicit wake policy when chat discovery is enabled", async () => {
     const dir = await mkdtemp(join(tmpdir(), "aag-config-"));
     const path = join(dir, "chat-discovery.yaml");
-    await writeFile(path, yaml.replace("runtime: { kind: openclaw }", "runtime: { kind: openclaw }\n").replace("    chats:", "    chatDiscovery: { enabled: true }\n    chats:"));
+    await writeFile(
+      path,
+      yaml
+        .replace("runtime: { kind: openclaw }", "runtime: { kind: openclaw }\n")
+        .replace("    chats:", "    chatDiscovery: { enabled: true }\n    chats:"),
+    );
     await expect(loadConfig(path)).rejects.toThrow("chatDiscovery.wake");
   });
 

@@ -30,6 +30,7 @@ export declare class OpenClawDriver implements RuntimeDriver {
     private readonly eventCallbacks;
     private readonly ownedRunIds;
     private readonly ownedTerminalTexts;
+    private readonly ownedSessionLaunches;
     private readonly bridgeObservers;
     private bridgePollTimer;
     private bridgePolling;
@@ -49,16 +50,20 @@ export declare class OpenClawDriver implements RuntimeDriver {
         afterCursor?: string;
         conversation?: ConversationRef;
     }, onOutput: (output: RuntimeSessionOutput) => Promise<void>): Promise<RuntimeSessionObserver>;
+    private resolveSessionKey;
     private bindBridgeSession;
     private observeBridgeSession;
     private pollBridgeOutbox;
     private reportBridgePollError;
     private drainBridgeOutbox;
+    private drainBridgeObserver;
     private ackBridgeDelivery;
     private markBridgeOwnedRun;
     private ackBridgeDeliveries;
     private bridgeToken;
     private markOwnedTerminalText;
+    private beginOwnedSessionLaunch;
+    private endOwnedSessionLaunch;
     private markOwnedRun;
     private consumeOwnedTerminalText;
     private getClient;

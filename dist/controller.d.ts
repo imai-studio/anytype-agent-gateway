@@ -13,7 +13,9 @@ export declare class AgentController {
     private readonly processing;
     private readonly observers;
     private readonly observerStarts;
+    private readonly selfParticipantIds;
     private readonly outboxWorkerId;
+    private outboxDrain;
     private readonly outboxTimer;
     private readonly observerTimer;
     constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, log: (event: string, fields?: Record<string, unknown>) => void, discussionAnytype?: AnytypePort, managementCommand?: ((routeId: string) => string) | undefined);
@@ -32,6 +34,8 @@ export declare class AgentController {
     restoreObserversForRoute(conversation: ConversationRef): Promise<void>;
     private receiveSessionOutput;
     private drainOutbox;
+    private drainOutboxOnce;
     private persistProjectionCycle;
+    private selfParticipantId;
 }
 export declare function messageFingerprint(message: ChatMessage): string;

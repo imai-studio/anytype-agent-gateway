@@ -1,5 +1,5 @@
 import { type OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import { BridgeServer, DeliveryWorker } from "./bridge.js";
+import { BridgeServer } from "./bridge.js";
 import { type CoreConfig, type ResolvedAnytypeAccount } from "./config.js";
 import type { AnytypeRoute } from "./protocol.js";
 import { BridgeStore } from "./store.js";
@@ -7,7 +7,6 @@ type AccountRuntime = {
     account: ResolvedAnytypeAccount;
     store: BridgeStore;
     server: BridgeServer;
-    worker: DeliveryWorker;
     pruneTimer: NodeJS.Timeout;
 };
 export declare class AnytypeChannelRuntime {

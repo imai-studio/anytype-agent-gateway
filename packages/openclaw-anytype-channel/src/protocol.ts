@@ -103,12 +103,19 @@ function base64UrlDecode(value: string): string {
   return Buffer.from(value, "base64url").toString("utf8");
 }
 
-/** Opaque OpenClaw peer target. Discussion identity stays in the thread suffix. */
-export function encodeRouteTarget(route: Pick<AnytypeRoute, "spaceId" | "chatId">): string {
-  return `route:${base64UrlEncode(JSON.stringify([route.spaceId, route.chatId]))}`;
+/**
+ * Opaque OpenClaw peer target. Version one targets contained two array items;
+ * the optional third item makes discussion identity durable outside transient
+ * thread context while preserving backwards compatibility.
+ */
+export function encodeRouteTarget(route: AnytypeRoute): string {
+  const payload = route.discussionRootId
+    ? [route.spaceId, route.chatId, route.discussionRootId]
+    : [route.spaceId, route.chatId];
+  return `route:${base64UrlEncode(JSON.stringify(payload))}`;
 }
 
-export function decodeRouteTarget(target: string): Pick<AnytypeRoute, "spaceId" | "chatId"> {
+export function decodeRouteTarget(target: string): AnytypeRoute {
   const normalized = target.trim().replace(/^anytype:/u, "");
   if (!normalized.startsWith("route:")) {
     throw new Error("Invalid Anytype target; expected route:<base64url>");
@@ -116,13 +123,28 @@ export function decodeRouteTarget(target: string): Pick<AnytypeRoute, "spaceId" 
   const parsed: unknown = JSON.parse(base64UrlDecode(normalized.slice("route:".length)));
   if (
     !Array.isArray(parsed) ||
-    parsed.length !== 2 ||
+    (parsed.length !== 2 && parsed.length !== 3) ||
     typeof parsed[0] !== "string" ||
     typeof parsed[1] !== "string" ||
+    (parsed.length === 3 && (typeof parsed[2] !== "string" || !parsed[2])) ||
     !parsed[0] ||
     !parsed[1]
   ) {
     throw new Error("Invalid Anytype route target payload");
   }
-  return { spaceId: parsed[0], chatId: parsed[1] };
+  return {
+    spaceId: parsed[0],
+    chatId: parsed[1],
+    ...(parsed[2] ? { discussionRootId: parsed[2] } : {}),
+  };
+}
+
+/** Explicit OpenClaw thread context wins over the root encoded in the target. */
+export function resolveTargetRoute(
+  target: string,
+  threadId?: string | number | null,
+): AnytypeRoute {
+  const decoded = decodeRouteTarget(target);
+  if (threadId == null) return decoded;
+  return { ...decoded, discussionRootId: String(threadId) };
 }

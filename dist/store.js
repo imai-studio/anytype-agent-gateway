@@ -47,8 +47,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS session_generations (thread_key TEXT PRIMARY KEY, generation INTEGER NOT NULL, updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS route_wake_overrides (route_id TEXT PRIMARY KEY, humans TEXT NOT NULL, updated_at INTEGER NOT NULL);
     `);
-        const versionColumns = this.db.prepare("PRAGMA table_info(handled_message_versions)").all();
-        if (!versionColumns.some(column => column.name === "fingerprint")) {
+        const versionColumns = this.db
+            .prepare("PRAGMA table_info(handled_message_versions)")
+            .all();
+        if (!versionColumns.some((column) => column.name === "fingerprint")) {
             this.db.exec("ALTER TABLE handled_message_versions ADD COLUMN fingerprint TEXT");
         }
     }
@@ -144,16 +146,32 @@ export class Store {
       );
     `);
     }
-    isInitialized(routeId) { return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId)); }
-    initialize(routeId, newestOrderId) { this.db.prepare("INSERT OR IGNORE INTO cursors(route_id,newest_order_id,initialized_at) VALUES(?,?,?)").run(routeId, newestOrderId ?? null, Date.now()); }
-    cursor(routeId) { return this.db.prepare("SELECT newest_order_id FROM cursors WHERE route_id=?").get(routeId)?.newest_order_id ?? undefined; }
-    updateCursor(routeId, newestOrderId) { this.db.prepare("UPDATE cursors SET newest_order_id=? WHERE route_id=?").run(newestOrderId, routeId); }
+    isInitialized(routeId) {
+        return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));
+    }
+    initialize(routeId, newestOrderId) {
+        this.db
+            .prepare("INSERT OR IGNORE INTO cursors(route_id,newest_order_id,initialized_at) VALUES(?,?,?)")
+            .run(routeId, newestOrderId ?? null, Date.now());
+    }
+    cursor(routeId) {
+        return (this.db.prepare("SELECT newest_order_id FROM cursors WHERE route_id=?").get(routeId)?.newest_order_id ?? undefined);
+    }
+    updateCursor(routeId, newestOrderId) {
+        this.db
+            .prepare("UPDATE cursors SET newest_order_id=? WHERE route_id=?")
+            .run(newestOrderId, routeId);
+    }
     isHandled(routeId, messageId, modifiedAt, fingerprint) {
-        if (!this.db.prepare("SELECT 1 FROM handled_messages WHERE route_id=? AND message_id=?").get(routeId, messageId))
+        if (!this.db
+            .prepare("SELECT 1 FROM handled_messages WHERE route_id=? AND message_id=?")
+            .get(routeId, messageId))
             return false;
         if (modifiedAt === undefined)
             return true;
-        const version = this.db.prepare("SELECT modified_at,fingerprint FROM handled_message_versions WHERE route_id=? AND message_id=?").get(routeId, messageId);
+        const version = this.db
+            .prepare("SELECT modified_at,fingerprint FROM handled_message_versions WHERE route_id=? AND message_id=?")
+            .get(routeId, messageId);
         if (!version)
             return true;
         if (modifiedAt < version.modified_at)
@@ -163,18 +181,32 @@ export class Store {
         return version.modified_at >= modifiedAt;
     }
     markHandled(routeId, messageId, modifiedAt, fingerprint) {
-        this.db.prepare("INSERT INTO handled_messages(route_id,message_id,handled_at) VALUES(?,?,?) ON CONFLICT(route_id,message_id) DO UPDATE SET handled_at=excluded.handled_at").run(routeId, messageId, Date.now());
+        this.db
+            .prepare("INSERT INTO handled_messages(route_id,message_id,handled_at) VALUES(?,?,?) ON CONFLICT(route_id,message_id) DO UPDATE SET handled_at=excluded.handled_at")
+            .run(routeId, messageId, Date.now());
         if (modifiedAt !== undefined)
-            this.db.prepare("INSERT INTO handled_message_versions(route_id,message_id,modified_at,fingerprint) VALUES(?,?,?,?) ON CONFLICT(route_id,message_id) DO UPDATE SET modified_at=MAX(modified_at,excluded.modified_at), fingerprint=excluded.fingerprint").run(routeId, messageId, modifiedAt, fingerprint ?? null);
+            this.db
+                .prepare("INSERT INTO handled_message_versions(route_id,message_id,modified_at,fingerprint) VALUES(?,?,?,?) ON CONFLICT(route_id,message_id) DO UPDATE SET modified_at=MAX(modified_at,excluded.modified_at), fingerprint=excluded.fingerprint")
+                .run(routeId, messageId, modifiedAt, fingerprint ?? null);
     }
-    unmarkHandled(routeId, messageId) { this.db.prepare("DELETE FROM handled_messages WHERE route_id=? AND message_id=?").run(routeId, messageId); }
+    unmarkHandled(routeId, messageId) {
+        this.db
+            .prepare("DELETE FROM handled_messages WHERE route_id=? AND message_id=?")
+            .run(routeId, messageId);
+    }
     createRun(run) {
         this.db.exec("BEGIN IMMEDIATE");
         try {
-            this.db.prepare("INSERT INTO runs(run_id,route_id,thread_key,trigger_message_id,response_message_id,status,hop,started_at) VALUES(?,?,?,?,?,'running',?,?)").run(run.id, run.routeId, run.threadKey, run.triggerId, run.responseId, run.hop, Date.now());
-            const moved = this.db.prepare("UPDATE run_messages SET run_id=?, created_at=? WHERE message_id=?").run(run.id, Date.now(), run.responseId);
+            this.db
+                .prepare("INSERT INTO runs(run_id,route_id,thread_key,trigger_message_id,response_message_id,status,hop,started_at) VALUES(?,?,?,?,?,'running',?,?)")
+                .run(run.id, run.routeId, run.threadKey, run.triggerId, run.responseId, run.hop, Date.now());
+            const moved = this.db
+                .prepare("UPDATE run_messages SET run_id=?, created_at=? WHERE message_id=?")
+                .run(run.id, Date.now(), run.responseId);
             if (moved.changes === 0)
-                this.db.prepare("INSERT INTO run_messages(run_id,message_id,created_at) VALUES(?,?,?)").run(run.id, run.responseId, Date.now());
+                this.db
+                    .prepare("INSERT INTO run_messages(run_id,message_id,created_at) VALUES(?,?,?)")
+                    .run(run.id, run.responseId, Date.now());
             this.db.exec("COMMIT");
         }
         catch (error) {
@@ -184,61 +216,170 @@ export class Store {
     }
     updateRunResponse(id, responseId, triggerId) {
         if (triggerId)
-            this.db.prepare("UPDATE runs SET response_message_id=?,trigger_message_id=? WHERE run_id=?").run(responseId, triggerId, id);
+            this.db
+                .prepare("UPDATE runs SET response_message_id=?,trigger_message_id=? WHERE run_id=?")
+                .run(responseId, triggerId, id);
         else
             this.db.prepare("UPDATE runs SET response_message_id=? WHERE run_id=?").run(responseId, id);
-        this.db.prepare("INSERT OR IGNORE INTO run_messages(run_id,message_id,created_at) VALUES(?,?,?)").run(id, responseId, Date.now());
+        this.db
+            .prepare("INSERT OR IGNORE INTO run_messages(run_id,message_id,created_at) VALUES(?,?,?)")
+            .run(id, responseId, Date.now());
     }
-    isResponse(messageId) { return Boolean(this.db.prepare("SELECT 1 FROM run_messages WHERE message_id=?").get(messageId) ?? this.db.prepare("SELECT 1 FROM runs WHERE response_message_id=?").get(messageId) ?? this.db.prepare("SELECT 1 FROM proactive_deliveries WHERE message_id=?").get(messageId)); }
+    isResponse(messageId) {
+        return Boolean(this.db.prepare("SELECT 1 FROM run_messages WHERE message_id=?").get(messageId) ??
+            this.db.prepare("SELECT 1 FROM runs WHERE response_message_id=?").get(messageId) ??
+            this.db.prepare("SELECT 1 FROM proactive_deliveries WHERE message_id=?").get(messageId));
+    }
     runningRuns(routeId) {
-        return this.db.prepare("SELECT run_id,thread_key,trigger_message_id,response_message_id FROM runs WHERE route_id=? AND status='running'").all(routeId).map(row => ({ id: row.run_id, threadKey: row.thread_key, triggerId: row.trigger_message_id, responseId: row.response_message_id }));
+        return this.db
+            .prepare("SELECT run_id,thread_key,trigger_message_id,response_message_id,started_at FROM runs WHERE route_id=? AND status='running'")
+            .all(routeId).map((row) => ({
+            id: row.run_id,
+            threadKey: row.thread_key,
+            triggerId: row.trigger_message_id,
+            responseId: row.response_message_id,
+            startedAt: row.started_at,
+        }));
     }
-    finishRun(id, status) { this.db.prepare("UPDATE runs SET status=?, finished_at=? WHERE run_id=?").run(status, Date.now(), id); }
-    recentActivations(routeId, threadKey, since) { const row = this.db.prepare("SELECT COUNT(*) AS count FROM runs WHERE route_id=? AND thread_key=? AND started_at>=?").get(routeId, threadKey, since); return Number(row.count); }
+    runningRunForThread(threadKey) {
+        const row = this.db
+            .prepare("SELECT run_id,route_id,trigger_message_id,response_message_id FROM runs WHERE thread_key=? AND status='running' ORDER BY started_at DESC LIMIT 1")
+            .get(threadKey);
+        return row
+            ? {
+                id: row.run_id,
+                routeId: row.route_id,
+                triggerId: row.trigger_message_id,
+                responseId: row.response_message_id,
+            }
+            : undefined;
+    }
+    finishRun(id, status) {
+        this.db
+            .prepare("UPDATE runs SET status=?, finished_at=? WHERE run_id=?")
+            .run(status, Date.now(), id);
+    }
+    recentActivations(routeId, threadKey, since) {
+        const row = this.db
+            .prepare("SELECT COUNT(*) AS count FROM runs WHERE route_id=? AND thread_key=? AND started_at>=?")
+            .get(routeId, threadKey, since);
+        return Number(row.count);
+    }
     prune(before) {
         this.db.prepare("DELETE FROM handled_messages WHERE handled_at < ?").run(before);
-        this.db.prepare("DELETE FROM handled_message_versions WHERE NOT EXISTS (SELECT 1 FROM handled_messages h WHERE h.route_id=handled_message_versions.route_id AND h.message_id=handled_message_versions.message_id)").run();
-        this.db.prepare("DELETE FROM runs WHERE finished_at IS NOT NULL AND finished_at < ?").run(before);
-        this.db.prepare("DELETE FROM output_cycles WHERE state <> 'open' AND completed_at IS NOT NULL AND completed_at < ?").run(before);
-        this.db.prepare("DELETE FROM outbound_outbox WHERE status IN ('delivered','dead') AND COALESCE(delivered_at,updated_at) < ?").run(before);
+        this.db
+            .prepare("DELETE FROM handled_message_versions WHERE NOT EXISTS (SELECT 1 FROM handled_messages h WHERE h.route_id=handled_message_versions.route_id AND h.message_id=handled_message_versions.message_id)")
+            .run();
+        this.db
+            .prepare("DELETE FROM runs WHERE finished_at IS NOT NULL AND finished_at < ?")
+            .run(before);
+        this.db
+            .prepare("DELETE FROM output_cycles WHERE state <> 'open' AND completed_at IS NOT NULL AND completed_at < ?")
+            .run(before);
+        this.db
+            .prepare("DELETE FROM outbound_outbox WHERE status='delivered' AND delivered_at IS NOT NULL AND delivered_at < ?")
+            .run(before);
         this.db.prepare("DELETE FROM proactive_deliveries WHERE delivered_at < ?").run(before);
         this.db.prepare("DELETE FROM bridge_cursors WHERE updated_at < ?").run(before);
-        this.db.prepare("DELETE FROM session_bindings WHERE state <> 'active' AND updated_at < ?").run(before);
+        this.db
+            .prepare("DELETE FROM session_bindings WHERE state <> 'active' AND updated_at < ?")
+            .run(before);
     }
-    cacheDiscussion(value) { this.db.prepare("INSERT INTO discussions(space_id,object_id,discussion_id,object_name,object_type,discovered_at) VALUES(?,?,?,?,?,?) ON CONFLICT(space_id,object_id) DO UPDATE SET discussion_id=excluded.discussion_id, object_name=excluded.object_name, object_type=excluded.object_type, discovered_at=excluded.discovered_at").run(value.spaceId, value.objectId, value.discussionId, value.objectName ?? null, value.objectType ?? null, Date.now()); }
-    knownDiscussionObjectIds(spaceId) { return new Set(this.db.prepare("SELECT object_id FROM discussions WHERE space_id=?").all(spaceId).map(row => row.object_id)); }
-    listDiscussions(spaceId) { return this.db.prepare("SELECT object_id,discussion_id,object_name,object_type FROM discussions WHERE space_id=?").all(spaceId).map(row => ({ objectId: row.object_id, discussionId: row.discussion_id, ...(row.object_name ? { objectName: row.object_name } : {}), ...(row.object_type ? { objectType: row.object_type } : {}) })); }
-    codexAcpSession(sessionKey) { return this.db.prepare("SELECT session_id FROM codex_acp_sessions WHERE session_key=?").get(sessionKey)?.session_id; }
-    saveCodexAcpSession(sessionKey, sessionId) { this.db.prepare("INSERT INTO codex_acp_sessions(session_key,session_id,updated_at) VALUES(?,?,?) ON CONFLICT(session_key) DO UPDATE SET session_id=excluded.session_id, updated_at=excluded.updated_at").run(sessionKey, sessionId, Date.now()); }
-    deleteCodexAcpSession(sessionKey) { this.db.prepare("DELETE FROM codex_acp_sessions WHERE session_key=?").run(sessionKey); }
-    sessionGeneration(threadKey) { return Number(this.db.prepare("SELECT generation FROM session_generations WHERE thread_key=?").get(threadKey)?.generation ?? 0); }
+    cacheDiscussion(value) {
+        this.db
+            .prepare("INSERT INTO discussions(space_id,object_id,discussion_id,object_name,object_type,discovered_at) VALUES(?,?,?,?,?,?) ON CONFLICT(space_id,object_id) DO UPDATE SET discussion_id=excluded.discussion_id, object_name=excluded.object_name, object_type=excluded.object_type, discovered_at=excluded.discovered_at")
+            .run(value.spaceId, value.objectId, value.discussionId, value.objectName ?? null, value.objectType ?? null, Date.now());
+    }
+    knownDiscussionObjectIds(spaceId) {
+        return new Set(this.db
+            .prepare("SELECT object_id FROM discussions WHERE space_id=?")
+            .all(spaceId).map((row) => row.object_id));
+    }
+    listDiscussions(spaceId) {
+        return this.db
+            .prepare("SELECT object_id,discussion_id,object_name,object_type FROM discussions WHERE space_id=?")
+            .all(spaceId).map((row) => ({
+            objectId: row.object_id,
+            discussionId: row.discussion_id,
+            ...(row.object_name ? { objectName: row.object_name } : {}),
+            ...(row.object_type ? { objectType: row.object_type } : {}),
+        }));
+    }
+    codexAcpSession(sessionKey) {
+        return this.db
+            .prepare("SELECT session_id FROM codex_acp_sessions WHERE session_key=?")
+            .get(sessionKey)?.session_id;
+    }
+    saveCodexAcpSession(sessionKey, sessionId) {
+        this.db
+            .prepare("INSERT INTO codex_acp_sessions(session_key,session_id,updated_at) VALUES(?,?,?) ON CONFLICT(session_key) DO UPDATE SET session_id=excluded.session_id, updated_at=excluded.updated_at")
+            .run(sessionKey, sessionId, Date.now());
+    }
+    deleteCodexAcpSession(sessionKey) {
+        this.db.prepare("DELETE FROM codex_acp_sessions WHERE session_key=?").run(sessionKey);
+    }
+    sessionGeneration(threadKey) {
+        return Number(this.db
+            .prepare("SELECT generation FROM session_generations WHERE thread_key=?")
+            .get(threadKey)?.generation ?? 0);
+    }
     resetSession(threadKey) {
-        this.db.prepare("INSERT INTO session_generations(thread_key,generation,updated_at) VALUES(?,1,?) ON CONFLICT(thread_key) DO UPDATE SET generation=generation+1,updated_at=excluded.updated_at").run(threadKey, Date.now());
+        this.db
+            .prepare("INSERT INTO session_generations(thread_key,generation,updated_at) VALUES(?,1,?) ON CONFLICT(thread_key) DO UPDATE SET generation=generation+1,updated_at=excluded.updated_at")
+            .run(threadKey, Date.now());
         return this.sessionGeneration(threadKey);
     }
-    wakeOverride(routeId) { return this.db.prepare("SELECT humans FROM route_wake_overrides WHERE route_id=?").get(routeId)?.humans; }
-    setWakeOverride(routeId, humans) { this.db.prepare("INSERT INTO route_wake_overrides(route_id,humans,updated_at) VALUES(?,?,?) ON CONFLICT(route_id) DO UPDATE SET humans=excluded.humans,updated_at=excluded.updated_at").run(routeId, humans, Date.now()); }
+    wakeOverride(routeId) {
+        const stored = this.db.prepare("SELECT humans FROM route_wake_overrides WHERE route_id=?").get(routeId)?.humans;
+        if (!stored)
+            return undefined;
+        try {
+            const parsed = JSON.parse(stored);
+            if (typeof parsed.humans !== "string")
+                return undefined;
+            return {
+                humans: parsed.humans,
+                ...(typeof parsed.prefix === "string" && parsed.prefix ? { prefix: parsed.prefix } : {}),
+            };
+        }
+        catch {
+            return { humans: stored };
+        }
+    }
+    setWakeOverride(routeId, humans, prefix) {
+        const value = JSON.stringify({ humans, ...(prefix ? { prefix } : {}) });
+        this.db
+            .prepare("INSERT INTO route_wake_overrides(route_id,humans,updated_at) VALUES(?,?,?) ON CONFLICT(route_id) DO UPDATE SET humans=excluded.humans,updated_at=excluded.updated_at")
+            .run(routeId, value, Date.now());
+    }
     sessionBinding(threadKey) {
         return mapSessionBinding(this.db.prepare("SELECT * FROM session_bindings WHERE thread_key=?").get(threadKey));
     }
     bindingForNativeSession(runtime, nativeSession) {
         if (nativeSession.id) {
-            const byId = mapSessionBinding(this.db.prepare("SELECT * FROM session_bindings WHERE runtime=? AND native_session_id=?").get(runtime, nativeSession.id));
+            const byId = mapSessionBinding(this.db
+                .prepare("SELECT * FROM session_bindings WHERE runtime=? AND native_session_id=?")
+                .get(runtime, nativeSession.id));
             if (byId)
                 return byId;
         }
         if (!nativeSession.key)
             return undefined;
-        return mapSessionBinding(this.db.prepare("SELECT * FROM session_bindings WHERE runtime=? AND native_session_key=?").get(runtime, nativeSession.key));
+        return mapSessionBinding(this.db
+            .prepare("SELECT * FROM session_bindings WHERE runtime=? AND native_session_key=?")
+            .get(runtime, nativeSession.key));
     }
     listSessionBindings(state) {
         const rows = state
-            ? this.db.prepare("SELECT * FROM session_bindings WHERE state=? ORDER BY created_at,thread_key").all(state)
+            ? this.db
+                .prepare("SELECT * FROM session_bindings WHERE state=? ORDER BY created_at,thread_key")
+                .all(state)
             : this.db.prepare("SELECT * FROM session_bindings ORDER BY created_at,thread_key").all();
-        return rows.map(row => mapSessionBinding(row));
+        return rows.map((row) => mapSessionBinding(row));
     }
     saveSessionBinding(binding, now = Date.now()) {
-        this.db.prepare(`
+        this.db
+            .prepare(`
       INSERT INTO session_bindings(
         thread_key,route_id,space_id,chat_id,discussion_root_id,runtime,native_session_key,
         native_session_id,generation,event_cursor,state,created_at,updated_at
@@ -255,15 +396,18 @@ export class Store {
         event_cursor=excluded.event_cursor,
         state=excluded.state,
         updated_at=excluded.updated_at
-    `).run(binding.threadKey, binding.routeId, binding.spaceId, binding.chatId, binding.discussionRootId ?? null, binding.runtime, binding.nativeSessionKey, binding.nativeSessionId ?? null, binding.generation, binding.eventCursor ?? null, binding.state, now, now);
+    `)
+            .run(binding.threadKey, binding.routeId, binding.spaceId, binding.chatId, binding.discussionRootId ?? null, binding.runtime, binding.nativeSessionKey, binding.nativeSessionId ?? null, binding.generation, binding.eventCursor ?? null, binding.state, now, now);
         return this.sessionBinding(binding.threadKey);
     }
     updateSessionBinding(threadKey, patch, now = Date.now()) {
         const current = this.sessionBinding(threadKey);
         if (!current)
             return undefined;
-        const nativeSessionId = patch.nativeSessionId === undefined ? current.nativeSessionId : patch.nativeSessionId ?? undefined;
-        const eventCursor = patch.eventCursor === undefined ? current.eventCursor : patch.eventCursor ?? undefined;
+        const nativeSessionId = patch.nativeSessionId === undefined
+            ? current.nativeSessionId
+            : (patch.nativeSessionId ?? undefined);
+        const eventCursor = patch.eventCursor === undefined ? current.eventCursor : (patch.eventCursor ?? undefined);
         return this.saveSessionBinding({
             threadKey: current.threadKey,
             routeId: current.routeId,
@@ -275,32 +419,40 @@ export class Store {
             ...(nativeSessionId === undefined ? {} : { nativeSessionId }),
             generation: patch.generation ?? current.generation,
             ...(eventCursor === undefined ? {} : { eventCursor }),
-            state: patch.state ?? current.state
+            state: patch.state ?? current.state,
         }, now);
     }
     deleteSessionBinding(threadKey) {
-        return this.db.prepare("DELETE FROM session_bindings WHERE thread_key=?").run(threadKey).changes > 0;
+        return (this.db.prepare("DELETE FROM session_bindings WHERE thread_key=?").run(threadKey).changes > 0);
     }
     runtimeCapabilities(runtime) {
-        const row = this.db.prepare("SELECT capabilities_json FROM runtime_capabilities WHERE runtime=?").get(runtime);
+        const row = this.db
+            .prepare("SELECT capabilities_json FROM runtime_capabilities WHERE runtime=?")
+            .get(runtime);
         return row ? parseJson(row.capabilities_json) : undefined;
     }
     saveRuntimeCapabilities(runtime, capabilities, now = Date.now()) {
-        this.db.prepare(`
+        this.db
+            .prepare(`
       INSERT INTO runtime_capabilities(runtime,capabilities_json,updated_at) VALUES(?,?,?)
       ON CONFLICT(runtime) DO UPDATE SET capabilities_json=excluded.capabilities_json,updated_at=excluded.updated_at
-    `).run(runtime, JSON.stringify(capabilities), now);
+    `)
+            .run(runtime, JSON.stringify(capabilities), now);
     }
     createOutputCycle(input, now = Date.now()) {
         this.db.exec("BEGIN IMMEDIATE");
         try {
-            const row = this.db.prepare("SELECT COALESCE(MAX(sequence),0)+1 AS sequence FROM output_cycles WHERE thread_key=?").get(input.threadKey);
-            this.db.prepare(`
+            const row = this.db
+                .prepare("SELECT COALESCE(MAX(sequence),0)+1 AS sequence FROM output_cycles WHERE thread_key=?")
+                .get(input.threadKey);
+            this.db
+                .prepare(`
         INSERT INTO output_cycles(
           cycle_id,thread_key,sequence,anytype_message_id,reply_to_message_id,state,phase,
           thinking_text,answer_text,event_cursor,created_at,updated_at
         ) VALUES(?,?,?,?,?,'open',?,'','',?,?,?)
-      `).run(input.id, input.threadKey, Number(row.sequence), input.anytypeMessageId, input.replyToMessageId ?? null, input.phase ?? "working", input.eventCursor ?? null, now, now);
+      `)
+                .run(input.id, input.threadKey, Number(row.sequence), input.anytypeMessageId, input.replyToMessageId ?? null, input.phase ?? "working", input.eventCursor ?? null, now, now);
             this.db.exec("COMMIT");
         }
         catch (error) {
@@ -316,38 +468,52 @@ export class Store {
         return mapOutputCycle(this.db.prepare("SELECT * FROM output_cycles WHERE anytype_message_id=?").get(messageId));
     }
     reopenOutputCycle(id, phase, now = Date.now()) {
-        this.db.prepare("UPDATE output_cycles SET state='open',phase=?,completed_at=NULL,updated_at=? WHERE cycle_id=?").run(phase, now, id);
+        this.db
+            .prepare("UPDATE output_cycles SET state='open',phase=?,completed_at=NULL,updated_at=? WHERE cycle_id=?")
+            .run(phase, now, id);
         return this.outputCycle(id);
     }
     openOutputCycle(threadKey) {
-        return mapOutputCycle(this.db.prepare("SELECT * FROM output_cycles WHERE thread_key=? AND state='open'").get(threadKey));
+        return mapOutputCycle(this.db
+            .prepare("SELECT * FROM output_cycles WHERE thread_key=? AND state='open'")
+            .get(threadKey));
     }
     listOutputCycles(threadKey) {
-        return this.db.prepare("SELECT * FROM output_cycles WHERE thread_key=? ORDER BY sequence").all(threadKey).map(row => mapOutputCycle(row));
+        return this.db
+            .prepare("SELECT * FROM output_cycles WHERE thread_key=? ORDER BY sequence")
+            .all(threadKey).map((row) => mapOutputCycle(row));
     }
     updateOutputCycle(id, patch, now = Date.now()) {
         const current = this.outputCycle(id);
         if (!current)
             return undefined;
-        this.db.prepare(`
+        this.db
+            .prepare(`
       UPDATE output_cycles SET
         phase=?,thinking_text=?,answer_text=?,event_cursor=?,reply_to_message_id=?,updated_at=?
       WHERE cycle_id=?
-    `).run(patch.phase ?? current.phase, patch.thinkingText ?? current.thinkingText, patch.answerText ?? current.answerText, patch.eventCursor === undefined ? current.eventCursor ?? null : patch.eventCursor, patch.replyToMessageId === undefined ? current.replyToMessageId ?? null : patch.replyToMessageId, now, id);
+    `)
+            .run(patch.phase ?? current.phase, patch.thinkingText ?? current.thinkingText, patch.answerText ?? current.answerText, patch.eventCursor === undefined ? (current.eventCursor ?? null) : patch.eventCursor, patch.replyToMessageId === undefined
+            ? (current.replyToMessageId ?? null)
+            : patch.replyToMessageId, now, id);
         return this.outputCycle(id);
     }
     finishOutputCycle(id, state, now = Date.now()) {
-        const changed = this.db.prepare("UPDATE output_cycles SET state=?,completed_at=?,updated_at=? WHERE cycle_id=? AND state='open'").run(state, now, now, id);
+        const changed = this.db
+            .prepare("UPDATE output_cycles SET state=?,completed_at=?,updated_at=? WHERE cycle_id=? AND state='open'")
+            .run(state, now, now, id);
         return changed.changes > 0 ? this.outputCycle(id) : undefined;
     }
     enqueueOutbound(input, now = Date.now()) {
-        this.db.prepare(`
+        this.db
+            .prepare(`
       INSERT INTO outbound_outbox(
         item_id,thread_key,route_id,space_id,chat_id,discussion_root_id,operation,target_message_id,
         reply_to_message_id,payload_json,dedupe_key,status,attempts,available_at,created_at,updated_at
       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',0,?,?,?)
       ON CONFLICT(dedupe_key) DO NOTHING
-    `).run(input.id, input.threadKey, input.routeId, input.spaceId, input.chatId, input.discussionRootId ?? null, input.operation, input.targetMessageId ?? null, input.replyToMessageId ?? null, JSON.stringify(input.payload ?? null), input.dedupeKey, input.availableAt ?? now, now, now);
+    `)
+            .run(input.id, input.threadKey, input.routeId, input.spaceId, input.chatId, input.discussionRootId ?? null, input.operation, input.targetMessageId ?? null, input.replyToMessageId ?? null, JSON.stringify(input.payload ?? null), input.dedupeKey, input.availableAt ?? now, now, now);
         return this.outboundByDedupeKey(input.dedupeKey);
     }
     outbound(id) {
@@ -356,29 +522,45 @@ export class Store {
     outboundByDedupeKey(dedupeKey) {
         return mapOutbound(this.db.prepare("SELECT * FROM outbound_outbox WHERE dedupe_key=?").get(dedupeKey));
     }
+    setOutboundTargetMessage(id, targetMessageId, workerId, now = Date.now()) {
+        const result = workerId
+            ? this.db
+                .prepare("UPDATE outbound_outbox SET target_message_id=?,updated_at=? WHERE item_id=? AND status='claimed' AND claimed_by=?")
+                .run(targetMessageId, now, id, workerId)
+            : this.db
+                .prepare("UPDATE outbound_outbox SET target_message_id=?,updated_at=? WHERE item_id=?")
+                .run(targetMessageId, now, id);
+        return result.changes > 0;
+    }
     claimOutbound(workerId, options = {}) {
         const now = options.now ?? Date.now();
         const limit = Math.max(1, Math.trunc(options.limit ?? 20));
         const leaseMs = Math.max(1, Math.trunc(options.leaseMs ?? 30_000));
         this.db.exec("BEGIN IMMEDIATE");
         try {
-            this.db.prepare(`
+            this.db
+                .prepare(`
         UPDATE outbound_outbox
-        SET status='failed',claimed_at=NULL,claimed_by=NULL,updated_at=?
+        SET status='failed',claimed_at=NULL,claimed_by=NULL,last_error=COALESCE(last_error,'Delivery lease expired before acknowledgement'),updated_at=?
         WHERE status='claimed' AND claimed_at<=?
-      `).run(now, now - leaseMs);
-            const ids = this.db.prepare(`
+      `)
+                .run(now, now - leaseMs);
+            const ids = this.db
+                .prepare(`
         SELECT item_id FROM outbound_outbox
         WHERE status IN ('pending','failed') AND available_at<=?
         ORDER BY available_at,created_at,item_id LIMIT ?
-      `).all(now, limit).map(row => row.item_id);
+      `)
+                .all(now, limit).map((row) => row.item_id);
             const claimed = [];
             for (const id of ids) {
-                this.db.prepare(`
+                this.db
+                    .prepare(`
           UPDATE outbound_outbox
           SET status='claimed',attempts=attempts+1,claimed_at=?,claimed_by=?,updated_at=?
           WHERE item_id=? AND status IN ('pending','failed')
-        `).run(now, workerId, now, id);
+        `)
+                    .run(now, workerId, now, id);
                 const item = this.outbound(id);
                 if (item?.status === "claimed" && item.claimedBy === workerId)
                     claimed.push(item);
@@ -393,46 +575,79 @@ export class Store {
     }
     acknowledgeOutbound(id, workerId, now = Date.now()) {
         const result = workerId
-            ? this.db.prepare("UPDATE outbound_outbox SET status='delivered',delivered_at=?,claimed_at=NULL,claimed_by=NULL,last_error=NULL,updated_at=? WHERE item_id=? AND status='claimed' AND claimed_by=?").run(now, now, id, workerId)
-            : this.db.prepare("UPDATE outbound_outbox SET status='delivered',delivered_at=?,claimed_at=NULL,claimed_by=NULL,last_error=NULL,updated_at=? WHERE item_id=? AND status='claimed'").run(now, now, id);
+            ? this.db
+                .prepare("UPDATE outbound_outbox SET status='delivered',delivered_at=?,claimed_at=NULL,claimed_by=NULL,last_error=NULL,updated_at=? WHERE item_id=? AND status='claimed' AND claimed_by=?")
+                .run(now, now, id, workerId)
+            : this.db
+                .prepare("UPDATE outbound_outbox SET status='delivered',delivered_at=?,claimed_at=NULL,claimed_by=NULL,last_error=NULL,updated_at=? WHERE item_id=? AND status='claimed'")
+                .run(now, now, id);
         return result.changes > 0;
     }
     failOutbound(id, error, options = {}) {
         const item = this.outbound(id);
-        if (!item || item.status !== "claimed" || (options.workerId && item.claimedBy !== options.workerId))
+        if (!item ||
+            item.status !== "claimed" ||
+            (options.workerId && item.claimedBy !== options.workerId))
             return false;
         const now = options.now ?? Date.now();
-        const terminal = item.attempts >= (options.maxAttempts ?? 10);
-        this.db.prepare(`
+        const terminal = item.attempts >= (options.maxAttempts ?? Number.POSITIVE_INFINITY);
+        this.db
+            .prepare(`
       UPDATE outbound_outbox SET
         status=?,available_at=?,claimed_at=NULL,claimed_by=NULL,last_error=?,updated_at=?
       WHERE item_id=? AND status='claimed'
-    `).run(terminal ? "dead" : "failed", options.retryAt ?? now, error, now, id);
+    `)
+            .run(terminal ? "dead" : "failed", options.retryAt ?? now, error, now, id);
         return true;
     }
     deleteOutbound(id) {
         return this.db.prepare("DELETE FROM outbound_outbox WHERE item_id=?").run(id).changes > 0;
     }
+    outboundStatusCounts() {
+        const counts = {
+            pending: 0,
+            claimed: 0,
+            delivered: 0,
+            failed: 0,
+            dead: 0,
+        };
+        const rows = this.db
+            .prepare("SELECT status,COUNT(*) AS count FROM outbound_outbox GROUP BY status")
+            .all();
+        for (const row of rows)
+            counts[row.status] = Number(row.count);
+        return counts;
+    }
     isProactiveDelivered(runtime, nativeSessionKey, nativeEventId) {
-        return Boolean(this.db.prepare("SELECT 1 FROM proactive_deliveries WHERE runtime=? AND native_session_key=? AND native_event_id=?").get(runtime, nativeSessionKey, nativeEventId));
+        return Boolean(this.db
+            .prepare("SELECT 1 FROM proactive_deliveries WHERE runtime=? AND native_session_key=? AND native_event_id=?")
+            .get(runtime, nativeSessionKey, nativeEventId));
     }
     markProactiveDelivered(delivery, now = Date.now()) {
-        return this.db.prepare(`
+        return (this.db
+            .prepare(`
       INSERT OR IGNORE INTO proactive_deliveries(
         runtime,native_session_key,native_event_id,thread_key,payload_hash,message_id,delivered_at
       ) VALUES(?,?,?,?,?,?,?)
-    `).run(delivery.runtime, delivery.nativeSessionKey, delivery.nativeEventId, delivery.threadKey, delivery.payloadHash ?? null, delivery.messageId ?? null, now).changes > 0;
+    `)
+            .run(delivery.runtime, delivery.nativeSessionKey, delivery.nativeEventId, delivery.threadKey, delivery.payloadHash ?? null, delivery.messageId ?? null, now).changes > 0);
     }
     bridgeCursor(bridgeId, streamKey) {
-        return this.db.prepare("SELECT cursor FROM bridge_cursors WHERE bridge_id=? AND stream_key=?").get(bridgeId, streamKey)?.cursor;
+        return this.db
+            .prepare("SELECT cursor FROM bridge_cursors WHERE bridge_id=? AND stream_key=?")
+            .get(bridgeId, streamKey)?.cursor;
     }
     saveBridgeCursor(bridgeId, streamKey, cursor, now = Date.now()) {
-        this.db.prepare(`
+        this.db
+            .prepare(`
       INSERT INTO bridge_cursors(bridge_id,stream_key,cursor,updated_at) VALUES(?,?,?,?)
       ON CONFLICT(bridge_id,stream_key) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at
-    `).run(bridgeId, streamKey, cursor, now);
+    `)
+            .run(bridgeId, streamKey, cursor, now);
     }
-    close() { this.db.close(); }
+    close() {
+        this.db.close();
+    }
 }
 function mapSessionBinding(row) {
     if (!row)
@@ -450,7 +665,7 @@ function mapSessionBinding(row) {
         ...(row.event_cursor ? { eventCursor: row.event_cursor } : {}),
         state: row.state,
         createdAt: Number(row.created_at),
-        updatedAt: Number(row.updated_at)
+        updatedAt: Number(row.updated_at),
     };
 }
 function mapOutputCycle(row) {
@@ -469,7 +684,7 @@ function mapOutputCycle(row) {
         ...(row.event_cursor ? { eventCursor: row.event_cursor } : {}),
         createdAt: Number(row.created_at),
         updatedAt: Number(row.updated_at),
-        ...(row.completed_at === null ? {} : { completedAt: Number(row.completed_at) })
+        ...(row.completed_at === null ? {} : { completedAt: Number(row.completed_at) }),
     };
 }
 function mapOutbound(row) {
@@ -495,7 +710,7 @@ function mapOutbound(row) {
         ...(row.last_error ? { lastError: row.last_error } : {}),
         createdAt: Number(row.created_at),
         updatedAt: Number(row.updated_at),
-        ...(row.delivered_at === null ? {} : { deliveredAt: Number(row.delivered_at) })
+        ...(row.delivered_at === null ? {} : { deliveredAt: Number(row.delivered_at) }),
     };
 }
 function parseJson(value) {

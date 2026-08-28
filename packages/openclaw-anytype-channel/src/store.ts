@@ -20,7 +20,9 @@ export class BridgeStore {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     }
     this.#db = new DatabaseSync(path);
-    this.#db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;");
+    this.#db.exec(
+      "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;",
+    );
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS bridge_inbound (
         id TEXT PRIMARY KEY,
@@ -89,9 +91,7 @@ export class BridgeStore {
 
   markInbound(id: string, status: "delivered" | "failed", error?: string, now = Date.now()): void {
     this.#db
-      .prepare(
-        `UPDATE bridge_inbound SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
-      )
+      .prepare(`UPDATE bridge_inbound SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`)
       .run(status, error ?? null, now, id);
   }
 
@@ -131,7 +131,9 @@ export class BridgeStore {
   }
 
   markOwnedRun(runId: string, now = Date.now()): void {
-    this.#db.prepare("INSERT OR REPLACE INTO bridge_owned_runs(run_id,created_at) VALUES(?,?)").run(runId, now);
+    this.#db
+      .prepare("INSERT OR REPLACE INTO bridge_owned_runs(run_id,created_at) VALUES(?,?)")
+      .run(runId, now);
   }
 
   isOwnedRun(runId: string): boolean {
@@ -139,7 +141,9 @@ export class BridgeStore {
   }
 
   pruneOwnedRuns(before: number): number {
-    return Number(this.#db.prepare("DELETE FROM bridge_owned_runs WHERE created_at < ?").run(before).changes);
+    return Number(
+      this.#db.prepare("DELETE FROM bridge_owned_runs WHERE created_at < ?").run(before).changes,
+    );
   }
 
   putDelivery(delivery: BridgeDelivery, now = Date.now()): boolean {
@@ -186,6 +190,8 @@ export class BridgeStore {
            AND (
              json_extract(payload, '$.sessionKey') = ?
              OR (
+               json_extract(payload, '$.sessionKey') IS NULL
+               AND
                json_extract(payload, '$.route.spaceId') = ?
                AND json_extract(payload, '$.route.chatId') = ?
                AND COALESCE(json_extract(payload, '$.route.discussionRootId'), '') = ?
@@ -213,13 +219,32 @@ export class BridgeStore {
 
   pruneDelivered(before: number): number {
     return Number(
-      this.#db.prepare("DELETE FROM bridge_outbound WHERE status = 'delivered' AND updated_at < ?").run(before)
-        .changes,
+      this.#db
+        .prepare("DELETE FROM bridge_outbound WHERE status = 'delivered' AND updated_at < ?")
+        .run(before).changes,
     );
   }
 
   pruneExpiredPending(before: number): number {
-    return Number(this.#db.prepare("DELETE FROM bridge_outbound WHERE status = 'pending' AND created_at < ?").run(before).changes);
+    return Number(
+      this.#db
+        .prepare("DELETE FROM bridge_outbound WHERE status = 'pending' AND created_at < ?")
+        .run(before).changes,
+    );
+  }
+
+  pruneExpiredThinking(before: number): number {
+    return Number(
+      this.#db
+        .prepare(
+          `DELETE FROM bridge_outbound
+           WHERE status = 'pending'
+             AND created_at < ?
+             AND json_extract(payload, '$.kind') = 'agent-event'
+             AND json_extract(payload, '$.agentEvent.stream') = 'thinking'`,
+        )
+        .run(before).changes,
+    );
   }
 
   acknowledgeDelivery(id: string, now = Date.now()): void {
@@ -232,7 +257,9 @@ export class BridgeStore {
     if (ids.length === 0) return;
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const update = this.#db.prepare("UPDATE bridge_outbound SET status = 'delivered', updated_at = ? WHERE id = ?");
+      const update = this.#db.prepare(
+        "UPDATE bridge_outbound SET status = 'delivered', updated_at = ? WHERE id = ?",
+      );
       for (const id of ids) update.run(now, id);
       this.#db.exec("COMMIT");
     } catch (error) {
@@ -242,9 +269,8 @@ export class BridgeStore {
   }
 
   retryDelivery(id: string, error: string, now = Date.now()): void {
-    const row = this.#db
-      .prepare("SELECT attempts FROM bridge_outbound WHERE id = ?")
-      .get(id) as Row | undefined;
+    const row = this.#db.prepare("SELECT attempts FROM bridge_outbound WHERE id = ?").get(id) as
+      Row | undefined;
     const attempts = Number(row?.attempts ?? 0) + 1;
     const delay = Math.min(60_000, 500 * 2 ** Math.min(attempts - 1, 7));
     this.#db

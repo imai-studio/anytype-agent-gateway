@@ -16,10 +16,12 @@ const AccountSchema = z
     allowFrom: z.array(z.string().min(1)).min(1),
 })
     .strict();
-const ConfigSchema = AccountSchema.extend({
+const ConfigSchema = AccountSchema.partial()
+    .extend({
     accounts: z.record(z.string(), AccountSchema.partial()).optional(),
     defaultAccount: z.string().optional(),
-}).strict();
+})
+    .strict();
 export const anytypePluginConfigSchema = buildChannelConfigSchema(ConfigSchema);
 const helpers = createAccountListHelpers("anytype", {
     normalizeAccountId,

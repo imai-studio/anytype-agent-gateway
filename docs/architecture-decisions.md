@@ -67,6 +67,8 @@ Codex ACP does not currently expose Codex desktop scheduled tasks or external se
 
 Agents need more than prompt context when asked to create a daily object, update a task, search a space, upload a file, add an object to a collection, or return an object link. AAG exposes those operations through a policy-mediated MCP server rather than handing an API key to the model.
 
+The read side includes complete object payloads plus type, property, select-tag, and template discovery. This matters because property keys and value shapes are space-specific: an agent must inspect that schema before an arbitrary object mutation instead of guessing it. Write, archive, space, and local-file permissions remain separate configuration boundaries. Results include an `object_ref` token that the projector converts into a native object mark, plus a deep-link fallback.
+
 Read access is limited to configured or explicitly allowed spaces. Writes default off, archive has its own switch, and file uploads are constrained to real paths below declared roots. The tool boundary cannot protect a key file from an unrestricted shell running as the same operating-system user, so strong credential isolation still requires a runtime sandbox or separate service account.
 
 Project lists tell the runtime which directories to use. AAG passes them as OpenClaw context or ACP working and additional directories. The runtime settings, sandbox, service account, or container must enforce access.
@@ -76,6 +78,8 @@ Project lists tell the runtime which directories to use. AAG passes them as Open
 One identity may join multiple spaces from one or several invite links. Configuration selects the chats and discussion policies it watches.
 
 Joining a space does not subscribe the agent to every conversation. Each chat has its own wake policy. A space can override the participant ID because Anytype may assign an identity a space-specific participant ID.
+
+Authorization compares the stable identity suffix across Anytype's space-scoped participant IDs. A bare identity therefore authorizes the same account in each configured space; an operator can use the full participant ID when a rule should apply to only one space membership.
 
 ## Wake rules live on each route
 

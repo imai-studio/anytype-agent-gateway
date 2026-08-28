@@ -1,0 +1,9 @@
+dist/
+packages/*/dist/
+node_modules/
+pnpm-lock.yaml
+heart-adapter/*.go
+heart-adapter/go.mod
+heart-adapter/go.sum
+*.sqlite
+*.sqlite-*

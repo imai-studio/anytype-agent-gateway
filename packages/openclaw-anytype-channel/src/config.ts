@@ -19,17 +19,20 @@ const AccountSchema = z
   })
   .strict();
 
-const ConfigSchema = AccountSchema.extend({
-  accounts: z.record(z.string(), AccountSchema.partial()).optional(),
-  defaultAccount: z.string().optional(),
-}).strict();
+const ConfigSchema = AccountSchema.partial()
+  .extend({
+    accounts: z.record(z.string(), AccountSchema.partial()).optional(),
+    defaultAccount: z.string().optional(),
+  })
+  .strict();
 
-export const anytypePluginConfigSchema: ChannelConfigSchema = buildChannelConfigSchema(ConfigSchema);
+export const anytypePluginConfigSchema: ChannelConfigSchema =
+  buildChannelConfigSchema(ConfigSchema);
 export type AnytypeAccountConfig = z.infer<typeof AccountSchema>;
 
 export type CoreConfig = {
   channels?: {
-    anytype?: AnytypeAccountConfig & {
+    anytype?: Partial<AnytypeAccountConfig> & {
       accounts?: Record<string, Partial<AnytypeAccountConfig>>;
       defaultAccount?: string;
     };
@@ -64,7 +67,7 @@ export function resolveAnytypeAccount(
   const accountId = normalizeAccountId(accountIdValue);
   const channel = cfg.channels?.anytype;
   const merged = resolveMergedAccountConfig<AnytypeAccountConfig>({
-    channelConfig: channel,
+    channelConfig: channel as AnytypeAccountConfig | undefined,
     accounts: channel?.accounts,
     accountId,
     omitKeys: ["defaultAccount"],

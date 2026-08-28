@@ -90,7 +90,13 @@ export type StoredDelivery = BridgeDelivery & {
     lastError?: string;
 };
 export declare function routeKey(route: AnytypeRoute): string;
-/** Opaque OpenClaw peer target. Discussion identity stays in the thread suffix. */
-export declare function encodeRouteTarget(route: Pick<AnytypeRoute, "spaceId" | "chatId">): string;
-export declare function decodeRouteTarget(target: string): Pick<AnytypeRoute, "spaceId" | "chatId">;
+/**
+ * Opaque OpenClaw peer target. Version one targets contained two array items;
+ * the optional third item makes discussion identity durable outside transient
+ * thread context while preserving backwards compatibility.
+ */
+export declare function encodeRouteTarget(route: AnytypeRoute): string;
+export declare function decodeRouteTarget(target: string): AnytypeRoute;
+/** Explicit OpenClaw thread context wins over the root encoded in the target. */
+export declare function resolveTargetRoute(target: string, threadId?: string | number | null): AnytypeRoute;
 //# sourceMappingURL=protocol.d.ts.map

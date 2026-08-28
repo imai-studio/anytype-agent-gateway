@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { access, constants, cp, mkdir, mkdtemp, open, readFile, rm, unlink } from "node:fs/promises";
+import { access, constants, cp, mkdir, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import { HeartDiscussionAdapter } from "./discussions.js";
 import { Gateway } from "./gateway.js";
 import { createIdentity, joinSpaces } from "./identity.js";
 import { commandExists, runProcess } from "./process.js";
+import { acquireProcessLock } from "./process-lock.js";
 import { CodexAcpDriver } from "./runtime/codex-acp.js";
 import { OpenClawDriver } from "./runtime/openclaw.js";
 import { installService, serviceCommand } from "./service.js";
@@ -20,28 +21,64 @@ import { setRouteWake } from "./management.js";
 import { runMcpServer } from "./mcp.js";
 import { VERSION } from "./version.js";
 const program = new Command().name("aag").description("Anytype Agent Gateway").version(VERSION);
-program.command("init").description("Interactively create a one-agent configuration").option("-o, --output <path>", "configuration file", "./agent.yaml").action(async (options) => {
+program
+    .command("init")
+    .description("Interactively create a one-agent configuration")
+    .option("-o, --output <path>", "configuration file", "./agent.yaml")
+    .action(async (options) => {
     const prompt = createInterface({ input: process.stdin, output: process.stdout });
     try {
         const name = (await prompt.question("Agent display name: ")).trim();
         const participantId = (await prompt.question("Anytype participant ID: ")).trim();
-        const apiKeyFile = (await prompt.question("Anytype API key file [~/.config/aag/anytype-api-key]: ")).trim() || "~/.config/aag/anytype-api-key";
+        const apiKeyFile = (await prompt.question("Anytype API key file [~/.config/aag/anytype-api-key]: ")).trim() ||
+            "~/.config/aag/anytype-api-key";
         const spaceId = (await prompt.question("Anytype space ID: ")).trim();
         const chatId = (await prompt.question("Initial Anytype chat/channel ID (optional with discovery): ")).trim();
         const discoverChats = /^y(?:es)?$/i.test((await prompt.question("Discover new chats in this space [y/N]: ")).trim());
-        const allowedUsers = (await prompt.question("Authorized participant IDs (comma-separated): ")).split(",").map(value => value.trim()).filter(Boolean);
-        const runtimeKind = (await prompt.question("Runtime (openclaw/codex) [openclaw]: ")).trim().toLowerCase() || "openclaw";
+        const allowedUsers = (await prompt.question("Authorized participant IDs (comma-separated): "))
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+        const runtimeKind = (await prompt.question("Runtime (openclaw/codex) [openclaw]: ")).trim().toLowerCase() ||
+            "openclaw";
         if (runtimeKind !== "openclaw" && runtimeKind !== "codex")
             throw new Error("Runtime must be openclaw or codex");
         const defaultProject = (await prompt.question("Default project directory (optional): ")).trim();
         const allowAnytypeWrites = /^y(?:es)?$/i.test((await prompt.question("Allow this agent to create and update Anytype objects [y/N]: ")).trim());
         const runtime = runtimeKind === "openclaw"
-            ? { kind: "openclaw", agentId: (await prompt.question("OpenClaw agent ID [main]: ")).trim() || "main", ...(defaultProject ? { defaultProject } : {}) }
+            ? {
+                kind: "openclaw",
+                agentId: (await prompt.question("OpenClaw agent ID [main]: ")).trim() || "main",
+                ...(defaultProject ? { defaultProject } : {}),
+            }
             : { kind: "codex", permissions: "deny", ...(defaultProject ? { defaultProject } : {}) };
         if (!chatId && !discoverChats)
             throw new Error("Provide an initial chat ID or enable chat discovery");
         const wake = { humans: "mention-or-reply", agents: "never", allowedUsers };
-        const value = { version: 1, agent: { name, participantId }, anytype: { apiKeyFile }, spaces: [{ id: spaceId, chats: chatId ? [{ id: chatId, wake }] : [], ...(discoverChats ? { chatDiscovery: { enabled: true, discoveryIntervalSeconds: 30, wake } } : {}), comments: { mode: "disabled" } }], runtime, tools: { anytype: { enabled: allowAnytypeWrites, allowWrite: allowAnytypeWrites, allowedSpaceIds: [spaceId] } }, responses: { mode: "single", streaming: true } };
+        const value = {
+            version: 1,
+            agent: { name, participantId },
+            anytype: { apiKeyFile },
+            spaces: [
+                {
+                    id: spaceId,
+                    chats: chatId ? [{ id: chatId, wake }] : [],
+                    ...(discoverChats
+                        ? { chatDiscovery: { enabled: true, discoveryIntervalSeconds: 30, wake } }
+                        : {}),
+                    comments: { mode: "disabled" },
+                },
+            ],
+            runtime,
+            tools: {
+                anytype: {
+                    enabled: allowAnytypeWrites,
+                    allowWrite: allowAnytypeWrites,
+                    allowedSpaceIds: [spaceId],
+                },
+            },
+            responses: { mode: "single", streaming: true },
+        };
         configSchema.parse(value);
         const output = resolve(options.output);
         await mkdir(dirname(output), { recursive: true });
@@ -54,28 +91,42 @@ program.command("init").description("Interactively create a one-agent configurat
         prompt.close();
     }
 });
-program.command("validate").description("Validate a configuration file").requiredOption("-c, --config <path>").action(async (options) => {
+program
+    .command("validate")
+    .description("Validate a configuration file")
+    .requiredOption("-c, --config <path>")
+    .action(async (options) => {
     const config = await loadConfig(options.config);
     console.log(`valid: ${config.agent.name} (${config.runtime.kind}, ${config.spaces.length} space configuration(s))`);
 });
-program.command("doctor").description("Check Anytype, configured routes, adapter, runtime, and projects").requiredOption("-c, --config <path>").action(async (options) => {
+program
+    .command("doctor")
+    .description("Check Anytype, configured routes, adapter, runtime, and projects")
+    .requiredOption("-c, --config <path>")
+    .action(async (options) => {
     const config = await loadConfig(options.config);
     await access(config.anytype.apiKeyFile, constants.R_OK);
     const anytype = await AnytypeClient.create(config);
     for (const configuredSpace of config.spaces) {
         if (!configuredSpace.id && !configuredSpace.name)
             throw new Error("Join invite-only spaces and add their id or name before running doctor");
-        const space = await anytype.resolveSpace({ ...(configuredSpace.id ? { id: configuredSpace.id } : {}), ...(configuredSpace.name ? { name: configuredSpace.name } : {}) });
+        const space = await anytype.resolveSpace({
+            ...(configuredSpace.id ? { id: configuredSpace.id } : {}),
+            ...(configuredSpace.name ? { name: configuredSpace.name } : {}),
+        });
         console.log(`ok: Anytype space ${space.name}`);
         for (const chatConfig of configuredSpace.chats) {
-            const chat = await anytype.resolveChat(space.id, { ...(chatConfig.id ? { id: chatConfig.id } : {}), ...(chatConfig.name ? { name: chatConfig.name } : {}) });
+            const chat = await anytype.resolveChat(space.id, {
+                ...(chatConfig.id ? { id: chatConfig.id } : {}),
+                ...(chatConfig.name ? { name: chatConfig.name } : {}),
+            });
             console.log(`ok: chat ${chat.name}`);
         }
         if (configuredSpace.chatDiscovery.enabled)
             console.log(`ok: chat discovery (${(await anytype.listChats(space.id)).length} current chats)`);
     }
-    if (config.spaces.some(space => space.comments.mode !== "disabled")) {
-        if (!await commandExists(config.anytype.heartAdapter.command))
+    if (config.spaces.some((space) => space.comments.mode !== "disabled")) {
+        if (!(await commandExists(config.anytype.heartAdapter.command)))
             throw new Error(`Heart adapter not found: ${config.anytype.heartAdapter.command}`);
         console.log(`ok: Heart discussion adapter ${config.anytype.heartAdapter.command}`);
     }
@@ -87,7 +138,11 @@ program.command("doctor").description("Check Anytype, configured routes, adapter
         console.log(`ok: project ${project}`);
     }
 });
-program.command("run").description("Run one configured Anytype agent in the foreground").requiredOption("-c, --config <path>").action(async (options) => {
+program
+    .command("run")
+    .description("Run one configured Anytype agent in the foreground")
+    .requiredOption("-c, --config <path>")
+    .action(async (options) => {
     const config = await loadConfig(options.config);
     const anytype = await AnytypeClient.create(config);
     const releaseLock = await acquireProcessLock(`${config.state.path}.lock`);
@@ -95,7 +150,7 @@ program.command("run").description("Run one configured Anytype agent in the fore
     try {
         store = new Store(config.state.path);
         const configPath = resolve(options.config);
-        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, routeId => managementCommand(configPath, routeId));
+        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId) => managementCommand(configPath, routeId));
         const stop = () => gateway.stop();
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
@@ -107,33 +162,73 @@ program.command("run").description("Run one configured Anytype agent in the fore
     }
 });
 const config = program.command("config").description("Manage constrained runtime configuration");
-config.command("wake").description("Set the human wake mode for one AAG route")
+config
+    .command("wake")
+    .description("Set the human wake mode for one AAG route")
     .requiredOption("-c, --config <path>")
     .requiredOption("--route-id <id>")
     .requiredOption("--humans <mode>")
     .option("--prefix <text>")
     .action(async (options) => {
-    await setRouteWake({ configPath: options.config, routeId: options.routeId, humans: options.humans, ...(options.prefix ? { prefix: options.prefix } : {}) });
+    await setRouteWake({
+        configPath: options.config,
+        routeId: options.routeId,
+        humans: options.humans,
+        ...(options.prefix ? { prefix: options.prefix } : {}),
+    });
     console.log(`Updated ${options.routeId} to humans=${options.humans}. The running gateway will apply it to the next message.`);
 });
-program.command("mcp").description("Run the policy-mediated Anytype tool server over stdio")
+program
+    .command("mcp")
+    .description("Run the policy-mediated Anytype tool server over stdio")
     .requiredOption("-c, --config <path>")
     .option("--route-id <id>")
     .option("--space-id <id>")
-    .action(async (options) => runMcpServer(resolve(options.config), { ...(options.routeId ? { routeId: options.routeId } : {}), ...(options.spaceId ? { spaceId: options.spaceId } : {}) }));
-const identity = program.command("identity").description("Manage the one Anytype bot identity on this machine");
-identity.command("create").argument("<name>").option("--anytype <command>", "Anytype CLI command", "anytype").option("--invite <url...>", "space invite link(s)", []).option("--api-key-file <path>", "where to save the API key", "./aag-anytype-api-key").option("--data-path <path>").action(async (name, options) => {
+    .action(async (options) => runMcpServer(resolve(options.config), {
+    ...(options.routeId ? { routeId: options.routeId } : {}),
+    ...(options.spaceId ? { spaceId: options.spaceId } : {}),
+}));
+const identity = program
+    .command("identity")
+    .description("Manage the one Anytype bot identity on this machine");
+identity
+    .command("create")
+    .argument("<name>")
+    .option("--anytype <command>", "Anytype CLI command", "anytype")
+    .option("--invite <url...>", "space invite link(s)", [])
+    .option("--api-key-file <path>", "where to save the API key", "./aag-anytype-api-key")
+    .option("--data-path <path>")
+    .action(async (name, options) => {
     const keyFile = resolve(options.apiKeyFile);
-    await createIdentity({ command: options.anytype, name, invites: options.invite, apiKeyFile: keyFile, ...(options.dataPath ? { dataPath: resolve(options.dataPath) } : {}) });
+    await createIdentity({
+        command: options.anytype,
+        name,
+        invites: options.invite,
+        apiKeyFile: keyFile,
+        ...(options.dataPath ? { dataPath: resolve(options.dataPath) } : {}),
+    });
     console.log(`Created identity and saved its revocable API key to ${keyFile}`);
 });
-program.command("join").description("Join this machine's bot identity to one or more spaces").argument("<invite...>").option("--anytype <command>", "Anytype CLI command", "anytype").option("--data-path <path>").action(async (invites, options) => {
+program
+    .command("join")
+    .description("Join this machine's bot identity to one or more spaces")
+    .argument("<invite...>")
+    .option("--anytype <command>", "Anytype CLI command", "anytype")
+    .option("--data-path <path>")
+    .action(async (invites, options) => {
     await joinSpaces(options.anytype, invites, options.dataPath);
 });
-const openclaw = program.command("openclaw").description("Manage the bundled native OpenClaw Anytype channel");
-const openclawPlugin = openclaw.command("plugin").description("Locate or install the OpenClaw channel plugin");
+const openclaw = program
+    .command("openclaw")
+    .description("Manage the bundled native OpenClaw Anytype channel");
+const openclawPlugin = openclaw
+    .command("plugin")
+    .description("Locate or install the OpenClaw channel plugin");
 openclawPlugin.command("path").action(() => console.log(bundledOpenClawPluginPath()));
-openclawPlugin.command("install").option("--openclaw <command>", "OpenClaw CLI command", "openclaw").action(async (options) => {
+openclawPlugin
+    .command("install")
+    .option("--openclaw <command>", "OpenClaw CLI command", "openclaw")
+    .action(async (options) => {
     const path = bundledOpenClawPluginPath();
     await access(path, constants.R_OK);
     const staging = await mkdtemp(join(tmpdir(), "aag-openclaw-plugin-"));
@@ -149,53 +244,38 @@ openclawPlugin.command("install").option("--openclaw <command>", "OpenClaw CLI c
         await rm(staging, { recursive: true, force: true });
     }
 });
-const service = program.command("service").description("Manage the Linux systemd user service or macOS launch agent");
-service.command("install").requiredOption("-c, --config <path>").action(async (options) => installService(options.config));
+const service = program
+    .command("service")
+    .description("Manage the Linux systemd user service or macOS launch agent");
+service
+    .command("install")
+    .requiredOption("-c, --config <path>")
+    .action(async (options) => installService(options.config));
 for (const command of ["status", "restart", "stop", "logs"])
     service.command(command).action(async () => serviceCommand(command));
-program.parseAsync().catch(error => { console.error(`error: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; });
+program.parseAsync().catch((error) => {
+    console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+});
 function makeRuntime(config, store, configPath) {
     if (config.runtime.kind === "openclaw")
         return new OpenClawDriver(config.runtime);
     const executable = resolve(process.argv[1]);
-    const mcpServer = config.tools.anytype.enabled && configPath ? { command: resolve(process.execPath), args: [executable, "mcp", "--config", configPath] } : undefined;
+    const mcpServer = config.tools.anytype.enabled && configPath
+        ? { command: resolve(process.execPath), args: [executable, "mcp", "--config", configPath] }
+        : undefined;
     return new CodexAcpDriver(config.runtime, store, mcpServer);
 }
-function log(event, fields = {}) { console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields })); }
+function log(event, fields = {}) {
+    console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));
+}
 function managementCommand(configPath, routeId) {
     const executable = resolve(process.argv[1]);
     return `${shellQuote(process.execPath)} ${shellQuote(executable)} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --humans <mode>`;
 }
-function shellQuote(value) { return `'${value.replaceAll("'", `'\\''`)}'`; }
+function shellQuote(value) {
+    return `'${value.replaceAll("'", `'\\''`)}'`;
+}
 function bundledOpenClawPluginPath() {
     return resolve(dirname(fileURLToPath(import.meta.url)), "..", "packages", "openclaw-anytype-channel");
-}
-async function acquireProcessLock(path) {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-            const handle = await open(path, "wx", 0o600);
-            await handle.writeFile(`${process.pid}\n`);
-            await handle.close();
-            return async () => { await unlink(path).catch(() => undefined); };
-        }
-        catch (error) {
-            if (error.code !== "EEXIST")
-                throw error;
-            const pid = Number.parseInt((await readFile(path, "utf8").catch(() => "0")).trim(), 10);
-            let alive = false;
-            if (pid > 0)
-                try {
-                    process.kill(pid, 0);
-                    alive = true;
-                }
-                catch {
-                    alive = false;
-                }
-            if (alive)
-                throw new Error(`Another AAG process is already running (pid ${pid})`);
-            await unlink(path);
-        }
-    }
-    throw new Error(`Could not acquire AAG process lock: ${path}`);
 }

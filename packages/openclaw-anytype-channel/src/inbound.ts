@@ -45,9 +45,7 @@ export async function dispatchAnytypeInbound(params: {
     conversation: {
       kind: "channel",
       id: inbound.route.chatId,
-      ...(inbound.route.discussionRootId
-        ? { threadId: inbound.route.discussionRootId }
-        : {}),
+      ...(inbound.route.discussionRootId ? { threadId: inbound.route.discussionRootId } : {}),
     },
     mentionFacts: {
       canDetectMention: true,
@@ -62,9 +60,7 @@ export async function dispatchAnytypeInbound(params: {
   const { storePath, body } = buildEnvelope({
     channel: "Anytype",
     from: inbound.message.senderName ?? inbound.message.senderId,
-    ...(inbound.message.createdAt === undefined
-      ? {}
-      : { timestamp: inbound.message.createdAt }),
+    ...(inbound.message.createdAt === undefined ? {} : { timestamp: inbound.message.createdAt }),
     body: inbound.message.text,
   });
   const context = api.runtime.channel.reply.finalizeInboundContext({
@@ -97,9 +93,7 @@ export async function dispatchAnytypeInbound(params: {
     MessageSid: inbound.message.id,
     MessageSidFull: inbound.message.id,
     ...(inbound.message.replyToId ? { ReplyToId: inbound.message.replyToId } : {}),
-    ...(inbound.message.createdAt === undefined
-      ? {}
-      : { Timestamp: inbound.message.createdAt }),
+    ...(inbound.message.createdAt === undefined ? {} : { Timestamp: inbound.message.createdAt }),
     OriginatingChannel: CHANNEL_ID,
     OriginatingTo: target,
     CommandAuthorized: true,
