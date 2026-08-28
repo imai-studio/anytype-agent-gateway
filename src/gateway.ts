@@ -1,6 +1,6 @@
 import type { AgentConfig, WakeConfig } from "./config.js";
 import { AgentController, messageFingerprint } from "./controller.js";
-import { HeartDiscussionAdapter } from "./discussions.js";
+import { DiscussionAnytypePort, HeartDiscussionAdapter } from "./discussions.js";
 import { Store } from "./store.js";
 import type { AnytypePort, ConversationRef, RuntimeDriver } from "./types.js";
 
@@ -11,12 +11,14 @@ export class Gateway {
   private readonly routeIds = new Set<string>();
   private readonly tasks = new Set<Promise<void>>();
   private readonly controller: AgentController;
+  private readonly discussionAnytype: AnytypePort;
   private readonly terminal: Promise<void>;
   private resolveTerminal!: () => void;
   private rejectTerminal!: (error: unknown) => void;
 
-  constructor(private readonly anytype: AnytypePort, runtime: RuntimeDriver, private readonly config: AgentConfig, private readonly store: Store, private readonly discussions: HeartDiscussionAdapter, private readonly log: (event: string, fields?: Record<string, unknown>) => void) {
-    this.controller = new AgentController(anytype, runtime, config, store, log, (chatId, messages) => this.discussions.hydrateMessages(chatId, messages));
+  constructor(private readonly anytype: AnytypePort, runtime: RuntimeDriver, private readonly config: AgentConfig, private readonly store: Store, private readonly discussions: HeartDiscussionAdapter, private readonly log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string) => string) {
+    this.discussionAnytype = new DiscussionAnytypePort(anytype, discussions);
+    this.controller = new AgentController(anytype, runtime, config, store, log, this.discussionAnytype, managementCommand);
     this.terminal = new Promise<void>((resolve, reject) => { this.resolveTerminal = resolve; this.rejectTerminal = reject; });
     void this.terminal.catch(() => undefined);
   }
@@ -29,10 +31,11 @@ export class Gateway {
         const space = await this.anytype.resolveSpace({ ...(configuredSpace.id ? { id: configuredSpace.id } : {}), ...(configuredSpace.name ? { name: configuredSpace.name } : {}) });
         for (const configuredChat of configuredSpace.chats) {
           const chat = await this.anytype.resolveChat(space.id, { ...(configuredChat.id ? { id: configuredChat.id } : {}), ...(configuredChat.name ? { name: configuredChat.name } : {}) });
-          this.addRoute({ conversation: { routeId: `chat:${space.id}:${chat.id}`, spaceId: space.id, chatId: chat.id, kind: "chat", selfParticipantId: configuredSpace.participantId ?? this.config.agent.participantId }, wake: configuredChat.wake });
+          const override = configuredSpace.wakeOverrides.find(item => item.kind === "chat" && item.id === chat.id);
+          this.addRoute({ conversation: { routeId: `chat:${space.id}:${chat.id}`, spaceId: space.id, chatId: chat.id, kind: "chat", selfParticipantId: configuredSpace.participantId ?? this.config.agent.participantId }, wake: override?.wake ?? configuredChat.wake });
         }
-        if (configuredSpace.chatDiscovery.enabled) this.track(this.discoverChats(space.id, configuredSpace.chatDiscovery, configuredSpace.participantId ?? this.config.agent.participantId));
-        if (configuredSpace.comments.mode !== "disabled") this.track(this.discoverDiscussions(space.id, configuredSpace.comments, configuredSpace.participantId ?? this.config.agent.participantId));
+        if (configuredSpace.chatDiscovery.enabled) this.track(this.discoverChats(space.id, configuredSpace.chatDiscovery, configuredSpace.participantId ?? this.config.agent.participantId, configuredSpace.wakeOverrides));
+        if (configuredSpace.comments.mode !== "disabled") this.track(this.discoverDiscussions(space.id, configuredSpace.comments, configuredSpace.participantId ?? this.config.agent.participantId, configuredSpace.wakeOverrides));
       }
       if (!this.tasks.size) throw new Error("Configuration produced no chat or discussion routes");
       await this.terminal;
@@ -64,9 +67,9 @@ export class Gateway {
 
   private async runRoute(route: Route): Promise<void> {
     const { conversation } = route;
+    const anytype = this.port(conversation);
     if (!this.store.isInitialized(conversation.routeId)) {
-      let recent = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
-      if (conversation.kind === "discussion" && route.baselineExisting === false) recent = await this.discussions.hydrateMessages(conversation.chatId, recent);
+      const recent = await anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
       const baseline = route.baselineExisting === false ? recent.slice(0, -20) : recent;
       for (const message of baseline) this.store.markHandled(conversation.routeId, message.id, message.modified_at ?? message.created_at, messageFingerprint(message));
       this.store.initialize(conversation.routeId, baseline.at(-1)?.order_id);
@@ -80,8 +83,7 @@ export class Gateway {
         let cursor = this.store.cursor(conversation.routeId);
         for (;;) {
           const previousCursor = cursor;
-          let catchup = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100, cursor);
-          if (conversation.kind === "discussion") catchup = await this.discussions.hydrateMessages(conversation.chatId, catchup);
+          const catchup = await anytype.listMessages(conversation.spaceId, conversation.chatId, 100, cursor);
           for (const message of catchup) {
             await this.controller.process(conversation, route.wake, message);
             if (message.order_id) { cursor = message.order_id; this.store.updateCursor(conversation.routeId, message.order_id); }
@@ -89,11 +91,9 @@ export class Gateway {
           if (!catchup.length || cursor === previousCursor) break;
         }
         this.log("route_connecting", { routeId: conversation.routeId });
-        for await (const event of this.anytype.stream(conversation.spaceId, conversation.chatId, this.abort.signal)) {
-          let message = event.payload?.message;
+        for await (const event of anytype.stream(conversation.spaceId, conversation.chatId, this.abort.signal)) {
+          const message = event.payload?.message;
           if ((event.type === "message_added" || event.type === "message_updated") && message) {
-            if (conversation.kind === "discussion") [message] = await this.discussions.hydrateMessages(conversation.chatId, [message]);
-            if (!message) continue;
             if (event.type === "message_added" && cursor && message.order_id && message.order_id <= cursor) {
               this.store.markHandled(conversation.routeId, message.id, message.modified_at ?? message.created_at, messageFingerprint(message));
               continue;
@@ -113,7 +113,7 @@ export class Gateway {
     }
   }
 
-  private async discoverChats(spaceId: string, discovery: AgentConfig["spaces"][number]["chatDiscovery"], selfParticipantId: string): Promise<void> {
+  private async discoverChats(spaceId: string, discovery: AgentConfig["spaces"][number]["chatDiscovery"], selfParticipantId: string, overrides: AgentConfig["spaces"][number]["wakeOverrides"]): Promise<void> {
     let firstPass = true;
     while (!this.abort.signal.aborted) {
       try {
@@ -121,7 +121,7 @@ export class Gateway {
         for (const chat of chats) {
           this.addRoute({
             conversation: { routeId: `chat:${spaceId}:${chat.id}`, spaceId, chatId: chat.id, kind: "chat", selfParticipantId },
-            wake: discovery.wake,
+            wake: overrides.find(item => item.kind === "chat" && item.id === chat.id)?.wake ?? discovery.wake,
             baselineExisting: firstPass
           });
         }
@@ -136,10 +136,11 @@ export class Gateway {
   }
 
   private async reconcileInterruptedRuns(conversation: ConversationRef): Promise<void> {
+    const anytype = this.port(conversation);
     for (const run of this.store.runningRuns(conversation.routeId)) {
       try {
-        await this.anytype.ensureReaction(conversation.spaceId, conversation.chatId, run.triggerId, this.config.responses.workingReaction, false).catch(() => undefined);
-        await this.anytype.editMessage(conversation.spaceId, conversation.chatId, run.responseId, "Agent run interrupted before completion.").catch(error => {
+        await anytype.ensureReaction(conversation.spaceId, conversation.chatId, run.triggerId, this.config.responses.workingReaction, false).catch(() => undefined);
+        await anytype.editMessage(conversation.spaceId, conversation.chatId, run.responseId, "Agent run interrupted before completion.").catch(error => {
           this.log("run_reconcile_projection_failed", { routeId: conversation.routeId, runId: run.id, error: error instanceof Error ? error.message : String(error) });
         });
       } finally {
@@ -149,7 +150,7 @@ export class Gateway {
     }
   }
 
-  private async discoverDiscussions(spaceId: string, comments: AgentConfig["spaces"][number]["comments"], selfParticipantId: string): Promise<void> {
+  private async discoverDiscussions(spaceId: string, comments: AgentConfig["spaces"][number]["comments"], selfParticipantId: string, overrides: AgentConfig["spaces"][number]["wakeOverrides"]): Promise<void> {
     let firstPass = true;
     while (!this.abort.signal.aborted) {
       try {
@@ -182,7 +183,7 @@ export class Gateway {
         for (const item of this.store.listDiscussions(spaceId)) {
           this.addRoute({
             conversation: { routeId: `discussion:${spaceId}:${item.discussionId}`, spaceId, chatId: item.discussionId, kind: "discussion", objectId: item.objectId, selfParticipantId, ...(item.objectName ? { objectName: item.objectName } : {}) },
-            wake: comments.wake,
+            wake: overrides.find(override => override.kind === "discussion" && override.id === item.discussionId)?.wake ?? comments.wake,
             baselineExisting: firstPass
           });
         }
@@ -195,6 +196,8 @@ export class Gateway {
       await wait(comments.discoveryIntervalSeconds * 1000, this.abort.signal).catch(() => undefined);
     }
   }
+
+  private port(conversation: ConversationRef): AnytypePort { return conversation.kind === "discussion" ? this.discussionAnytype : this.anytype; }
 }
 
 function wait(ms: number, signal: AbortSignal): Promise<void> {

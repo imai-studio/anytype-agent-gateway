@@ -7,10 +7,11 @@ export declare class AgentController {
     private readonly config;
     private readonly store;
     private readonly log;
-    private readonly configuredDiscussionHydrator?;
+    private readonly discussionAnytype;
+    private readonly managementCommand?;
     private readonly active;
     private readonly processing;
-    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, log: (event: string, fields?: Record<string, unknown>) => void, configuredDiscussionHydrator?: ((chatId: string, messages: ChatMessage[]) => Promise<ChatMessage[]>) | undefined);
+    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, log: (event: string, fields?: Record<string, unknown>) => void, discussionAnytype?: AnytypePort, managementCommand?: ((routeId: string) => string) | undefined);
     process(conversation: ConversationRef, wake: WakeConfig, message: ChatMessage): Promise<void>;
     private processClaimed;
     stop(): Promise<void>;
@@ -19,6 +20,6 @@ export declare class AgentController {
     private steerPrompt;
     private threadKey;
     private agentHop;
-    private hydrateDiscussionMessages;
+    private port;
 }
 export declare function messageFingerprint(message: ChatMessage): string;

@@ -121,6 +121,7 @@ describe("failure containment", () => {
     }
     class AppearingDiscussionAdapter {
       calls = 0;
+      sentTo: Array<{ chatId: string; replyTo?: string }> = [];
       async resolve(): Promise<Array<{ objectId: string; discussionId?: string }>> {
         this.calls += 1;
         return this.calls === 1 ? [{ objectId: "todo" }] : [{ objectId: "todo", discussionId: "discussion" }];
@@ -128,6 +129,12 @@ describe("failure containment", () => {
       async hydrateMessages(_chatId: string, messages: ChatMessage[]): Promise<ChatMessage[]> {
         return messages.map(message => ({ ...message, content: { text: "Anya can u see this note?", marks: [{ type: "mention", param: "heart-identity" }] }, mentioned: true }));
       }
+      async sendMessage(chatId: string, input: { text: string; replyTo?: string }): Promise<string> {
+        this.sentTo.push({ chatId, ...(input.replyTo ? { replyTo: input.replyTo } : {}) });
+        return "heart-reply";
+      }
+      async editMessage(): Promise<void> {}
+      async deleteMessage(): Promise<void> {}
     }
     const anytype = new DiscussingAnytype();
     anytype.messages.push(incoming({ id: "first-discussion-tag", order_id: "001", content: { text: "" } }));
@@ -141,12 +148,13 @@ describe("failure containment", () => {
     });
     config.spaces[0]!.comments.discoveryIntervalSeconds = 0.01;
     const store = new Store(":memory:");
-    const gateway = new Gateway(anytype, runtime, config, store, new AppearingDiscussionAdapter() as unknown as HeartDiscussionAdapter, () => undefined);
+    const adapter = new AppearingDiscussionAdapter();
+    const gateway = new Gateway(anytype, runtime, config, store, adapter as unknown as HeartDiscussionAdapter, () => undefined);
     const running = gateway.start();
     await eventually(() => expect(runtime.starts).toHaveLength(1));
     expect(runtime.starts[0]?.sessionKey).toBe("aag:discussion:space:discussion:root:first-discussion-tag");
     expect(runtime.starts[0]?.prompt).toContain("Anya can u see this note?");
-    expect(anytype.sentTo).toContainEqual({ chatId: "discussion", replyTo: "first-discussion-tag" });
+    expect(adapter.sentTo).toContainEqual({ chatId: "discussion", replyTo: "first-discussion-tag" });
     gateway.stop();
     await running;
     store.close();

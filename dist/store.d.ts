@@ -46,5 +46,7 @@ export declare class Store {
     deleteCodexAcpSession(sessionKey: string): void;
     sessionGeneration(threadKey: string): number;
     resetSession(threadKey: string): number;
+    wakeOverride(routeId: string): string | undefined;
+    setWakeOverride(routeId: string, humans: string): void;
     close(): void;
 }

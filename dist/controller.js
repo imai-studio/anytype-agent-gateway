@@ -8,16 +8,18 @@ export class AgentController {
     config;
     store;
     log;
-    configuredDiscussionHydrator;
+    discussionAnytype;
+    managementCommand;
     active = new Map();
     processing = new Set();
-    constructor(anytype, runtime, config, store, log, configuredDiscussionHydrator) {
+    constructor(anytype, runtime, config, store, log, discussionAnytype = anytype, managementCommand) {
         this.anytype = anytype;
         this.runtime = runtime;
         this.config = config;
         this.store = store;
         this.log = log;
-        this.configuredDiscussionHydrator = configuredDiscussionHydrator;
+        this.discussionAnytype = discussionAnytype;
+        this.managementCommand = managementCommand;
     }
     async process(conversation, wake, message) {
         const version = message.modified_at ?? message.created_at;
@@ -39,8 +41,10 @@ export class AgentController {
     async processClaimed(conversation, wake, message) {
         if (this.store.isResponse(message.id))
             return;
+        const humans = this.store.wakeOverride(conversation.routeId);
+        const effectiveWake = humans ? { ...wake, humans: humans } : wake;
         const replyToAgent = Boolean(message.reply_to_message_id && this.store.isResponse(message.reply_to_message_id));
-        const decision = decideWake(message, wake, this.config, { replyToAgent, ...(conversation.selfParticipantId ? { selfParticipantId: conversation.selfParticipantId } : {}) });
+        const decision = decideWake(message, effectiveWake, this.config, { replyToAgent, ...(conversation.selfParticipantId ? { selfParticipantId: conversation.selfParticipantId } : {}) });
         if (!decision.wake) {
             this.log("message_ignored", { routeId: conversation.routeId, messageId: message.id, reason: decision.reason });
             return;
@@ -115,20 +119,19 @@ export class AgentController {
         await this.runtime.close?.();
     }
     async start(conversation, message, threadKey, hop, newSession = false) {
+        const anytype = this.port(conversation);
         const runId = crypto.randomUUID();
-        let recentMessages = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
-        if (conversation.kind === "discussion")
-            recentMessages = await this.hydrateDiscussionMessages(conversation, recentMessages);
+        const recentMessages = await anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
         const orphan = recentMessages.find(candidate => candidate.reply_to_message_id === message.id && candidate.creator === (conversation.selfParticipantId ?? this.config.agent.participantId));
-        const context = await buildContext(this.anytype, this.config, conversation, message, { newSession, hydrateMessages: messages => this.hydrateDiscussionMessages(conversation, messages) });
+        const context = await buildContext(anytype, this.config, conversation, message, { newSession });
         const projection = orphan
-            ? await RunProjection.resume(this.anytype, this.config, conversation, orphan.id, message.id, orphan.content?.text)
-            : await RunProjection.create(this.anytype, this.config, conversation, message.id);
+            ? await RunProjection.resume(anytype, this.config, conversation, orphan.id, message.id, orphan.content?.text)
+            : await RunProjection.create(anytype, this.config, conversation, message.id);
         this.store.createRun({ id: runId, routeId: conversation.routeId, threadKey, triggerId: message.id, responseId: projection.messageId, hop });
         try {
             const generation = this.store.sessionGeneration(threadKey);
             const sessionKey = generation === 0 ? `aag:${threadKey}` : `aag:${threadKey}:g${generation}`;
-            const handle = await this.runtime.start({ sessionKey, prompt: formatPrompt(context, this.config) }, event => projection.onEvent(event));
+            const handle = await this.runtime.start({ sessionKey, prompt: formatPrompt(context, this.config, this.managementCommand?.(conversation.routeId)) }, event => projection.onEvent(event));
             const active = { id: runId, handle, projection, conversation, threadKey, completion: Promise.resolve(), cancelled: false };
             this.active.set(threadKey, active);
             this.log("run_started", { routeId: conversation.routeId, runId, messageId: message.id });
@@ -172,7 +175,7 @@ export class AgentController {
         for (let depth = 0; parentId && depth < this.config.context.replyDepth; depth += 1) {
             rootId = parentId;
             try {
-                const parent = await this.anytype.getMessage(conversation.spaceId, conversation.chatId, parentId);
+                const parent = await this.port(conversation).getMessage(conversation.spaceId, conversation.chatId, parentId);
                 parentId = parent.reply_to_message_id;
             }
             catch {
@@ -186,7 +189,7 @@ export class AgentController {
         let parentId = message.reply_to_message_id;
         for (; parentId && hop <= this.config.coordination.maxHops + 1;) {
             try {
-                const parent = await this.anytype.getMessage(conversation.spaceId, conversation.chatId, parentId);
+                const parent = await this.port(conversation).getMessage(conversation.spaceId, conversation.chatId, parentId);
                 if (!parent.creator || !(this.config.coordination.agentParticipants.includes(parent.creator) || this.config.coordination.peers.some(peer => peer.participantId === parent?.creator)))
                     break;
                 hop += 1;
@@ -198,11 +201,7 @@ export class AgentController {
         }
         return hop;
     }
-    async hydrateDiscussionMessages(conversation, messages) {
-        if (conversation.kind !== "discussion")
-            return messages;
-        return this.configuredDiscussionHydrator?.(conversation.chatId, messages) ?? messages;
-    }
+    port(conversation) { return conversation.kind === "discussion" ? this.discussionAnytype : this.anytype; }
 }
 export function messageFingerprint(message) {
     return createHash("sha256").update(JSON.stringify({

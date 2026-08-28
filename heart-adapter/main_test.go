@@ -59,3 +59,21 @@ func TestRenderMessageHydratesBlockBasedComment(t *testing.T) {
 		t.Fatalf("unexpected marks %#v", rendered.Content.Marks)
 	}
 }
+
+func TestOutboundMessageUsesBlockContent(t *testing.T) {
+	message := outboundMessage(mutationRequest{
+		Text:    "Working...",
+		ReplyTo: "trigger",
+		Marks:   []textMark{{Type: "mention", From: 0, To: 4, Param: "peer"}},
+	})
+	if message.GetMessage() != nil {
+		t.Fatal("legacy message content is invisible in object discussions")
+	}
+	if message.GetReplyToMessageId() != "trigger" || len(message.GetBlocks()) != 1 {
+		t.Fatalf("unexpected outbound message %#v", message)
+	}
+	text := message.GetBlocks()[0].GetText()
+	if text == nil || text.GetText() != "Working..." || len(text.GetMarks()) != 1 || text.GetMarks()[0].GetType() != model.BlockContentTextMark_Mention {
+		t.Fatalf("unexpected block content %#v", text)
+	}
+}

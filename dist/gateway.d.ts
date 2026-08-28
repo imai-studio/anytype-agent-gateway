@@ -12,10 +12,11 @@ export declare class Gateway {
     private readonly routeIds;
     private readonly tasks;
     private readonly controller;
+    private readonly discussionAnytype;
     private readonly terminal;
     private resolveTerminal;
     private rejectTerminal;
-    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void);
+    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string) => string);
     start(): Promise<void>;
     stop(): void;
     private addRoute;
@@ -24,4 +25,5 @@ export declare class Gateway {
     private discoverChats;
     private reconcileInterruptedRuns;
     private discoverDiscussions;
+    private port;
 }

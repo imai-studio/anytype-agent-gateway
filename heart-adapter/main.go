@@ -61,6 +61,16 @@ type hydratedMessage struct {
 type hydrateResponse struct {
 	Messages []hydratedMessage `json:"messages"`
 }
+type mutationRequest struct {
+	ChatID    string     `json:"chatId"`
+	MessageID string     `json:"messageId,omitempty"`
+	Text      string     `json:"text,omitempty"`
+	ReplyTo   string     `json:"replyTo,omitempty"`
+	Marks     []textMark `json:"marks,omitempty"`
+}
+type mutationResponse struct {
+	MessageID string `json:"messageId,omitempty"`
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -71,8 +81,106 @@ func main() {
 		runResolve(os.Args[2:])
 	case "hydrate":
 		runHydrate(os.Args[2:])
+	case "send", "edit", "delete":
+		runMutation(os.Args[1], os.Args[2:])
 	default:
-		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate> [flags]"))
+		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete> [flags]"))
+	}
+}
+
+func runMutation(action string, args []string) {
+	flags := flag.NewFlagSet(action, flag.ExitOnError)
+	address := flags.String("grpc-address", "127.0.0.1:31010", "Anytype Heart gRPC address")
+	configPath := flags.String("config", defaultConfigPath(), "Anytype CLI config file")
+	_ = flags.Parse(args)
+	var input mutationRequest
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fatal(fmt.Errorf("decode request: %w", err))
+	}
+	if input.ChatID == "" {
+		fatal(errors.New("chatId is required"))
+	}
+	if action != "send" && input.MessageID == "" {
+		fatal(errors.New("messageId is required"))
+	}
+	token, err := readToken(*configPath)
+	if err != nil {
+		fatal(err)
+	}
+	conn, err := grpc.NewClient("dns:///"+*address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		fatal(fmt.Errorf("connect: %w", err))
+	}
+	defer conn.Close()
+	client := service.NewClientCommandsClient(conn)
+	ctx, cancel := context.WithTimeout(metadata.NewOutgoingContext(context.Background(), metadata.Pairs("token", token)), 15*time.Second)
+	defer cancel()
+	out := mutationResponse{}
+	switch action {
+	case "send":
+		got, callErr := client.ChatAddMessage(ctx, &pb.RpcChatAddMessageRequest{ChatObjectId: input.ChatID, Message: outboundMessage(input)})
+		if callErr != nil {
+			fatal(fmt.Errorf("send chat message: %w", callErr))
+		}
+		if got.GetError().GetCode() != pb.RpcChatAddMessageResponseError_NULL {
+			fatal(errors.New(got.GetError().GetDescription()))
+		}
+		out.MessageID = got.GetMessageId()
+	case "edit":
+		got, callErr := client.ChatEditMessageContent(ctx, &pb.RpcChatEditMessageContentRequest{ChatObjectId: input.ChatID, MessageId: input.MessageID, EditedMessage: outboundMessage(input)})
+		if callErr != nil {
+			fatal(fmt.Errorf("edit chat message: %w", callErr))
+		}
+		if got.GetError().GetCode() != pb.RpcChatEditMessageContentResponseError_NULL {
+			fatal(errors.New(got.GetError().GetDescription()))
+		}
+	case "delete":
+		got, callErr := client.ChatDeleteMessage(ctx, &pb.RpcChatDeleteMessageRequest{ChatObjectId: input.ChatID, MessageId: input.MessageID})
+		if callErr != nil {
+			fatal(fmt.Errorf("delete chat message: %w", callErr))
+		}
+		if got.GetError().GetCode() != pb.RpcChatDeleteMessageResponseError_NULL {
+			fatal(errors.New(got.GetError().GetDescription()))
+		}
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
+		fatal(err)
+	}
+}
+
+func outboundMessage(input mutationRequest) *model.ChatMessage {
+	marks := make([]*model.BlockContentTextMark, 0, len(input.Marks))
+	for _, mark := range input.Marks {
+		kind, ok := markType(mark.Type)
+		if !ok {
+			continue
+		}
+		marks = append(marks, &model.BlockContentTextMark{Type: kind, Param: mark.Param, Range: &model.Range{From: mark.From, To: mark.To}})
+	}
+	return &model.ChatMessage{
+		ReplyToMessageId: input.ReplyTo,
+		Blocks: []*model.ChatMessageMessageBlock{{
+			Content: &model.ChatMessageMessageBlockContentOfText{Text: &model.ChatMessageMessageBlockText{Text: input.Text, Style: model.BlockContentText_Paragraph, Marks: marks}},
+		}},
+	}
+}
+
+func markType(value string) (model.BlockContentTextMarkType, bool) {
+	switch strings.ToLower(value) {
+	case "mention":
+		return model.BlockContentTextMark_Mention, true
+	case "object":
+		return model.BlockContentTextMark_Object, true
+	case "link":
+		return model.BlockContentTextMark_Link, true
+	case "bold":
+		return model.BlockContentTextMark_Bold, true
+	case "italic":
+		return model.BlockContentTextMark_Italic, true
+	case "strikethrough":
+		return model.BlockContentTextMark_Strikethrough, true
+	default:
+		return model.BlockContentTextMark_Strikethrough, false
 	}
 }
 

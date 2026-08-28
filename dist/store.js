@@ -21,6 +21,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS discussions (space_id TEXT NOT NULL, object_id TEXT NOT NULL, discussion_id TEXT NOT NULL, object_name TEXT, object_type TEXT, discovered_at INTEGER NOT NULL, PRIMARY KEY (space_id, object_id));
       CREATE TABLE IF NOT EXISTS codex_acp_sessions (session_key TEXT PRIMARY KEY, session_id TEXT NOT NULL, updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS session_generations (thread_key TEXT PRIMARY KEY, generation INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS route_wake_overrides (route_id TEXT PRIMARY KEY, humans TEXT NOT NULL, updated_at INTEGER NOT NULL);
     `);
         const versionColumns = this.db.prepare("PRAGMA table_info(handled_message_versions)").all();
         if (!versionColumns.some(column => column.name === "fingerprint")) {
@@ -94,5 +95,7 @@ export class Store {
         this.db.prepare("INSERT INTO session_generations(thread_key,generation,updated_at) VALUES(?,1,?) ON CONFLICT(thread_key) DO UPDATE SET generation=generation+1,updated_at=excluded.updated_at").run(threadKey, Date.now());
         return this.sessionGeneration(threadKey);
     }
+    wakeOverride(routeId) { return this.db.prepare("SELECT humans FROM route_wake_overrides WHERE route_id=?").get(routeId)?.humans; }
+    setWakeOverride(routeId, humans) { this.db.prepare("INSERT INTO route_wake_overrides(route_id,humans,updated_at) VALUES(?,?,?) ON CONFLICT(route_id) DO UPDATE SET humans=excluded.humans,updated_at=excluded.updated_at").run(routeId, humans, Date.now()); }
     close() { this.db.close(); }
 }

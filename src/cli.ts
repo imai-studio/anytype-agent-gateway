@@ -14,6 +14,7 @@ import { CodexAcpDriver } from "./runtime/codex-acp.js";
 import { OpenClawDriver } from "./runtime/openclaw.js";
 import { installService, serviceCommand } from "./service.js";
 import { Store } from "./store.js";
+import { setRouteWake } from "./management.js";
 import type { RuntimeDriver } from "./types.js";
 import { VERSION } from "./version.js";
 
@@ -83,13 +84,25 @@ program.command("run").description("Run one configured Anytype agent in the fore
   let store: Store | undefined;
   try {
     store = new Store(config.state.path);
-    const gateway = new Gateway(anytype, makeRuntime(config, store), config, store, new HeartDiscussionAdapter(config), log);
+    const configPath = resolve(options.config);
+    const gateway = new Gateway(anytype, makeRuntime(config, store), config, store, new HeartDiscussionAdapter(config), log, routeId => managementCommand(configPath, routeId));
     const stop = () => gateway.stop();
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
     await gateway.start();
   } finally { store?.close(); await releaseLock(); }
 });
+
+const config = program.command("config").description("Manage constrained runtime configuration");
+config.command("wake").description("Set the human wake mode for one AAG route")
+  .requiredOption("-c, --config <path>")
+  .requiredOption("--route-id <id>")
+  .requiredOption("--humans <mode>")
+  .option("--prefix <text>")
+  .action(async options => {
+    await setRouteWake({ configPath: options.config, routeId: options.routeId, humans: options.humans, ...(options.prefix ? { prefix: options.prefix } : {}) });
+    console.log(`Updated ${options.routeId} to humans=${options.humans}. The running gateway will apply it to the next message.`);
+  });
 
 const identity = program.command("identity").description("Manage the one Anytype bot identity on this machine");
 identity.command("create").argument("<name>").option("--anytype <command>", "Anytype CLI command", "anytype").option("--invite <url...>", "space invite link(s)", []).option("--api-key-file <path>", "where to save the API key", "./aag-anytype-api-key").option("--data-path <path>").action(async (name, options) => {
@@ -113,6 +126,13 @@ function makeRuntime(config: Awaited<ReturnType<typeof loadConfig>>, store?: Sto
 }
 
 function log(event: string, fields: Record<string, unknown> = {}): void { console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields })); }
+
+function managementCommand(configPath: string, routeId: string): string {
+  const executable = resolve(process.argv[1]!);
+  return `${shellQuote(process.execPath)} ${shellQuote(executable)} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --humans <mode>`;
+}
+
+function shellQuote(value: string): string { return `'${value.replaceAll("'", `'\\''`)}'`; }
 
 async function acquireProcessLock(path: string): Promise<() => Promise<void>> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });

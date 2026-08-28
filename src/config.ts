@@ -41,12 +41,19 @@ const chatDiscoverySchema = z.object({
   if (value.enabled && !value.wake) context.addIssue({ code: "custom", path: ["wake"], message: "chatDiscovery.wake is required when chat discovery is enabled" });
 }).transform(value => ({ ...value, wake: value.wake ?? disabledWake }));
 
+const routeWakeOverrideSchema = z.object({
+  kind: z.enum(["chat", "discussion"]),
+  id: z.string().min(1),
+  wake: wakeSchema
+});
+
 const spaceSchema = z.object({
   id: z.string().optional(),
   name: z.string().optional(),
   participantId: z.string().optional(),
   invite: z.string().url().optional(),
   chats: z.array(chatSchema).default([]),
+  wakeOverrides: z.array(routeWakeOverrideSchema).default([]),
   chatDiscovery: chatDiscoverySchema.default({ enabled: false, discoveryIntervalSeconds: 30, wake: disabledWake }),
   comments: commentsSchema.default({ mode: "disabled", includeObjectTypes: [], excludeObjectTypes: [], discoveryIntervalSeconds: 60, createMissing: false, wake: disabledWake })
 }).refine(value => value.id || value.name || value.invite, "space id, name, or invite is required");
@@ -93,6 +100,7 @@ export const configSchema = z.object({
   }),
   spaces: z.array(spaceSchema).min(1),
   runtime: runtimeSchema,
+  management: z.object({ allowWakeChanges: z.boolean().default(false) }).default({ allowWakeChanges: false }),
   responses: z.object({
     mode: z.enum(["single", "milestones", "verbose"]).default("single"),
     streaming: z.boolean().default(true),

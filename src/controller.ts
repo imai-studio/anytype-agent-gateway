@@ -11,7 +11,7 @@ type ActiveRun = { id: string; handle: ActiveRuntime; projection: RunProjection;
 export class AgentController {
   private readonly active = new Map<string, ActiveRun>();
   private readonly processing = new Set<string>();
-  constructor(private readonly anytype: AnytypePort, private readonly runtime: RuntimeDriver, private readonly config: AgentConfig, private readonly store: Store, private readonly log: (event: string, fields?: Record<string, unknown>) => void, private readonly configuredDiscussionHydrator?: (chatId: string, messages: ChatMessage[]) => Promise<ChatMessage[]>) {}
+  constructor(private readonly anytype: AnytypePort, private readonly runtime: RuntimeDriver, private readonly config: AgentConfig, private readonly store: Store, private readonly log: (event: string, fields?: Record<string, unknown>) => void, private readonly discussionAnytype: AnytypePort = anytype, private readonly managementCommand?: (routeId: string) => string) {}
 
   async process(conversation: ConversationRef, wake: WakeConfig, message: ChatMessage): Promise<void> {
     const version = message.modified_at ?? message.created_at;
@@ -28,8 +28,10 @@ export class AgentController {
 
   private async processClaimed(conversation: ConversationRef, wake: WakeConfig, message: ChatMessage): Promise<void> {
     if (this.store.isResponse(message.id)) return;
+    const humans = this.store.wakeOverride(conversation.routeId);
+    const effectiveWake = humans ? { ...wake, humans: humans as WakeConfig["humans"] } : wake;
     const replyToAgent = Boolean(message.reply_to_message_id && this.store.isResponse(message.reply_to_message_id));
-    const decision = decideWake(message, wake, this.config, { replyToAgent, ...(conversation.selfParticipantId ? { selfParticipantId: conversation.selfParticipantId } : {}) });
+    const decision = decideWake(message, effectiveWake, this.config, { replyToAgent, ...(conversation.selfParticipantId ? { selfParticipantId: conversation.selfParticipantId } : {}) });
     if (!decision.wake) { this.log("message_ignored", { routeId: conversation.routeId, messageId: message.id, reason: decision.reason }); return; }
     const threadKey = await this.threadKey(conversation, message);
     const newSession = isNewSessionCommand(message.content?.text ?? "");
@@ -95,19 +97,19 @@ export class AgentController {
   }
 
   private async start(conversation: ConversationRef, message: ChatMessage, threadKey: string, hop: number, newSession = false): Promise<void> {
+    const anytype = this.port(conversation);
     const runId = crypto.randomUUID();
-    let recentMessages = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
-    if (conversation.kind === "discussion") recentMessages = await this.hydrateDiscussionMessages(conversation, recentMessages);
+    const recentMessages = await anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
     const orphan = recentMessages.find(candidate => candidate.reply_to_message_id === message.id && candidate.creator === (conversation.selfParticipantId ?? this.config.agent.participantId));
-    const context = await buildContext(this.anytype, this.config, conversation, message, { newSession, hydrateMessages: messages => this.hydrateDiscussionMessages(conversation, messages) });
+    const context = await buildContext(anytype, this.config, conversation, message, { newSession });
     const projection = orphan
-      ? await RunProjection.resume(this.anytype, this.config, conversation, orphan.id, message.id, orphan.content?.text)
-      : await RunProjection.create(this.anytype, this.config, conversation, message.id);
+      ? await RunProjection.resume(anytype, this.config, conversation, orphan.id, message.id, orphan.content?.text)
+      : await RunProjection.create(anytype, this.config, conversation, message.id);
     this.store.createRun({ id: runId, routeId: conversation.routeId, threadKey, triggerId: message.id, responseId: projection.messageId, hop });
     try {
       const generation = this.store.sessionGeneration(threadKey);
       const sessionKey = generation === 0 ? `aag:${threadKey}` : `aag:${threadKey}:g${generation}`;
-      const handle = await this.runtime.start({ sessionKey, prompt: formatPrompt(context, this.config) }, event => projection.onEvent(event));
+      const handle = await this.runtime.start({ sessionKey, prompt: formatPrompt(context, this.config, this.managementCommand?.(conversation.routeId)) }, event => projection.onEvent(event));
       const active: ActiveRun = { id: runId, handle, projection, conversation, threadKey, completion: Promise.resolve(), cancelled: false };
       this.active.set(threadKey, active);
       this.log("run_started", { routeId: conversation.routeId, runId, messageId: message.id });
@@ -147,7 +149,7 @@ export class AgentController {
     for (let depth = 0; parentId && depth < this.config.context.replyDepth; depth += 1) {
       rootId = parentId;
       try {
-        const parent = await this.anytype.getMessage(conversation.spaceId, conversation.chatId, parentId);
+        const parent = await this.port(conversation).getMessage(conversation.spaceId, conversation.chatId, parentId);
         parentId = parent.reply_to_message_id;
       } catch { break; }
     }
@@ -158,7 +160,7 @@ export class AgentController {
     let parentId = message.reply_to_message_id;
     for (; parentId && hop <= this.config.coordination.maxHops + 1;) {
       try {
-        const parent = await this.anytype.getMessage(conversation.spaceId, conversation.chatId, parentId);
+        const parent = await this.port(conversation).getMessage(conversation.spaceId, conversation.chatId, parentId);
         if (!parent.creator || !(this.config.coordination.agentParticipants.includes(parent.creator) || this.config.coordination.peers.some(peer => peer.participantId === parent?.creator))) break;
         hop += 1;
         parentId = parent.reply_to_message_id;
@@ -167,10 +169,7 @@ export class AgentController {
     return hop;
   }
 
-  private async hydrateDiscussionMessages(conversation: ConversationRef, messages: ChatMessage[]): Promise<ChatMessage[]> {
-    if (conversation.kind !== "discussion") return messages;
-    return this.configuredDiscussionHydrator?.(conversation.chatId, messages) ?? messages;
-  }
+  private port(conversation: ConversationRef): AnytypePort { return conversation.kind === "discussion" ? this.discussionAnytype : this.anytype; }
 }
 
 export function messageFingerprint(message: ChatMessage): string {

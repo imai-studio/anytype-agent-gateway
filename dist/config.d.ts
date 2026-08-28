@@ -61,6 +61,29 @@ export declare const configSchema: z.ZodObject<{
                 allowedUsers: z.ZodArray<z.ZodString>;
             }, z.core.$strip>;
         }, z.core.$strip>>>;
+        wakeOverrides: z.ZodDefault<z.ZodArray<z.ZodObject<{
+            kind: z.ZodEnum<{
+                chat: "chat";
+                discussion: "discussion";
+            }>;
+            id: z.ZodString;
+            wake: z.ZodObject<{
+                humans: z.ZodDefault<z.ZodEnum<{
+                    mention: "mention";
+                    "mention-or-reply": "mention-or-reply";
+                    "every-message": "every-message";
+                    prefix: "prefix";
+                    disabled: "disabled";
+                }>>;
+                agents: z.ZodDefault<z.ZodEnum<{
+                    "every-message": "every-message";
+                    never: "never";
+                    "direct-mention": "direct-mention";
+                }>>;
+                prefix: z.ZodOptional<z.ZodString>;
+                allowedUsers: z.ZodArray<z.ZodString>;
+            }, z.core.$strip>;
+        }, z.core.$strip>>>;
         chatDiscovery: z.ZodDefault<z.ZodPipe<z.ZodObject<{
             enabled: z.ZodDefault<z.ZodBoolean>;
             discoveryIntervalSeconds: z.ZodDefault<z.ZodNumber>;
@@ -188,6 +211,9 @@ export declare const configSchema: z.ZodObject<{
         environment: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodString>>;
         kind: z.ZodLiteral<"codex">;
     }, z.core.$strip>], "kind">;
+    management: z.ZodDefault<z.ZodObject<{
+        allowWakeChanges: z.ZodDefault<z.ZodBoolean>;
+    }, z.core.$strip>>;
     responses: z.ZodDefault<z.ZodObject<{
         mode: z.ZodDefault<z.ZodEnum<{
             single: "single";
