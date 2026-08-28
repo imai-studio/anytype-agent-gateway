@@ -104,7 +104,9 @@ Delivered records are retained for seven days. Pending records with no matching 
 
 ## Native scheduling and external continuation
 
-The first inbound Anytype message persists the route/session binding. After that, an OpenClaw cron job, heartbeat, subagent announcement, `sessions_send`, or another OpenClaw client that continues the same session can deliver agent output to the bound Anytype route. The plugin does not mirror the external user prompt; it forwards agent output only.
+The first inbound Anytype message persists the route/session binding. After that, a heartbeat, subagent announcement, `sessions_send`, or another OpenClaw client that continues the same session can deliver agent output to the bound Anytype route. The plugin does not mirror the external user prompt; it forwards agent output only.
+
+Plain cron `agentTurn` jobs run in an isolated cron session. To preserve the bound Anytype session, schedule a native command job that invokes `openclaw agent --session-key <bound-key> … --deliver --reply-channel anytype --reply-to <route-target>`. The standard AAG `aag_context` tool returns the complete argv for the current chat or discussion root.
 
 For a proactive job that has never received an Anytype message, use OpenClaw's normal outbound routing to the Anytype target first. There is no safe route to infer before a chat or discussion has been bound.
 

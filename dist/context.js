@@ -115,7 +115,7 @@ export function formatPrompt(bundle, config, managementCommand) {
                 "When you create or find an object for the user, copy the returned [[AAG_OBJECT:...|...]] object_ref token into your reply so AAG renders a native clickable object reference. The anytype:// link is a fallback. Use only the spaces and file roots allowed by the tool server.",
                 ...(config.runtime.kind === "openclaw"
                     ? [
-                        "For recurring or delayed work, use OpenClaw's native scheduler and keep delivery tied to this conversation session. AAG deliberately has no scheduler.",
+                        "For recurring or delayed work, first call aag_context with route_id and, for object comments, discussion_root_id from the conversation metadata. Use the returned OpenClaw continuation_argv as a native command job, replacing <scheduled prompt>; a plain agentTurn cron job is isolated and will not continue this Anytype session. AAG deliberately has no scheduler.",
                     ]
                     : [
                         "AAG deliberately has no scheduler, and this Codex ACP connection does not expose Codex scheduled tasks. Do not pretend a recurring job was created; explain that this host must attach a native Codex scheduler integration first.",

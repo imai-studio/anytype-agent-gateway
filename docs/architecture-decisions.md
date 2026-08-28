@@ -61,6 +61,8 @@ Session bindings, outbound retries, native-event cursors, and proactive-delivery
 
 AAG does not define cron syntax or maintain a second scheduler. OpenClaw cron jobs, heartbeats, subagents, and external session continuations keep using OpenClaw's scheduler and session model. The bundled channel plugin observes only explicitly bound sessions and returns their assistant output to the stored Anytype route.
 
+OpenClaw intentionally isolates a normal cron `agentTurn` under a cron-run session key. A route-bound scheduled continuation is therefore a native OpenClaw command job whose argv invokes `openclaw agent` with AAG's exact current session key and the native Anytype delivery target. `aag_context` returns that argv. This is an adapter to OpenClaw's scheduler, not an AAG scheduler, and it prevents scheduled work from silently losing the chat or discussion context.
+
 Codex ACP does not currently expose Codex desktop scheduled tasks or external session observation. AAG reports that limitation instead of pretending to schedule a job. Equivalent Codex support belongs in a native Codex app-server adapter.
 
 ## Anytype mutations use scoped tools

@@ -1,9 +1,10 @@
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { configSchema } from "../src/config.js";
 import { callTool, toolDefinitions } from "../src/mcp.js";
+import { Store } from "../src/store.js";
 import type { AnytypeClient } from "../src/anytype-client.js";
 
 function config(overrides: Record<string, unknown> = {}) {
@@ -68,6 +69,76 @@ describe("AAG Anytype MCP policy", () => {
       space_id: "space-1",
     });
     expect(JSON.stringify(result)).not.toContain("/private/key");
+  });
+
+  it("describes a native OpenClaw command job bound to the current chat session", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aag-mcp-schedule-"));
+    const statePath = join(directory, "state.sqlite");
+    const store = new Store(statePath);
+    store.saveSessionBinding({
+      threadKey: "chat:space-1:chat",
+      routeId: "chat:space-1:chat",
+      spaceId: "space-1",
+      chatId: "chat",
+      runtime: "openclaw",
+      nativeSessionKey: "agent:main:aag:chat:space-1:chat",
+      generation: 0,
+      state: "active",
+    });
+    store.close();
+
+    const result = await callTool(
+      client(),
+      config({
+        runtime: { kind: "openclaw", command: "/opt/openclaw" },
+        state: { path: statePath },
+      }),
+      "/config.yaml",
+      "chat:space-1:chat",
+      "space-1",
+      "aag_context",
+      {},
+    );
+    expect(result).toMatchObject({
+      scheduling: {
+        provider: "openclaw",
+        available: true,
+        session_key: "agent:main:aag:chat:space-1:chat",
+        delivery_channel: "anytype",
+        continuation_argv: [
+          "/opt/openclaw",
+          "agent",
+          "--session-key",
+          "agent:main:aag:chat:space-1:chat",
+          "--message",
+          "<scheduled prompt>",
+          "--deliver",
+          "--reply-channel",
+          "anytype",
+          "--reply-to",
+          expect.stringMatching(/^route:/),
+        ],
+      },
+    });
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("requires the current discussion root before exposing a scheduled continuation", async () => {
+    const result = await callTool(
+      client(),
+      config({ runtime: { kind: "openclaw" } }),
+      "/config.yaml",
+      "discussion:space-1:discussion",
+      "space-1",
+      "aag_context",
+      {},
+    );
+    expect(result).toMatchObject({
+      scheduling: {
+        available: false,
+        reason: expect.stringContaining("discussion_root_id"),
+      },
+    });
   });
 
   it("enforces the space allowlist before making a request", async () => {

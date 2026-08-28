@@ -243,7 +243,9 @@ Configure the same random token, at least 24 characters long, in a mode-`0600` f
 }
 ```
 
-AAG pulls and acknowledges the plugin's durable loopback outbox; the plugin does not expose a push-delivery setting. OpenClaw's native scheduler remains the scheduler. Once a session has been bound, cron, heartbeat, subagent, and externally continued assistant output is returned to the same Anytype route. AAG mirrors agent output only, not the external user prompt.
+AAG pulls and acknowledges the plugin's durable loopback outbox; the plugin does not expose a push-delivery setting. OpenClaw's native scheduler remains the scheduler. Once a session has been bound, heartbeat, subagent, and externally continued assistant output can return to the same Anytype route. AAG mirrors agent output only, not the external user prompt.
+
+OpenClaw gives ordinary cron `agentTurn` jobs a separate `agent:…:cron:…` session. To keep one session per Anytype chat or discussion, call `aag_context` with the route metadata from the prompt and schedule the returned `continuation_argv` as an OpenClaw **command job**. That argv runs `openclaw agent` against the exact bound session and explicitly delivers through the native `anytype` channel target. Replace only `<scheduled prompt>`; keep the returned session key and target unchanged. AAG supplies this recipe and carries the resulting message, but it neither parses the schedule nor stores a cron definition. After `/new`, call `aag_context` again because the bound session key changes.
 
 ### Anytype object tools
 

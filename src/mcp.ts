@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import { AnytypeClient } from "./anytype-client.js";
 import { loadConfig, type AgentConfig } from "./config.js";
 import { setRouteWake } from "./management.js";
+import { Store } from "./store.js";
 import { VERSION } from "./version.js";
 
 type Request = {
@@ -115,6 +116,9 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
       inputSchema: objectSchema({
         route_id: stringSchema(
           "Optional Anytype route when the MCP process is shared across conversations",
+        ),
+        discussion_root_id: stringSchema(
+          "Current top-level comment ID for a discussion route; omit for chats",
         ),
       }),
     },
@@ -330,10 +334,11 @@ export async function callTool(
         "Use the returned object_ref token for a clickable Anytype object mention in chat; link is the native deep link fallback",
       object_workflow:
         "Discover types and properties first, read the target before updating it, preserve unrelated properties, then use the returned native link in the Anytype reply",
-      scheduling:
-        config.runtime.kind === "openclaw"
-          ? "Use OpenClaw's native scheduler and keep delivery on the current bound session; AAG does not schedule jobs"
-          : "This Codex ACP connection has no native scheduled-task integration; AAG does not schedule jobs",
+      scheduling: schedulingContext(
+        config,
+        effectiveRouteId,
+        typeof input.discussion_root_id === "string" ? input.discussion_root_id : undefined,
+      ),
     };
   if (name === "aag_set_wake") {
     if (!config.management.allowWakeChanges) throw new Error("Wake changes are disabled");
@@ -617,6 +622,101 @@ function baseRoute(routeId: string): string {
     .replace(/^aag:/, "")
     .replace(/:g\d+$/, "")
     .replace(/:root:.+$/, "");
+}
+
+function schedulingContext(
+  config: AgentConfig,
+  routeId: string | undefined,
+  discussionRootId: string | undefined,
+): Record<string, unknown> {
+  if (config.runtime.kind !== "openclaw")
+    return {
+      provider: "codex",
+      available: false,
+      reason:
+        "This Codex ACP connection has no native scheduled-task integration; AAG does not emulate a scheduler",
+    };
+  if (!routeId)
+    return {
+      provider: "openclaw",
+      available: false,
+      reason: "A bound Anytype route is required before native scheduled delivery can be prepared",
+    };
+
+  const route = parseRouteId(routeId);
+  if (!route)
+    return { provider: "openclaw", available: false, reason: "The Anytype route is invalid" };
+  if (route.kind === "discussion" && !discussionRootId)
+    return {
+      provider: "openclaw",
+      available: false,
+      reason: "discussion_root_id is required to preserve one OpenClaw session per discussion",
+    };
+  if (route.kind === "chat" && discussionRootId)
+    throw new Error("discussion_root_id is only valid for discussion routes");
+
+  const threadKey = route.kind === "discussion" ? `${routeId}:root:${discussionRootId}` : routeId;
+  const store = new Store(config.state.path);
+  let nativeSessionKey: string | undefined;
+  try {
+    nativeSessionKey = store.sessionBinding(threadKey)?.nativeSessionKey;
+  } finally {
+    store.close();
+  }
+  if (!nativeSessionKey)
+    return {
+      provider: "openclaw",
+      available: false,
+      reason: "This Anytype conversation has not established an OpenClaw session binding yet",
+    };
+
+  const target = encodeAnytypeTarget({
+    spaceId: route.spaceId,
+    chatId: route.chatId,
+    ...(discussionRootId ? { discussionRootId } : {}),
+  });
+  return {
+    provider: "openclaw",
+    available: true,
+    scheduler: "OpenClaw cron/automations",
+    session_key: nativeSessionKey,
+    delivery_channel: "anytype",
+    delivery_target: target,
+    continuation_argv: [
+      config.runtime.command,
+      "agent",
+      "--session-key",
+      nativeSessionKey,
+      "--message",
+      "<scheduled prompt>",
+      "--deliver",
+      "--reply-channel",
+      "anytype",
+      "--reply-to",
+      target,
+    ],
+    instructions:
+      "Create a native OpenClaw command job with continuation_argv, replacing <scheduled prompt>. Do not create a plain agentTurn cron job: OpenClaw isolates those under a cron session key. The command job continues this exact conversation session and delivers its agent output to this Anytype route. AAG remains only the channel bridge and does not own the schedule.",
+  };
+}
+
+function parseRouteId(
+  routeId: string,
+): { kind: "chat" | "discussion"; spaceId: string; chatId: string } | undefined {
+  const match = /^(chat|discussion):([^:]+):([^:]+)$/.exec(baseRoute(routeId));
+  if (!match) return undefined;
+  return { kind: match[1] as "chat" | "discussion", spaceId: match[2]!, chatId: match[3]! };
+}
+
+function encodeAnytypeTarget(route: {
+  spaceId: string;
+  chatId: string;
+  discussionRootId?: string;
+}): string {
+  const payload = route.discussionRootId
+    ? [route.spaceId, route.chatId, route.discussionRootId]
+    : [route.spaceId, route.chatId];
+  return `route:${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`;
 }
 function soleAllowedSpace(config: AgentConfig): string | undefined {
   return config.tools.anytype.allowedSpaceIds.length === 1

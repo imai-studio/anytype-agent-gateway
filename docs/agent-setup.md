@@ -154,7 +154,7 @@ In a configured Anytype chat, verify this sequence:
 5. Confirm an unmentioned message stays silent when the route uses `mention`.
 6. If object discussions are enabled, verify the prompt receives the owning object and comment-thread context.
 7. Ask the agent to create a temporary object in an allowed test space, confirm the returned `anytype://` link opens it, then update and find it through the tools.
-8. For OpenClaw, create a short native scheduled/heartbeat action on the current session. Confirm only its assistant output returns to the same Anytype chat or discussion, then remove the test schedule through OpenClaw.
+8. For OpenClaw, call `aag_context` for the current route and create a short native command job from its `continuation_argv`. Confirm only its assistant output returns to the same Anytype chat or discussion, then remove the test schedule through OpenClaw. Do not use a plain cron `agentTurn`; OpenClaw isolates it under a different session key.
 9. Let a run exceed fifteen minutes or use a controlled long-running fixture. Confirm it remains alive when both runtime watchdogs are `0`.
 
 Do not install the background service until the foreground flow succeeds. Stop the foreground process before starting the service so both processes cannot contend for the same state file.
