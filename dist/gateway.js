@@ -106,6 +106,10 @@ export class Gateway {
                             [message] = await this.discussions.hydrateMessages(conversation.chatId, [message]);
                         if (!message)
                             continue;
+                        if (event.type === "message_added" && cursor && message.order_id && message.order_id <= cursor) {
+                            this.store.markHandled(conversation.routeId, message.id, message.modified_at ?? message.created_at, messageFingerprint(message));
+                            continue;
+                        }
                         await this.controller.process(conversation, route.wake, message);
                         if (event.type === "message_added" && message.order_id)
                             this.store.updateCursor(conversation.routeId, message.order_id);

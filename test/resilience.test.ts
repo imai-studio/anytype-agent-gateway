@@ -152,6 +152,38 @@ describe("failure containment", () => {
     store.close();
   });
 
+  it("does not steer historical message-added events replayed after catchup", async () => {
+    const old = incoming({ id: "old", order_id: "001" });
+    const latest = incoming({ id: "latest", order_id: "002", content: { text: "@AAG newest", marks: [{ type: "mention", param: "bot" }] } });
+    class ReplayingAnytype extends FakeAnytype {
+      override async *stream(_spaceId: string, _chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent> {
+        yield { type: "message_added", payload: { message: old } };
+        await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+    }
+    const anytype = new ReplayingAnytype();
+    anytype.messages.push(old, latest);
+    const runtime = new FakeRuntime();
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test", chats: [{ name: "Chat", wake: { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["human-1"] } }] }],
+      runtime: { kind: "openclaw" }
+    });
+    const store = new Store(":memory:");
+    store.initialize("chat:space:chat", "001");
+    store.markHandled("chat:space:chat", "old", old.created_at);
+    const gateway = new Gateway(anytype, runtime, config, store, {} as HeartDiscussionAdapter, () => undefined);
+    const running = gateway.start();
+    await eventually(() => expect(runtime.starts).toHaveLength(1));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(runtime.steers).toEqual([]);
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
   it("contains a Codex ACP spawn failure without an unhandled rejection", async () => {
     const driver = new CodexAcpDriver({ kind: "codex", command: "/definitely/missing/codex-acp", args: [], allowedProjects: [], environment: {}, timeoutSeconds: 2, permissions: "deny" });
     const unhandled: unknown[] = [];
