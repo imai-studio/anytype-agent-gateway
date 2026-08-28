@@ -8,14 +8,16 @@ export class AgentController {
     config;
     store;
     log;
+    configuredDiscussionHydrator;
     active = new Map();
     processing = new Set();
-    constructor(anytype, runtime, config, store, log) {
+    constructor(anytype, runtime, config, store, log, configuredDiscussionHydrator) {
         this.anytype = anytype;
         this.runtime = runtime;
         this.config = config;
         this.store = store;
         this.log = log;
+        this.configuredDiscussionHydrator = configuredDiscussionHydrator;
     }
     async process(conversation, wake, message) {
         const version = message.modified_at ?? message.created_at;
@@ -114,12 +116,14 @@ export class AgentController {
     }
     async start(conversation, message, threadKey, hop, newSession = false) {
         const runId = crypto.randomUUID();
-        const recentMessages = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
+        let recentMessages = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
+        if (conversation.kind === "discussion")
+            recentMessages = await this.hydrateDiscussionMessages(conversation, recentMessages);
         const orphan = recentMessages.find(candidate => candidate.reply_to_message_id === message.id && candidate.creator === (conversation.selfParticipantId ?? this.config.agent.participantId));
+        const context = await buildContext(this.anytype, this.config, conversation, message, { newSession, hydrateMessages: messages => this.hydrateDiscussionMessages(conversation, messages) });
         const projection = orphan
             ? await RunProjection.resume(this.anytype, this.config, conversation, orphan.id, message.id, orphan.content?.text)
             : await RunProjection.create(this.anytype, this.config, conversation, message.id);
-        const context = await buildContext(this.anytype, this.config, conversation, message, { newSession });
         this.store.createRun({ id: runId, routeId: conversation.routeId, threadKey, triggerId: message.id, responseId: projection.messageId, hop });
         try {
             const generation = this.store.sessionGeneration(threadKey);
@@ -193,6 +197,11 @@ export class AgentController {
             }
         }
         return hop;
+    }
+    async hydrateDiscussionMessages(conversation, messages) {
+        if (conversation.kind !== "discussion")
+            return messages;
+        return this.configuredDiscussionHydrator?.(conversation.chatId, messages) ?? messages;
     }
 }
 export function messageFingerprint(message) {

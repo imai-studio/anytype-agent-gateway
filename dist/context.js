@@ -1,5 +1,7 @@
 export async function buildContext(anytype, config, conversation, trigger, options = {}) {
     let history = !options.newSession && config.context.historyMessages ? await anytype.listMessages(conversation.spaceId, conversation.chatId, config.context.historyMessages) : [];
+    if (options.hydrateMessages)
+        history = await options.hydrateMessages(history);
     const byId = new Map(history.map(message => [message.id, message]));
     const replyAncestry = [];
     let replyId = options.newSession ? undefined : trigger.reply_to_message_id;
@@ -8,11 +10,15 @@ export async function buildContext(anytype, config, conversation, trigger, optio
         if (!parent) {
             try {
                 parent = await anytype.getMessage(conversation.spaceId, conversation.chatId, replyId);
+                if (options.hydrateMessages)
+                    parent = (await options.hydrateMessages([parent]))[0] ?? parent;
             }
             catch {
                 break;
             }
         }
+        if (!parent)
+            break;
         replyAncestry.push(parent);
         replyId = parent.reply_to_message_id;
     }

@@ -18,6 +18,7 @@ export type ChatMessage = {
         marks?: TextMark[];
     };
     reactions?: Record<string, string[]>;
+    mentioned?: boolean;
 };
 export type ConversationRef = {
     routeId: string;

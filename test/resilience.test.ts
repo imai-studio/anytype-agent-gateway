@@ -125,9 +125,12 @@ describe("failure containment", () => {
         this.calls += 1;
         return this.calls === 1 ? [{ objectId: "todo" }] : [{ objectId: "todo", discussionId: "discussion" }];
       }
+      async hydrateMessages(_chatId: string, messages: ChatMessage[]): Promise<ChatMessage[]> {
+        return messages.map(message => ({ ...message, content: { text: "Anya can u see this note?", marks: [{ type: "mention", param: "heart-identity" }] }, mentioned: true }));
+      }
     }
     const anytype = new DiscussingAnytype();
-    anytype.messages.push(incoming({ id: "first-discussion-tag", order_id: "001" }));
+    anytype.messages.push(incoming({ id: "first-discussion-tag", order_id: "001", content: { text: "" } }));
     const runtime = new FakeRuntime();
     const config = configSchema.parse({
       version: 1,
@@ -142,6 +145,7 @@ describe("failure containment", () => {
     const running = gateway.start();
     await eventually(() => expect(runtime.starts).toHaveLength(1));
     expect(runtime.starts[0]?.sessionKey).toBe("aag:discussion:space:discussion:root:first-discussion-tag");
+    expect(runtime.starts[0]?.prompt).toContain("Anya can u see this note?");
     expect(anytype.sentTo).toContainEqual({ chatId: "discussion", replyTo: "first-discussion-tag" });
     gateway.stop();
     await running;

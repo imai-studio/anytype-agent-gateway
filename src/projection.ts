@@ -15,10 +15,14 @@ export class RunProjection {
   }
 
   static async create(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, triggerId: string): Promise<RunProjection> {
-    const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, { text: config.responses.workingText, replyTo: triggerId });
-    const projection = new RunProjection(anytype, config, conversation, responseId, triggerId);
     await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
-    return projection;
+    try {
+      const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, { text: config.responses.workingText, replyTo: triggerId });
+      return new RunProjection(anytype, config, conversation, responseId, triggerId);
+    } catch (error) {
+      await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, false).catch(() => undefined);
+      throw error;
+    }
   }
 
   static async resume(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, responseId: string, triggerId: string, text = ""): Promise<RunProjection> {

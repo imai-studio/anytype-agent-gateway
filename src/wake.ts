@@ -8,8 +8,9 @@ export function isDirectMention(message: ChatMessage, config: AgentConfig, parti
 }
 
 function isStructuredMention(message: ChatMessage, participantId: string): boolean {
+  if (message.mentioned) return true;
   const marks = message.content?.marks ?? [];
-  return marks.some(mark => mark.type === "mention" && mark.param === participantId);
+  return marks.some(mark => mark.type === "mention" && mark.param && sameIdentity(mark.param, participantId));
 }
 
 function isTextMention(message: ChatMessage, config: AgentConfig): boolean {
@@ -37,3 +38,8 @@ export function decideWake(message: ChatMessage, wake: WakeConfig, config: Agent
 }
 
 function escapeRegex(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+function sameIdentity(left: string, right: string): boolean {
+  if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`)) return true;
+  return left.split("_").at(-1) === right.split("_").at(-1);
+}

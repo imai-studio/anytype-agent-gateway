@@ -2,8 +2,10 @@ export function isDirectMention(message, config, participantId = config.agent.pa
     return isStructuredMention(message, participantId) || isTextMention(message, config);
 }
 function isStructuredMention(message, participantId) {
+    if (message.mentioned)
+        return true;
     const marks = message.content?.marks ?? [];
-    return marks.some(mark => mark.type === "mention" && mark.param === participantId);
+    return marks.some(mark => mark.type === "mention" && mark.param && sameIdentity(mark.param, participantId));
 }
 function isTextMention(message, config) {
     const text = message.content?.text ?? "";
@@ -30,3 +32,8 @@ export function decideWake(message, wake, config, options) {
     return { wake: result, reason: result ? `human:${wake.humans}` : "human-policy", isAgent, directMention };
 }
 function escapeRegex(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function sameIdentity(left, right) {
+    if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`))
+        return true;
+    return left.split("_").at(-1) === right.split("_").at(-1);
+}

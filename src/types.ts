@@ -10,6 +10,7 @@ export type ChatMessage = {
   reply_to_message_id?: string;
   content?: { text?: string; style?: string; marks?: TextMark[] };
   reactions?: Record<string, string[]>;
+  mentioned?: boolean;
 };
 
 export type ConversationRef = {

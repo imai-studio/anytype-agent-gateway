@@ -1,17 +1,22 @@
 import type { AgentConfig } from "./config.js";
 import type { AnytypePort, ChatMessage, ContextBundle, ConversationRef } from "./types.js";
 
-export async function buildContext(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, trigger: ChatMessage, options: { newSession?: boolean } = {}): Promise<ContextBundle> {
+export async function buildContext(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, trigger: ChatMessage, options: { newSession?: boolean; hydrateMessages?: (messages: ChatMessage[]) => Promise<ChatMessage[]> } = {}): Promise<ContextBundle> {
   let history = !options.newSession && config.context.historyMessages ? await anytype.listMessages(conversation.spaceId, conversation.chatId, config.context.historyMessages) : [];
+  if (options.hydrateMessages) history = await options.hydrateMessages(history);
   const byId = new Map(history.map(message => [message.id, message]));
   const replyAncestry: ChatMessage[] = [];
   let replyId = options.newSession ? undefined : trigger.reply_to_message_id;
   for (let depth = 0; replyId && depth < config.context.replyDepth; depth += 1) {
     let parent = byId.get(replyId);
     if (!parent) {
-      try { parent = await anytype.getMessage(conversation.spaceId, conversation.chatId, replyId); }
+      try {
+        parent = await anytype.getMessage(conversation.spaceId, conversation.chatId, replyId);
+        if (options.hydrateMessages) parent = (await options.hydrateMessages([parent]))[0] ?? parent;
+      }
       catch { break; }
     }
+    if (!parent) break;
     replyAncestry.push(parent);
     replyId = parent.reply_to_message_id;
   }

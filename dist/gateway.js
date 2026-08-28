@@ -18,7 +18,7 @@ export class Gateway {
         this.store = store;
         this.discussions = discussions;
         this.log = log;
-        this.controller = new AgentController(anytype, runtime, config, store, log);
+        this.controller = new AgentController(anytype, runtime, config, store, log, (chatId, messages) => this.discussions.hydrateMessages(chatId, messages));
         this.terminal = new Promise((resolve, reject) => { this.resolveTerminal = resolve; this.rejectTerminal = reject; });
         void this.terminal.catch(() => undefined);
     }
@@ -68,7 +68,9 @@ export class Gateway {
     async runRoute(route) {
         const { conversation } = route;
         if (!this.store.isInitialized(conversation.routeId)) {
-            const recent = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
+            let recent = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
+            if (conversation.kind === "discussion" && route.baselineExisting === false)
+                recent = await this.discussions.hydrateMessages(conversation.chatId, recent);
             const baseline = route.baselineExisting === false ? recent.slice(0, -20) : recent;
             for (const message of baseline)
                 this.store.markHandled(conversation.routeId, message.id, message.modified_at ?? message.created_at, messageFingerprint(message));
@@ -83,7 +85,9 @@ export class Gateway {
                 let cursor = this.store.cursor(conversation.routeId);
                 for (;;) {
                     const previousCursor = cursor;
-                    const catchup = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100, cursor);
+                    let catchup = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100, cursor);
+                    if (conversation.kind === "discussion")
+                        catchup = await this.discussions.hydrateMessages(conversation.chatId, catchup);
                     for (const message of catchup) {
                         await this.controller.process(conversation, route.wake, message);
                         if (message.order_id) {
@@ -96,8 +100,12 @@ export class Gateway {
                 }
                 this.log("route_connecting", { routeId: conversation.routeId });
                 for await (const event of this.anytype.stream(conversation.spaceId, conversation.chatId, this.abort.signal)) {
-                    const message = event.payload?.message;
+                    let message = event.payload?.message;
                     if ((event.type === "message_added" || event.type === "message_updated") && message) {
+                        if (conversation.kind === "discussion")
+                            [message] = await this.discussions.hydrateMessages(conversation.chatId, [message]);
+                        if (!message)
+                            continue;
                         await this.controller.process(conversation, route.wake, message);
                         if (event.type === "message_added" && message.order_id)
                             this.store.updateCursor(conversation.routeId, message.order_id);

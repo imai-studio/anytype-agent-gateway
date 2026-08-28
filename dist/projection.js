@@ -16,10 +16,15 @@ export class RunProjection {
         this.reactionTargetId = reactionTargetId;
     }
     static async create(anytype, config, conversation, triggerId) {
-        const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, { text: config.responses.workingText, replyTo: triggerId });
-        const projection = new RunProjection(anytype, config, conversation, responseId, triggerId);
         await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
-        return projection;
+        try {
+            const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, { text: config.responses.workingText, replyTo: triggerId });
+            return new RunProjection(anytype, config, conversation, responseId, triggerId);
+        }
+        catch (error) {
+            await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, false).catch(() => undefined);
+            throw error;
+        }
     }
     static async resume(anytype, config, conversation, responseId, triggerId, text = "") {
         const projection = new RunProjection(anytype, config, conversation, responseId, triggerId);

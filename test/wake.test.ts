@@ -6,6 +6,10 @@ import { incoming } from "./fakes.js";
 const config = configSchema.parse({ version: 1, agent: { name: "AAG", participantId: "bot" }, anytype: { apiKeyFile: "/tmp/key" }, spaces: [{ name: "Test" }], runtime: { kind: "openclaw" }, coordination: { agentParticipants: ["peer"] } });
 
 describe("wake policy", () => {
+  it("accepts Heart's current-user mention signal for block-based object comments", () => {
+    const message = incoming({ content: { text: "Anya can u see this note?" }, mentioned: true });
+    expect(decideWake(message, { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] }, config, { replyToAgent: false })).toMatchObject({ wake: true, directMention: true });
+  });
   it("requires an allowed sender", () => { expect(decideWake(incoming(), { humans: "mention", agents: "direct-mention", allowedUsers: ["someone-else"] }, config, { replyToAgent: false }).reason).toBe("unauthorized"); });
   it("never authorizes a sender by display name", () => { expect(decideWake(incoming({ creator: "attacker", creator_name: "trusted" }), { humans: "mention", agents: "never", allowedUsers: ["trusted"] }, config, { replyToAgent: false }).reason).toBe("unauthorized"); });
   it("supports reply steering without a new mention", () => { expect(decideWake(incoming({ content: { text: "follow up" } }), { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] }, config, { replyToAgent: true }).wake).toBe(true); });

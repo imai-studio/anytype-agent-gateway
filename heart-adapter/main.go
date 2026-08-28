@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/anyproto/anytype-heart/pb"
 	"github.com/anyproto/anytype-heart/pb/service"
+	"github.com/anyproto/anytype-heart/pkg/lib/pb/model"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -31,17 +33,56 @@ type result struct {
 type response struct {
 	Discussions []result `json:"discussions"`
 }
+type hydrateRequest struct {
+	ChatID     string   `json:"chatId"`
+	MessageIDs []string `json:"messageIds"`
+}
+type textMark struct {
+	Type  string `json:"type"`
+	From  int32  `json:"from,omitempty"`
+	To    int32  `json:"to,omitempty"`
+	Param string `json:"param,omitempty"`
+}
+type messageContent struct {
+	Text  string     `json:"text"`
+	Style string     `json:"style"`
+	Marks []textMark `json:"marks,omitempty"`
+}
+type hydratedMessage struct {
+	ID               string         `json:"id"`
+	OrderID          string         `json:"order_id,omitempty"`
+	Creator          string         `json:"creator,omitempty"`
+	CreatedAt        int64          `json:"created_at,omitempty"`
+	ModifiedAt       int64          `json:"modified_at,omitempty"`
+	ReplyToMessageID string         `json:"reply_to_message_id,omitempty"`
+	Content          messageContent `json:"content"`
+	Mentioned        bool           `json:"mentioned,omitempty"`
+}
+type hydrateResponse struct {
+	Messages []hydratedMessage `json:"messages"`
+}
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "resolve" {
-		fatal(errors.New("usage: aag-heart-adapter resolve [flags]"))
+	if len(os.Args) < 2 {
+		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate> [flags]"))
 	}
+	switch os.Args[1] {
+	case "resolve":
+		runResolve(os.Args[2:])
+	case "hydrate":
+		runHydrate(os.Args[2:])
+	default:
+		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate> [flags]"))
+	}
+}
+
+func runResolve(args []string) {
 	flags := flag.NewFlagSet("resolve", flag.ExitOnError)
 	spaceID := flags.String("space-id", "", "Anytype space ID")
 	address := flags.String("grpc-address", "127.0.0.1:31010", "Anytype Heart gRPC address")
 	configPath := flags.String("config", defaultConfigPath(), "Anytype CLI config file")
 	createMissing := flags.Bool("create-missing", false, "create discussions where missing")
-	_ = flags.Parse(os.Args[2:])
+	_ = flags.Parse(args)
 	if *spaceID == "" {
 		fatal(errors.New("--space-id is required"))
 	}
@@ -66,6 +107,96 @@ func main() {
 	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
 		fatal(err)
 	}
+}
+
+func runHydrate(args []string) {
+	flags := flag.NewFlagSet("hydrate", flag.ExitOnError)
+	address := flags.String("grpc-address", "127.0.0.1:31010", "Anytype Heart gRPC address")
+	configPath := flags.String("config", defaultConfigPath(), "Anytype CLI config file")
+	_ = flags.Parse(args)
+	var input hydrateRequest
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fatal(fmt.Errorf("decode request: %w", err))
+	}
+	if input.ChatID == "" {
+		fatal(errors.New("chatId is required"))
+	}
+	token, err := readToken(*configPath)
+	if err != nil {
+		fatal(err)
+	}
+	conn, err := grpc.NewClient("dns:///"+*address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		fatal(fmt.Errorf("connect: %w", err))
+	}
+	defer conn.Close()
+	client := service.NewClientCommandsClient(conn)
+	ctx, cancel := context.WithTimeout(metadata.NewOutgoingContext(context.Background(), metadata.Pairs("token", token)), 15*time.Second)
+	defer cancel()
+	got, err := client.ChatGetMessagesByIds(ctx, &pb.RpcChatGetMessagesByIdsRequest{ChatObjectId: input.ChatID, MessageIds: input.MessageIDs})
+	if err != nil {
+		fatal(fmt.Errorf("get chat messages: %w", err))
+	}
+	if got.GetError().GetCode() != pb.RpcChatGetMessagesByIdsResponseError_NULL {
+		fatal(errors.New(got.GetError().GetDescription()))
+	}
+	out := hydrateResponse{Messages: make([]hydratedMessage, 0, len(got.GetMessages()))}
+	for _, message := range got.GetMessages() {
+		out.Messages = append(out.Messages, renderMessage(message))
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
+		fatal(err)
+	}
+}
+
+func renderMessage(message *model.ChatMessage) hydratedMessage {
+	text, style, marks := renderContent(message)
+	return hydratedMessage{
+		ID:               message.GetId(),
+		OrderID:          message.GetOrderId(),
+		Creator:          message.GetCreator(),
+		CreatedAt:        message.GetCreatedAt(),
+		ModifiedAt:       message.GetModifiedAt(),
+		ReplyToMessageID: message.GetReplyToMessageId(),
+		Content:          messageContent{Text: text, Style: style, Marks: marks},
+		Mentioned:        message.GetHasMention(),
+	}
+}
+
+func renderContent(message *model.ChatMessage) (string, string, []textMark) {
+	if content := message.GetMessage(); content != nil && (content.GetText() != "" || len(content.GetMarks()) > 0) {
+		return content.GetText(), strings.ToLower(content.GetStyle().String()), renderMarks(content.GetMarks(), 0)
+	}
+	var text strings.Builder
+	marks := make([]textMark, 0)
+	style := "paragraph"
+	for _, block := range message.GetBlocks() {
+		blockText := block.GetText()
+		if blockText == nil {
+			continue
+		}
+		if text.Len() > 0 {
+			text.WriteByte('\n')
+		}
+		offset := int32(text.Len())
+		text.WriteString(blockText.GetText())
+		style = strings.ToLower(blockText.GetStyle().String())
+		marks = append(marks, renderMarks(blockText.GetMarks(), offset)...)
+	}
+	return text.String(), style, marks
+}
+
+func renderMarks(marks []*model.BlockContentTextMark, offset int32) []textMark {
+	out := make([]textMark, 0, len(marks))
+	for _, mark := range marks {
+		item := textMark{Type: strings.ToLower(mark.GetType().String()), Param: mark.GetParam()}
+		if value := mark.GetRange(); value != nil {
+			item.From = offset + value.GetFrom()
+			item.To = offset + value.GetTo()
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func resolve(client service.ClientCommandsClient, token, spaceID, objectID string, create bool) result {
