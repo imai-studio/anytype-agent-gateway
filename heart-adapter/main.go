@@ -15,6 +15,7 @@ import (
 	"github.com/anyproto/anytype-heart/pb"
 	"github.com/anyproto/anytype-heart/pb/service"
 	"github.com/anyproto/anytype-heart/pkg/lib/pb/model"
+	"github.com/gogo/protobuf/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -72,10 +73,20 @@ type mutationRequest struct {
 type mutationResponse struct {
 	MessageID string `json:"messageId,omitempty"`
 }
+type profileRequest struct {
+	ProfileObjectID string `json:"profileObjectId"`
+	Name            string `json:"name"`
+	IconImage       string `json:"iconImage,omitempty"`
+}
+type approveRequest struct {
+	SpaceID    string `json:"spaceId"`
+	Identity   string `json:"identity"`
+	Permission string `json:"permission"`
+}
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate> [flags]"))
+		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|space-approve> [flags]"))
 	}
 	switch os.Args[1] {
 	case "resolve":
@@ -84,9 +95,99 @@ func main() {
 		runHydrate(os.Args[2:])
 	case "send", "edit", "delete":
 		runMutation(os.Args[1], os.Args[2:])
+	case "profile":
+		runProfile(os.Args[2:])
+	case "space-approve":
+		runSpaceApprove(os.Args[2:])
 	default:
-		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete> [flags]"))
+		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|space-approve> [flags]"))
 	}
+}
+
+func runProfile(args []string) {
+	flags := flag.NewFlagSet("profile", flag.ExitOnError)
+	address := flags.String("grpc-address", "127.0.0.1:31010", "Anytype Heart gRPC address")
+	configPath := flags.String("config", defaultConfigPath(), "Anytype CLI config file")
+	allowUnauthenticated := flags.Bool("allow-unauthenticated", false, "allow a loopback Heart connection when the config has no session token")
+	_ = flags.Parse(args)
+	var input profileRequest
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fatal(fmt.Errorf("decode request: %w", err))
+	}
+	if input.ProfileObjectID == "" || input.Name == "" {
+		fatal(errors.New("profileObjectId and name are required"))
+	}
+	client, ctx, closeClient := heartClient(*address, *configPath, *allowUnauthenticated)
+	defer closeClient()
+	details := []*model.Detail{{Key: "name", Value: stringValue(input.Name)}}
+	if input.IconImage != "" {
+		details = append(details, &model.Detail{Key: "iconImage", Value: stringValue(input.IconImage)})
+	}
+	got, err := client.ObjectSetDetails(ctx, &pb.RpcObjectSetDetailsRequest{ContextId: input.ProfileObjectID, Details: details})
+	if err != nil {
+		fatal(fmt.Errorf("set profile: %w", err))
+	}
+	if got.GetError().GetCode() != pb.RpcObjectSetDetailsResponseError_NULL {
+		fatal(errors.New(got.GetError().GetDescription()))
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"updated": true})
+}
+
+func runSpaceApprove(args []string) {
+	flags := flag.NewFlagSet("space-approve", flag.ExitOnError)
+	address := flags.String("grpc-address", "127.0.0.1:31010", "Anytype Heart gRPC address")
+	configPath := flags.String("config", defaultConfigPath(), "Anytype CLI config file")
+	allowUnauthenticated := flags.Bool("allow-unauthenticated", false, "allow a loopback Heart connection when the config has no session token")
+	_ = flags.Parse(args)
+	var input approveRequest
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fatal(fmt.Errorf("decode request: %w", err))
+	}
+	if input.SpaceID == "" || input.Identity == "" {
+		fatal(errors.New("spaceId and identity are required"))
+	}
+	permission := model.ParticipantPermissions_Writer
+	if input.Permission == "reader" {
+		permission = model.ParticipantPermissions_Reader
+	}
+	if input.Permission == "admin" {
+		permission = model.ParticipantPermissions_Admin
+	}
+	client, ctx, closeClient := heartClient(*address, *configPath, *allowUnauthenticated)
+	defer closeClient()
+	got, err := client.SpaceRequestApprove(ctx, &pb.RpcSpaceRequestApproveRequest{SpaceId: input.SpaceID, Identity: input.Identity, Permissions: permission})
+	if err != nil {
+		fatal(fmt.Errorf("approve space request: %w", err))
+	}
+	if got.GetError().GetCode() != pb.RpcSpaceRequestApproveResponseError_NULL {
+		fatal(errors.New(got.GetError().GetDescription()))
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"approved": true})
+}
+
+func heartClient(address, configPath string, allowUnauthenticated bool) (service.ClientCommandsClient, context.Context, func()) {
+	token := os.Getenv("ANYTYPE_SESSION_TOKEN")
+	if token == "" {
+		var err error
+		token, err = readToken(configPath)
+		if err != nil && !allowUnauthenticated {
+			fatal(err)
+		}
+	}
+	conn, err := grpc.NewClient("dns:///"+address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		fatal(fmt.Errorf("connect: %w", err))
+	}
+	ctx := context.Background()
+	if token != "" {
+		ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("token", token))
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	return service.NewClientCommandsClient(conn), ctx, func() { cancel(); _ = conn.Close() }
+}
+
+func stringValue(value string) *types.Value {
+	return &types.Value{Kind: &types.Value_StringValue{StringValue: value}}
 }
 
 func runMutation(action string, args []string) {

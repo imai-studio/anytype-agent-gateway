@@ -4,11 +4,11 @@ go 1.25.7
 
 require (
 	github.com/anyproto/anytype-heart v0.50.10
+	github.com/gogo/protobuf v1.3.2
 	google.golang.org/grpc v1.82.1
 )
 
 require (
-	github.com/gogo/protobuf v1.3.2 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect

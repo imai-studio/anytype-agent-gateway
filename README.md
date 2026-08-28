@@ -213,7 +213,7 @@ Each chat and the discussion policy in each space has an independent `wake` bloc
 
 Every configured chat must include its `wake` block; there is no implicit broad chat policy. Object discussions default to `comments.mode: disabled` and therefore require an explicit opt-in.
 
-- `allowedUsers` accepts stable Anytype creator/participant IDs only. `["*"]` explicitly allows every member, but is discouraged outside a tightly controlled test channel. Display names are never authorization identifiers.
+- `allowedUsers` accepts Anytype participant IDs or their stable identity suffixes. A stable suffix authorizes the same person across space-scoped participant IDs. `["*"]` explicitly allows every member, but is discouraged outside a tightly controlled test channel. Display names are never authorization identifiers.
 - `humans: mention-or-reply` is useful for conversational agents because a reply to the agent's recorded response can steer it without another mention.
 - `humans: every-message` implements a group-listener style agent. Use it only in a tightly scoped chat and combine it with `allowedUsers` when appropriate.
 - `agents` applies only to creators listed in `coordination.peers` or the legacy `coordination.agentParticipants` list. A peer entry supplies a stable participant ID plus the name/aliases used for outbound coordination.

@@ -20,7 +20,7 @@ export function decideWake(message, wake, config, options) {
         return { wake: false, reason: "self", isAgent: true, directMention: false };
     const isAgent = config.coordination.agentParticipants.includes(creator) || config.coordination.peers.some(peer => peer.participantId === creator);
     const directMention = isAgent ? isStructuredMention(message, selfParticipantId) : isDirectMention(message, config, selfParticipantId);
-    const allowed = wake.allowedUsers.includes("*") || wake.allowedUsers.includes(creator);
+    const allowed = wake.allowedUsers.some(participant => participant === "*" || sameIdentity(creator, participant));
     if (!allowed)
         return { wake: false, reason: "unauthorized", isAgent, directMention };
     if (isAgent) {

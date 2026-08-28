@@ -11,6 +11,11 @@ describe("wake policy", () => {
     expect(decideWake(message, { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] }, config, { replyToAgent: false })).toMatchObject({ wake: true, directMention: true });
   });
   it("requires an allowed sender", () => { expect(decideWake(incoming(), { humans: "mention", agents: "direct-mention", allowedUsers: ["someone-else"] }, config, { replyToAgent: false }).reason).toBe("unauthorized"); });
+  it("accepts a stable Anytype identity across space-scoped participant IDs", () => {
+    const identity = "AAnFijL6q1fKyQgbkrpwCiQRYA2Uk6ESQTv2MsYiHzL9tEC5";
+    const message = incoming({ creator: `_participant_space-specific-prefix_${identity}` });
+    expect(decideWake(message, { humans: "mention", agents: "never", allowedUsers: [identity] }, config, { replyToAgent: false }).reason).not.toBe("unauthorized");
+  });
   it("never authorizes a sender by display name", () => { expect(decideWake(incoming({ creator: "attacker", creator_name: "trusted" }), { humans: "mention", agents: "never", allowedUsers: ["trusted"] }, config, { replyToAgent: false }).reason).toBe("unauthorized"); });
   it("supports reply steering without a new mention", () => { expect(decideWake(incoming({ content: { text: "follow up" } }), { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] }, config, { replyToAgent: true }).wake).toBe(true); });
   it("supports a space-scoped self participant override", () => {
