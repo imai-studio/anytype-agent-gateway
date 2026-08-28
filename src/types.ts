@@ -19,6 +19,7 @@ export type ConversationRef = {
   chatId: string;
   kind: "chat" | "discussion";
   objectId?: string;
+  discussionRootId?: string;
   objectName?: string;
   selfParticipantId?: string;
 };
@@ -35,22 +36,51 @@ export type ContextBundle = {
 
 export type RuntimeEvent =
   | { type: "status"; text: string }
-  | { type: "text-delta"; text: string }
+  | { type: "text-delta"; text: string; partId?: string; phase?: string; replace?: boolean }
+  | { type: "thinking-delta"; text: string; partId?: string; phase?: string; replace?: boolean }
   | { type: "tool"; name: string; status: string }
   | { type: "silent"; reason?: string };
 
 export type RuntimeResult = { text: string; silent?: boolean; reason?: string };
 
+export type RuntimeCapabilities = {
+  steering: boolean;
+  thinking: boolean;
+  multipleOutputParts: boolean;
+  sessionObservation: boolean;
+  nativeScheduling: boolean;
+};
+
+export type RuntimeSessionOutput = {
+  id: string;
+  cursor: string;
+  events: RuntimeEvent[];
+  result: RuntimeResult;
+};
+
+export type RuntimeSessionObserver = { readonly cursor?: string; close(): Promise<void> };
+
+export type RuntimeTurn = {
+  conversation: ConversationRef;
+  message: ChatMessage;
+  replyTargetId: string;
+  wasMentioned?: boolean;
+};
+
 export type ActiveRuntime = {
+  sessionKey?: string;
+  sessionId?: string;
   result: Promise<RuntimeResult>;
-  steer(message: string): Promise<void>;
+  steer(message: string, turn?: RuntimeTurn): Promise<void>;
   cancel(): Promise<void>;
 };
 
 export interface RuntimeDriver {
   readonly name: string;
   readonly projectEnforcement: "enforced" | "advisory" | "unknown";
-  start(input: { sessionKey: string; prompt: string }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;
+  readonly capabilities: RuntimeCapabilities;
+  start(input: { sessionKey: string; prompt: string; turn?: RuntimeTurn }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;
+  observeSession?(input: { sessionKey: string; afterCursor?: string; conversation?: ConversationRef }, onOutput: (output: RuntimeSessionOutput) => Promise<void>): Promise<RuntimeSessionObserver>;
   doctor(): Promise<string[]>;
   close?(): Promise<void>;
 }

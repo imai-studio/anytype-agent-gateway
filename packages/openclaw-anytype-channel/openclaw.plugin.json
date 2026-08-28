@@ -1,0 +1,38 @@
+{
+  "id": "anytype",
+  "name": "Anytype",
+  "description": "Native Anytype channel backed by the authenticated AAG bridge.",
+  "activation": {
+    "onStartup": true
+  },
+  "channels": ["anytype"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigs": {
+    "anytype": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "listenHost": { "type": "string", "enum": ["127.0.0.1", "::1", "localhost"] },
+          "listenPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "bridgeToken": { "type": "string", "minLength": 24 },
+          "databasePath": { "type": "string", "minLength": 1 },
+          "allowFrom": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "defaultAccount": { "type": "string" },
+          "accounts": { "type": "object", "additionalProperties": { "type": "object" } }
+        },
+        "required": ["bridgeToken", "allowFrom"]
+      },
+      "uiHints": {
+        "bridgeToken": { "label": "AAG bridge token", "sensitive": true },
+        "allowFrom": { "label": "Allowed Anytype participant IDs" }
+      }
+    }
+  }
+}

@@ -85,6 +85,7 @@ export class Gateway {
         while (!this.abort.signal.aborted) {
             const attemptStarted = Date.now();
             try {
+                await this.controller.restoreObserversForRoute(conversation);
                 let cursor = this.store.cursor(conversation.routeId);
                 for (;;) {
                     const previousCursor = cursor;
@@ -154,11 +155,19 @@ export class Gateway {
         for (const run of this.store.runningRuns(conversation.routeId)) {
             try {
                 await anytype.ensureReaction(conversation.spaceId, conversation.chatId, run.triggerId, this.config.responses.workingReaction, false).catch(() => undefined);
-                await anytype.editMessage(conversation.spaceId, conversation.chatId, run.responseId, "Agent run interrupted before completion.").catch(error => {
+                const response = await anytype.getMessage(conversation.spaceId, conversation.chatId, run.responseId).catch(() => undefined);
+                const visible = response?.content?.text?.trim();
+                const text = visible && visible !== this.config.responses.workingText
+                    ? `${visible}\n\nAgent run interrupted before completion.`
+                    : "Agent run interrupted before completion.";
+                await anytype.editMessage(conversation.spaceId, conversation.chatId, run.responseId, text).catch(error => {
                     this.log("run_reconcile_projection_failed", { routeId: conversation.routeId, runId: run.id, error: error instanceof Error ? error.message : String(error) });
                 });
             }
             finally {
+                const cycle = this.store.openOutputCycle(run.threadKey);
+                if (cycle)
+                    this.store.finishOutputCycle(cycle.id, "failed");
                 this.store.finishRun(run.id, "failed");
                 this.log("run_reconciled", { routeId: conversation.routeId, runId: run.id });
             }

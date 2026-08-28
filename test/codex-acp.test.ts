@@ -151,7 +151,7 @@ describe("Codex ACP output and steering", () => {
     ]) });
     const result = await (await runtime.start({ sessionKey: "warning", prompt: "answer" }, event => events.push(event))).result;
     expect(result).toMatchObject({ text: "visible answer" });
-    expect(events).toEqual([{ type: "text-delta", text: "visible answer" }]);
+    expect(events).toEqual([{ type: "text-delta", text: "visible answer", partId: "final", phase: "final_answer" }]);
   });
 
   it("uses the terminal final-answer message instead of concatenating progress replies", async () => {
@@ -164,8 +164,8 @@ describe("Codex ACP output and steering", () => {
     const result = await (await runtime.start({ sessionKey: "terminal", prompt: "answer" }, event => events.push(event))).result;
     expect(result).toMatchObject({ text: "CLEAN_FINAL" });
     expect(events).toEqual([
-      { type: "text-delta", text: "I am working." },
-      { type: "text-delta", text: "CLEAN_FINAL" }
+      { type: "text-delta", text: "I am working.", partId: "progress", phase: "commentary" },
+      { type: "text-delta", text: "CLEAN_FINAL", partId: "final", phase: "final_answer" }
     ]);
   });
 

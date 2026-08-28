@@ -27,6 +27,10 @@ describe("loadConfig", () => {
     expect(config.spaces[0]?.chats[0]?.wake.agents).toBe("never");
     expect(config.responses.silentPlaceholder).toBe("delete");
     expect(config.responses.streaming).toBe(true);
+    expect(config.runtime.timeoutSeconds).toBe(0);
+    expect(config.runtime.maxRunSeconds).toBe(0);
+    expect(config.tools.anytype.enabled).toBe(false);
+    expect(config.tools.anytype.allowWrite).toBe(false);
     expect(config.spaces[0]?.chatDiscovery.enabled).toBe(false);
   });
 

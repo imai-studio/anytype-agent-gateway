@@ -1,4 +1,6 @@
+import { openAsBlob } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 export class AnytypeClient {
     base;
     headers;
@@ -33,7 +35,8 @@ export class AnytypeClient {
             try {
                 const timeout = streaming ? undefined : AbortSignal.timeout(15_000);
                 const signal = timeout && init.signal ? AbortSignal.any([timeout, init.signal]) : timeout ?? init.signal;
-                const response = await fetch(`${this.base}${path}`, { ...init, ...(signal ? { signal } : {}), headers: { ...this.headers, "Content-Type": "application/json", ...init.headers } });
+                const contentHeaders = init.body instanceof FormData ? {} : { "Content-Type": "application/json" };
+                const response = await fetch(`${this.base}${path}`, { ...init, ...(signal ? { signal } : {}), headers: { ...this.headers, ...contentHeaders, ...init.headers } });
                 if (response.ok)
                     return response;
                 const retryable = response.status === 429 || (method === "GET" && response.status >= 500);
@@ -152,6 +155,31 @@ export class AnytypeClient {
     async searchObjects(spaceId, offset, limit) {
         const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?offset=${offset}&limit=${limit}`, { method: "POST", body: JSON.stringify({ query: "" }) })).json();
         return (json.data ?? []).map((item) => ({ id: item.id, ...(item.name ? { name: item.name } : {}), ...(item.type?.key ? { type: item.type.key } : item.type ? { type: String(item.type) } : {}) }));
+    }
+    async searchSpace(spaceId, input) {
+        const query = new URLSearchParams({ offset: String(input.offset ?? 0), limit: String(input.limit ?? 100) });
+        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?${query}`, { method: "POST", body: JSON.stringify({ query: input.query ?? "", ...(input.types?.length ? { types: input.types } : {}) }) })).json();
+        return Array.isArray(json.data) ? json.data : [];
+    }
+    async createObject(spaceId, input) {
+        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects`, { method: "POST", body: JSON.stringify(input) })).json();
+        return json.object ?? json;
+    }
+    async updateObject(spaceId, objectId, input) {
+        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "PATCH", body: JSON.stringify(input) })).json();
+        return json.object ?? json;
+    }
+    async archiveObject(spaceId, objectId) {
+        const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "DELETE" })).json();
+        return json.object ?? json;
+    }
+    async addObjectsToList(spaceId, listId, objectIds) {
+        await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/objects`, { method: "POST", body: JSON.stringify({ objects: objectIds }) });
+    }
+    async uploadFile(spaceId, path) {
+        const form = new FormData();
+        form.append("file", await openAsBlob(path), basename(path));
+        return await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/files`, { method: "POST", body: form })).json();
     }
     messagesPath(spaceId, chatId) { return `/v1/spaces/${encodeURIComponent(spaceId)}/chats/${encodeURIComponent(chatId)}/messages`; }
     messagePath(spaceId, chatId, messageId) { return `${this.messagesPath(spaceId, chatId)}/${encodeURIComponent(messageId)}`; }

@@ -61,7 +61,14 @@ const spaceSchema = z.object({
 const baseRuntime = {
   defaultProject: z.string().optional(),
   allowedProjects: z.array(z.string()).default([]),
-  environment: z.record(z.string(), z.string()).default({})
+  environment: z.record(z.string(), z.string()).default({}),
+  // timeoutSeconds remains the backward-compatible inactivity watchdog.
+  timeoutSeconds: z.number().int().nonnegative().default(0),
+  inactivityTimeoutSeconds: z.number().int().nonnegative().optional(),
+  maxRunSeconds: z.number().int().nonnegative().default(0),
+  setupTimeoutSeconds: z.number().int().positive().default(30),
+  livenessProbeSeconds: z.number().int().positive().default(25),
+  terminationGraceSeconds: z.number().int().nonnegative().default(20)
 };
 
 const runtimeSchema = z.discriminatedUnion("kind", [
@@ -70,20 +77,26 @@ const runtimeSchema = z.discriminatedUnion("kind", [
     command: z.string().default("openclaw"),
     agentId: z.string().default("main"),
     sessionKey: z.string().optional(),
-    timeoutSeconds: z.number().int().positive().default(900),
     gateway: z.object({
       url: z.string().url().default("ws://127.0.0.1:18789"),
       configFile: z.string().default("~/.openclaw/openclaw.json"),
       tokenEnv: z.string().default("OPENCLAW_GATEWAY_TOKEN"),
       clientModule: z.string().default("@openclaw/gateway-client"),
       protocolVersion: z.number().int().positive().default(4)
-    }).default({ url: "ws://127.0.0.1:18789", configFile: "~/.openclaw/openclaw.json", tokenEnv: "OPENCLAW_GATEWAY_TOKEN", clientModule: "@openclaw/gateway-client", protocolVersion: 4 })
+    }).default({ url: "ws://127.0.0.1:18789", configFile: "~/.openclaw/openclaw.json", tokenEnv: "OPENCLAW_GATEWAY_TOKEN", clientModule: "@openclaw/gateway-client", protocolVersion: 4 }),
+    channelBridge: z.object({
+      enabled: z.boolean().default(false),
+      url: z.string().url().default("http://127.0.0.1:18791"),
+      tokenEnv: z.string().default("AAG_OPENCLAW_BRIDGE_TOKEN"),
+      tokenFile: z.string().optional(),
+      accountId: z.string().default("default"),
+      pollIntervalMilliseconds: z.number().int().min(100).max(10000).default(500)
+    }).default({ enabled: false, url: "http://127.0.0.1:18791", tokenEnv: "AAG_OPENCLAW_BRIDGE_TOKEN", accountId: "default", pollIntervalMilliseconds: 500 })
   }),
   z.object({
     kind: z.literal("codex"), ...baseRuntime,
     command: z.string().default("codex-acp"),
     args: z.array(z.string()).default([]),
-    timeoutSeconds: z.number().int().positive().default(900),
     permissions: z.enum(["deny", "allow-once"]).default("deny")
   })
 ]);
@@ -101,15 +114,26 @@ export const configSchema = z.object({
   spaces: z.array(spaceSchema).min(1),
   runtime: runtimeSchema,
   management: z.object({ allowWakeChanges: z.boolean().default(false) }).default({ allowWakeChanges: false }),
+  tools: z.object({
+    anytype: z.object({
+      enabled: z.boolean().default(false),
+      allowWrite: z.boolean().default(false),
+      allowArchive: z.boolean().default(false),
+      allowedSpaceIds: z.array(z.string()).default([]),
+      allowedFileRoots: z.array(z.string()).default([])
+    }).default({ enabled: false, allowWrite: false, allowArchive: false, allowedSpaceIds: [], allowedFileRoots: [] })
+  }).default({ anytype: { enabled: false, allowWrite: false, allowArchive: false, allowedSpaceIds: [], allowedFileRoots: [] } }),
   responses: z.object({
     mode: z.enum(["single", "milestones", "verbose"]).default("single"),
     streaming: z.boolean().default(true),
+    thinking: z.enum(["hidden", "stream"]).default("stream"),
+    editIntervalMilliseconds: z.number().int().min(250).max(5000).default(900),
     workingText: z.string().default("Working…"),
     workingReaction: z.string().default("👀"),
     maxCharacters: z.number().int().min(100).max(20000).default(19000),
     silentPlaceholder: z.enum(["delete", "keep", "replace"]).default("delete"),
     silentText: z.string().default("Stayed silent by choice.")
-  }).default({ mode: "single", streaming: true, workingText: "Working…", workingReaction: "👀", maxCharacters: 19000, silentPlaceholder: "delete", silentText: "Stayed silent by choice." }),
+  }).default({ mode: "single", streaming: true, thinking: "stream", editIntervalMilliseconds: 900, workingText: "Working…", workingReaction: "👀", maxCharacters: 19000, silentPlaceholder: "delete", silentText: "Stayed silent by choice." }),
   context: z.object({ historyMessages: z.number().int().min(0).max(200).default(30), replyDepth: z.number().int().min(0).max(50).default(12), referencedObjects: z.number().int().min(0).max(20).default(8) }).default({ historyMessages: 30, replyDepth: 12, referencedObjects: 8 }),
   coordination: z.object({
     peers: z.array(z.object({ name: z.string().min(1), participantId: z.string().min(1), aliases: z.array(z.string()).default([]) })).default([]),
@@ -124,6 +148,10 @@ export const configSchema = z.object({
 
 export type AgentConfig = z.infer<typeof configSchema>;
 export type WakeConfig = z.infer<typeof wakeSchema>;
+
+export function inactivityTimeoutSeconds(runtime: AgentConfig["runtime"]): number {
+  return runtime.inactivityTimeoutSeconds ?? runtime.timeoutSeconds;
+}
 
 export function expandHome(value: string): string {
   return value === "~" ? homedir() : value.startsWith("~/") ? resolve(homedir(), value.slice(2)) : value;
@@ -141,6 +169,7 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
   if (config.anytype.cli.dataPath) config.anytype.cli.dataPath = expandHome(config.anytype.cli.dataPath);
   if (config.runtime.defaultProject) config.runtime.defaultProject = expandHome(config.runtime.defaultProject);
   config.runtime.allowedProjects = config.runtime.allowedProjects.map(expandHome);
+  config.tools.anytype.allowedFileRoots = config.tools.anytype.allowedFileRoots.map(expandHome);
   if (config.runtime.kind === "codex" && config.runtime.command === "codex-acp") {
     const bundled = resolve(dirname(fileURLToPath(import.meta.url)), "..", "node_modules", ".bin", process.platform === "win32" ? "codex-acp.cmd" : "codex-acp");
     try { await access(bundled, constants.X_OK); config.runtime.command = bundled; }
@@ -148,6 +177,7 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
   }
   if (config.runtime.kind === "openclaw") {
     config.runtime.gateway.configFile = expandHome(config.runtime.gateway.configFile);
+    if (config.runtime.channelBridge.tokenFile) config.runtime.channelBridge.tokenFile = expandHome(config.runtime.channelBridge.tokenFile);
     if (config.runtime.gateway.clientModule.startsWith("~/") || config.runtime.gateway.clientModule.startsWith("/")) config.runtime.gateway.clientModule = expandHome(config.runtime.gateway.clientModule);
   }
   return config;

@@ -37,6 +37,8 @@ Ask only for values that cannot be discovered safely:
 7. Absolute default and allowed project paths.
 8. Codex permission mode (`deny` is the safe default) or OpenClaw Gateway connection details.
 9. Whether answer text should stream, plus response verbosity (`single`, `milestones`, or `verbose`).
+10. Whether the agent may write Anytype objects, which exact spaces it may touch, whether archive is allowed, and which local roots may supply uploads.
+11. For OpenClaw, a random channel-bridge token and whether native cron/heartbeat/background output should return to the bound Anytype conversation.
 
 Never infer an invite link, participant ID, or project authorization from a display name. Never place an API key or Gateway token in the YAML file.
 
@@ -112,6 +114,16 @@ responses:
 
 The installed package resolves its bundled `codex-acp` executable automatically. For OpenClaw, use `examples/openclaw-agent.yaml`, provide the absolute Gateway client-module path, and keep the Gateway token in the configured environment variable or protected OpenClaw config file.
 
+Object writes are off unless the configuration explicitly sets `tools.anytype.allowWrite: true`. Keep `allowedSpaceIds` and `allowedFileRoots` narrow. Archive is a separate permission.
+
+For OpenClaw, install the packaged native channel and configure its loopback bridge before validation:
+
+```bash
+aag openclaw plugin install
+```
+
+Generate one random token of at least 24 characters. Prefer a mode-`0600` file selected by `runtime.channelBridge.tokenFile`; the environment variable selected by `tokenEnv` is also supported. Configure the same value as OpenClaw's `channels.anytype.bridgeToken`. Add `aag mcp --config /absolute/path/to/agent.yaml` to OpenClaw's native `mcp.servers` configuration so the OpenClaw agent receives the same scoped Anytype object tools as Codex. Do not expose the bridge listener beyond loopback.
+
 One configuration should describe one identity and one runtime agent. Use explicit routes or an explicit `chatDiscovery` policy; space membership alone must not turn on every conversation. When discovery is enabled, keep its wake policy mention-based and its sender allowlist narrow.
 
 ## 5. Validate before connecting
@@ -139,6 +151,9 @@ In a configured Anytype chat, verify this sequence:
 4. During a run, send a same-chat follow-up. Confirm it steers the active runtime and produces a new response beneath the follow-up.
 5. Confirm an unmentioned message stays silent when the route uses `mention`.
 6. If object discussions are enabled, verify the prompt receives the owning object and comment-thread context.
+7. Ask the agent to create a temporary object in an allowed test space, confirm the returned `anytype://` link opens it, then update and find it through the tools.
+8. For OpenClaw, create a short native scheduled/heartbeat action on the current session. Confirm only its assistant output returns to the same Anytype chat or discussion, then remove the test schedule through OpenClaw.
+9. Let a run exceed fifteen minutes or use a controlled long-running fixture. Confirm it remains alive when both runtime watchdogs are `0`.
 
 Do not install the background service until the foreground flow succeeds. Stop the foreground process before starting the service so both processes cannot contend for the same state file.
 
@@ -160,6 +175,10 @@ This installs a user-level launchd service on macOS or systemd user service on L
 - Chat/discussion routes and participant allowlists are explicit.
 - Codex, OpenClaw, or the operating-system sandbox enforces the declared project limits.
 - The foreground test covers mentions, silence, progress edits, final replies, and steering.
+- Thinking is replaced by the following text in one message; later distinct text parts appear as new streamed messages.
+- A `/new` message resets the native harness context without changing the Anytype route.
+- Allowed Anytype object operations work and denied spaces, archive, and upload paths fail closed.
+- OpenClaw's native channel is installed, its exact operator session is bound, and native scheduled/background output returns after an AAG restart.
 - Only one foreground/service process owns the configuration and SQLite state.
 
 For rationale behind these boundaries, read [`architecture-decisions.md`](architecture-decisions.md). For component-level design, read [`../ARCHITECTURE.md`](../ARCHITECTURE.md).

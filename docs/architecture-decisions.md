@@ -55,6 +55,20 @@ Accept YAML, JSON, or TOML for operator-authored agent configuration. Use SQLite
 
 Configuration describes identity, spaces, chats, wake rules, runtime, projects, response behavior, and peer agents. SQLite stores cursors, message fingerprints, runs, response IDs, discussion mappings, and durable ACP session IDs. It is not the source of truth for configuration and is not a distributed queue.
 
+Session bindings, outbound retries, native-event cursors, and proactive-delivery deduplication also live in SQLite. AAG still does not claim distributed exactly-once delivery; after a crash it reconciles a retry against recent Anytype replies before sending again.
+
+## Native schedulers stay native
+
+AAG does not define cron syntax or maintain a second scheduler. OpenClaw cron jobs, heartbeats, subagents, and external session continuations keep using OpenClaw's scheduler and session model. The bundled channel plugin observes only explicitly bound sessions and returns their assistant output to the stored Anytype route.
+
+Codex ACP does not currently expose Codex desktop scheduled tasks or external session observation. AAG reports that limitation instead of pretending to schedule a job. Equivalent Codex support belongs in a native Codex app-server adapter.
+
+## Anytype mutations use scoped tools
+
+Agents need more than prompt context when asked to create a daily object, update a task, search a space, upload a file, add an object to a collection, or return an object link. AAG exposes those operations through a policy-mediated MCP server rather than handing an API key to the model.
+
+Read access is limited to configured or explicitly allowed spaces. Writes default off, archive has its own switch, and file uploads are constrained to real paths below declared roots. The tool boundary cannot protect a key file from an unrestricted shell running as the same operating-system user, so strong credential isolation still requires a runtime sandbox or separate service account.
+
 Project lists tell the runtime which directories to use. AAG passes them as OpenClaw context or ACP working and additional directories. The runtime settings, sandbox, service account, or container must enforce access.
 
 ## Multi-space membership, explicit route subscriptions
@@ -88,6 +102,8 @@ An authorized `/new` wake message creates an explicit session boundary without r
 Acknowledge a trigger immediately with a working reaction on the user's message and one reply. Edit that reply as the run progresses.
 
 The default response mode keeps one message stable and streams the latest answer text into it. Streaming can be disabled independently; milestone and verbose modes add tool or status detail. The working reaction is removed on completion, silence, interruption, or failure.
+
+Thinking and answer text form explicit output cycles. Safe thinking/progress may occupy the working message temporarily; the next assistant text replaces it in that same message. A later distinct assistant text part starts a new message and streams there. This follows harness output boundaries instead of flattening every part into one growing blob.
 
 If a follow-up arrives during the same active conversation, it steers the current run instead of starting a queued run. AAG freezes the previous progress message and creates a new reply beneath the follow-up. Later updates go to the new reply. Runtime adapters must report steering failures. AAG does not silently cancel and send the prompt again because that could repeat tool side effects.
 

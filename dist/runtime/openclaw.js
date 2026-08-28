@@ -1,4 +1,5 @@
 import { access, readFile, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { commandExists, runProcess } from "../process.js";
@@ -11,12 +12,25 @@ export class OpenClawDriver {
     clientConstructor;
     name = "openclaw";
     projectEnforcement = "advisory";
+    capabilities = {
+        steering: true,
+        thinking: true,
+        multipleOutputParts: true,
+        sessionObservation: true,
+        nativeScheduling: true
+    };
     client;
     connecting;
     connected = false;
     connectionGeneration = 0;
     connectionWaiters = new Set();
     eventCallbacks = new Map();
+    ownedRunIds = new Set();
+    ownedTerminalTexts = new Map();
+    bridgeObservers = new Map();
+    bridgePollTimer;
+    bridgePolling;
+    lastBridgePollErrorAt = 0;
     constructor(config, clientConstructor) {
         this.config = config;
         this.clientConstructor = clientConstructor;
@@ -32,16 +46,33 @@ export class OpenClawDriver {
         finally {
             this.disconnect(client);
         }
-        return [`OpenClaw ${stdout.trim()}`, `Gateway ${this.config.gateway.url} via ${this.config.gateway.clientModule}`, `project policy: ${this.projectEnforcement} (enforced by OpenClaw configuration)`];
+        const results = [`OpenClaw ${stdout.trim()}`, `Gateway ${this.config.gateway.url} via ${this.config.gateway.clientModule}`, `project policy: ${this.projectEnforcement} (enforced by OpenClaw configuration)`];
+        if (this.config.channelBridge.enabled) {
+            await this.bridgeToken();
+            const response = await fetch(new URL("/health", this.config.channelBridge.url), { signal: AbortSignal.timeout(10_000) });
+            if (!response.ok)
+                throw new Error(`OpenClaw Anytype channel bridge returned HTTP ${response.status}`);
+            results.push(`Anytype channel bridge ${this.config.channelBridge.url}`);
+        }
+        return results;
     }
     async close() {
         if (this.client)
             this.disconnect(this.client);
         this.rejectConnectionWaiters(new Error("OpenClaw driver closed"));
         this.eventCallbacks.clear();
+        if (this.bridgePollTimer)
+            clearInterval(this.bridgePollTimer);
+        this.bridgePollTimer = undefined;
+        this.bridgeObservers.clear();
     }
     async start(input, onEvent) {
         const sessionKey = this.config.sessionKey ? `${this.config.sessionKey}:${input.sessionKey}` : input.sessionKey;
+        if (this.config.channelBridge.enabled) {
+            if (!input.turn)
+                throw new Error("OpenClaw channel bridge requires Anytype turn context");
+            await this.bindBridgeSession(sessionKey, input.turn);
+        }
         const client = await this.getClient();
         let generation = 0;
         let currentRunId;
@@ -49,21 +80,34 @@ export class OpenClawDriver {
         let resolveResult;
         let rejectResult;
         const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
-        const launch = async (method, params, launchGeneration) => {
-            const previousTerminal = await this.readTerminalText(client, sessionKey, undefined, 1);
+        const launch = async (method, params, launchGeneration, activateGeneration) => {
+            const previousTerminal = await this.readTerminalCursor(client, sessionKey);
             const acknowledgement = await this.request(client, method, params, { timeoutMs: 30_000 });
             const runId = acknowledgement.runId;
             if (!runId)
                 throw new Error(`OpenClaw ${method} returned no runId`);
             currentRunId = runId;
+            if (this.config.channelBridge.enabled) {
+                try {
+                    await this.markBridgeOwnedRun(runId);
+                }
+                catch (error) {
+                    await this.request(client, "sessions.abort", { key: sessionKey, runId }, { timeoutMs: 30_000 }).catch(() => undefined);
+                    throw error;
+                }
+                this.markOwnedRun(runId);
+            }
+            activateGeneration?.();
             this.eventCallbacks.set(runId, onEvent);
             const runConnectionGeneration = this.connectionGeneration;
-            void this.request(client, "agent.wait", { runId, timeoutMs: this.config.timeoutSeconds * 1000 }, { timeoutMs: null }).then(async (value) => {
+            void this.waitForRun(client, runId).then(async (value) => {
                 if (!settled && launchGeneration === generation) {
                     const text = extractText(value) ?? await this.readTerminalText(client, sessionKey, previousTerminal);
                     if (text === undefined)
                         throw new Error(`OpenClaw run ${runId} completed without a visible text reply`);
                     const parsed = parseSilence(text);
+                    if (!this.config.channelBridge.enabled)
+                        this.markOwnedTerminalText(sessionKey, text);
                     settled = true;
                     resolveResult(parsed);
                 }
@@ -74,6 +118,8 @@ export class OpenClawDriver {
                     try {
                         const recoveredText = await this.waitForTerminalText(client, sessionKey, previousTerminal);
                         if (recoveredText !== undefined && !settled && launchGeneration === generation) {
+                            if (!this.config.channelBridge.enabled)
+                                this.markOwnedTerminalText(sessionKey, recoveredText);
                             settled = true;
                             resolveResult(parseSilence(recoveredText));
                             return;
@@ -88,15 +134,252 @@ export class OpenClawDriver {
             }).finally(() => { if (runId)
                 this.eventCallbacks.delete(runId); });
         };
-        await launch("agent", { message: input.prompt, agentId: this.config.agentId, sessionKey, timeout: this.config.timeoutSeconds, idempotencyKey: crypto.randomUUID() }, generation);
+        const runLimit = this.config.maxRunSeconds > 0 ? { timeout: this.config.maxRunSeconds } : {};
+        await launch("agent", { message: input.prompt, agentId: this.config.agentId, sessionKey, ...runLimit, idempotencyKey: crypto.randomUUID() }, generation);
         return {
+            sessionKey,
+            sessionId: sessionKey,
             result,
             steer: async (message) => {
-                generation += 1;
-                await launch("sessions.steer", { key: sessionKey, agentId: this.config.agentId, message, timeoutMs: this.config.timeoutSeconds * 1000, idempotencyKey: crypto.randomUUID() }, generation);
+                const nextGeneration = generation + 1;
+                await launch("sessions.steer", { key: sessionKey, agentId: this.config.agentId, message, ...(this.config.maxRunSeconds > 0 ? { timeoutMs: this.config.maxRunSeconds * 1000 } : {}), idempotencyKey: crypto.randomUUID() }, nextGeneration, () => { generation = nextGeneration; });
             },
             cancel: async () => { await this.request(client, "sessions.abort", { key: sessionKey, ...(currentRunId ? { runId: currentRunId } : {}) }, { timeoutMs: 30_000 }); }
         };
+    }
+    async observeSession(input, onOutput) {
+        const sessionKey = this.config.sessionKey ? `${this.config.sessionKey}:${input.sessionKey}` : input.sessionKey;
+        if (this.config.channelBridge.enabled) {
+            if (!input.conversation)
+                throw new Error("OpenClaw channel observation requires Anytype route context");
+            return this.observeBridgeSession(sessionKey, input.conversation, onOutput);
+        }
+        const client = await this.getClient();
+        const abort = new AbortController();
+        let cursor = input.afterCursor;
+        let running = false;
+        const poll = async () => {
+            if (running || abort.signal.aborted)
+                return;
+            running = true;
+            try {
+                const history = await this.request(client, "chat.history", { sessionKey, limit: 100 }, { timeoutMs: 10_000 });
+                const messages = Array.isArray(history?.messages) ? history.messages : [];
+                const assistants = messages.filter((message) => message?.role === "assistant").map((message) => {
+                    const text = historyMessageText(message);
+                    const id = historyMessageCursor(message);
+                    return { id, text, timestamp: historyMessageTimestamp(message) };
+                }).filter((message) => Boolean(message.text));
+                if (cursor === undefined) {
+                    cursor = assistants.at(-1)?.id;
+                    return;
+                }
+                const cursorIndex = assistants.findIndex((message) => message.id === cursor);
+                const cursorTime = fallbackCursorTimestamp(cursor);
+                const pending = cursorIndex >= 0 ? assistants.slice(cursorIndex + 1) : cursorTime === undefined ? [] : assistants.filter((message) => message.timestamp > cursorTime);
+                for (const message of pending) {
+                    if (abort.signal.aborted)
+                        break;
+                    if (!this.consumeOwnedTerminalText(sessionKey, message.text))
+                        await onOutput({ id: message.id, cursor: message.id, events: [{ type: "text-delta", text: message.text, partId: message.id, phase: "external", replace: true }], result: { text: message.text } });
+                    cursor = message.id;
+                }
+            }
+            finally {
+                running = false;
+            }
+        };
+        await poll();
+        const timer = setInterval(() => { void poll().catch(() => undefined); }, this.config.livenessProbeSeconds * 1000);
+        timer.unref?.();
+        return { ...(cursor ? { cursor } : {}), close: async () => { abort.abort(); clearInterval(timer); } };
+    }
+    async bindBridgeSession(sessionKey, turn) {
+        const token = await this.bridgeToken();
+        const response = await fetch(new URL("/v1/bindings", this.config.channelBridge.url), {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify({
+                accountId: this.config.channelBridge.accountId,
+                sessionKey,
+                route: {
+                    spaceId: turn.conversation.spaceId,
+                    chatId: turn.conversation.chatId,
+                    ...(turn.conversation.kind === "discussion" ? { discussionRootId: turn.replyTargetId } : {}),
+                },
+            }),
+            signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok)
+            throw new Error(`OpenClaw Anytype channel binding failed with HTTP ${response.status}`);
+    }
+    async observeBridgeSession(sessionKey, conversation, onOutput) {
+        const id = crypto.randomUUID();
+        const state = { id, sessionKey, conversation, onOutput, runs: new Map() };
+        this.bridgeObservers.set(id, state);
+        try {
+            await this.pollBridgeOutbox();
+        }
+        catch (error) {
+            this.bridgeObservers.delete(id);
+            throw error;
+        }
+        if (!this.bridgePollTimer) {
+            this.bridgePollTimer = setInterval(() => { void this.pollBridgeOutbox().catch(error => this.reportBridgePollError(error)); }, this.config.channelBridge.pollIntervalMilliseconds);
+            this.bridgePollTimer.unref?.();
+        }
+        return {
+            ...(state.cursor ? { cursor: state.cursor } : {}),
+            close: async () => {
+                this.bridgeObservers.delete(id);
+                state.runs.clear();
+                if (this.bridgeObservers.size === 0 && this.bridgePollTimer) {
+                    clearInterval(this.bridgePollTimer);
+                    this.bridgePollTimer = undefined;
+                }
+            },
+        };
+    }
+    async pollBridgeOutbox() {
+        if (this.bridgePolling)
+            return this.bridgePolling;
+        const poll = this.bridgeToken().then(token => this.drainBridgeOutbox(token));
+        this.bridgePolling = poll;
+        try {
+            await poll;
+        }
+        finally {
+            if (this.bridgePolling === poll)
+                this.bridgePolling = undefined;
+        }
+    }
+    reportBridgePollError(error) {
+        const now = Date.now();
+        if (now - this.lastBridgePollErrorAt < 60_000)
+            return;
+        this.lastBridgePollErrorAt = now;
+        process.stderr.write(`${JSON.stringify({ level: "error", event: "openclaw_bridge_poll_failed", error: error instanceof Error ? error.message : String(error) })}\n`);
+    }
+    async drainBridgeOutbox(token) {
+        let afterSequence = 0;
+        for (;;) {
+            const query = new URLSearchParams({ limit: "1000" });
+            if (afterSequence > 0)
+                query.set("afterSequence", String(afterSequence));
+            const response = await fetch(new URL(`/v1/outbox?${query}`, this.config.channelBridge.url), {
+                headers: { authorization: `Bearer ${token}` },
+                signal: AbortSignal.timeout(10_000),
+            });
+            if (!response.ok)
+                throw new Error(`OpenClaw Anytype channel outbox returned HTTP ${response.status}`);
+            const body = await response.json();
+            const deliveries = body.deliveries ?? [];
+            for (const delivery of deliveries) {
+                const observer = [...this.bridgeObservers.values()].find(candidate => bridgeDeliveryMatches(candidate, delivery));
+                if (!observer)
+                    continue;
+                observer.cursor = delivery.idempotencyKey;
+                if (delivery.kind === "message-final" && delivery.message) {
+                    if (delivery.message.text)
+                        await observer.onOutput({ id: delivery.idempotencyKey, cursor: delivery.idempotencyKey, events: [{ type: "text-delta", text: delivery.message.text, partId: delivery.id, phase: "external", replace: true }], result: parseSilence(delivery.message.text) });
+                    await this.ackBridgeDelivery(delivery.id, token);
+                    continue;
+                }
+                if (delivery.kind !== "agent-event" || !delivery.agentEvent)
+                    continue;
+                const event = delivery.agentEvent;
+                const run = observer.runs.get(event.runId) ?? { events: new Map(), cursor: delivery.idempotencyKey, deliveryIds: [] };
+                if (!run.deliveryIds.includes(delivery.id))
+                    run.deliveryIds.push(delivery.id);
+                run.cursor = delivery.idempotencyKey;
+                run.events.set(event.seq, event);
+                observer.runs.set(event.runId, run);
+                if (!bridgeEventTerminal(event))
+                    continue;
+                const owned = delivery.owned === true || this.ownedRunIds.has(event.runId);
+                if (!owned) {
+                    const text = renderBridgeRun(run) || bridgeTerminalFailure(event);
+                    if (text)
+                        await observer.onOutput({ id: event.runId, cursor: run.cursor, events: [{ type: "text-delta", text, partId: event.runId, phase: "external", replace: true }], result: parseSilence(text) });
+                }
+                await this.ackBridgeDeliveries(run.deliveryIds, token);
+                if (owned)
+                    this.ownedRunIds.delete(event.runId);
+                observer.runs.delete(event.runId);
+            }
+            if (deliveries.length < 1_000)
+                break;
+            const last = deliveries.at(-1);
+            afterSequence = last.storeSequence ?? 0;
+            if (afterSequence === 0)
+                throw new Error("OpenClaw Anytype channel outbox omitted its pagination sequence");
+        }
+    }
+    async ackBridgeDelivery(id, token) {
+        const response = await fetch(new URL(`/v1/outbox/${encodeURIComponent(id)}/ack`, this.config.channelBridge.url), {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok)
+            throw new Error(`OpenClaw Anytype channel acknowledgement returned HTTP ${response.status}`);
+    }
+    async markBridgeOwnedRun(runId) {
+        const token = await this.bridgeToken();
+        const response = await fetch(new URL("/v1/owned-runs", this.config.channelBridge.url), {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify({ runId }),
+            signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok)
+            throw new Error(`OpenClaw Anytype channel owned-run registration failed with HTTP ${response.status}`);
+    }
+    async ackBridgeDeliveries(ids, token) {
+        const response = await fetch(new URL("/v1/outbox/ack", this.config.channelBridge.url), {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify({ ids }),
+            signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok)
+            throw new Error(`OpenClaw Anytype channel batch acknowledgement returned HTTP ${response.status}`);
+    }
+    async bridgeToken() {
+        const token = process.env[this.config.channelBridge.tokenEnv]
+            ?? (this.config.channelBridge.tokenFile ? (await readFile(this.config.channelBridge.tokenFile, "utf8")).trim() : undefined);
+        if (!token || token.length < 24)
+            throw new Error(`No OpenClaw Anytype bridge token in ${this.config.channelBridge.tokenEnv}${this.config.channelBridge.tokenFile ? ` or ${this.config.channelBridge.tokenFile}` : ""}`);
+        return token;
+    }
+    markOwnedTerminalText(sessionKey, text) {
+        const values = this.ownedTerminalTexts.get(sessionKey) ?? new Map();
+        const key = normalizeOwnedText(text);
+        values.set(key, (values.get(key) ?? 0) + 1);
+        this.ownedTerminalTexts.set(sessionKey, values);
+    }
+    markOwnedRun(runId) {
+        this.ownedRunIds.add(runId);
+        while (this.ownedRunIds.size > 10_000) {
+            const oldest = this.ownedRunIds.values().next().value;
+            if (!oldest)
+                break;
+            this.ownedRunIds.delete(oldest);
+        }
+    }
+    consumeOwnedTerminalText(sessionKey, text) {
+        const values = this.ownedTerminalTexts.get(sessionKey);
+        const key = normalizeOwnedText(text);
+        const count = values?.get(key) ?? 0;
+        if (!values || count === 0)
+            return false;
+        if (count === 1)
+            values.delete(key);
+        else
+            values.set(key, count - 1);
+        if (values.size === 0)
+            this.ownedTerminalTexts.delete(sessionKey);
+        return true;
     }
     async getClient() {
         if (this.client)
@@ -138,8 +421,18 @@ export class OpenClawDriver {
                         return;
                     if (payload?.stream === "tool")
                         callback({ type: "tool", name: payload.data?.name ?? payload.data?.toolName ?? "tool", status: payload.data?.status ?? "running" });
-                    else if (payload?.stream === "assistant" && typeof payload.data?.delta === "string")
-                        callback({ type: "text-delta", text: payload.data.delta });
+                    else if (payload?.stream === "assistant") {
+                        const text = typeof payload.data?.delta === "string" ? payload.data.delta : typeof payload.data?.text === "string" ? payload.data.text : undefined;
+                        if (text !== undefined)
+                            callback({ type: "text-delta", text, ...(payload.data?.itemId ? { partId: String(payload.data.itemId) } : {}), ...(payload.data?.phase ? { phase: String(payload.data.phase) } : {}), ...(payload.data?.replace === true ? { replace: true } : {}) });
+                    }
+                    else if (payload?.stream === "thinking") {
+                        const text = typeof payload.data?.delta === "string" ? payload.data.delta : typeof payload.data?.text === "string" ? payload.data.text : undefined;
+                        if (text !== undefined)
+                            callback({ type: "thinking-delta", text, ...(payload.data?.itemId ? { partId: String(payload.data.itemId) } : {}), ...(payload.data?.phase ? { phase: String(payload.data.phase) } : {}), ...(payload.data?.replace === true ? { replace: true } : {}) });
+                    }
+                    else if (payload?.stream === "lifecycle" || payload?.stream === "item")
+                        callback({ type: "status", text: String(payload.data?.phase ?? payload.data?.status ?? payload.stream) });
                 }
             });
             client.start();
@@ -252,7 +545,29 @@ export class OpenClawDriver {
             throw new Error(`No OpenClaw Gateway token in ${this.config.gateway.tokenEnv} or ${this.config.gateway.configFile}`);
         return token;
     }
-    async readTerminalText(client, sessionKey, exclude, attempts = 5) {
+    async waitForRun(client, runId) {
+        const waitMilliseconds = this.config.livenessProbeSeconds * 1000;
+        const deadline = this.config.maxRunSeconds > 0 ? Date.now() + this.config.maxRunSeconds * 1000 : Number.POSITIVE_INFINITY;
+        while (Date.now() < deadline) {
+            try {
+                const value = await this.request(client, "agent.wait", { runId, timeoutMs: waitMilliseconds }, { timeoutMs: null });
+                if (!agentWaitPending(value))
+                    return value;
+            }
+            catch (error) {
+                if (!agentWaitTimedOut(error))
+                    throw error;
+            }
+        }
+        throw new Error(`OpenClaw run exceeded the configured maximum of ${this.config.maxRunSeconds} seconds`);
+    }
+    async readTerminalCursor(client, sessionKey) {
+        const history = await this.request(client, "chat.history", { sessionKey, limit: 20 }, { timeoutMs: 10_000 });
+        const messages = Array.isArray(history?.messages) ? history.messages : [];
+        const latest = [...messages].reverse().find(message => message?.role === "assistant" && historyMessageText(message));
+        return latest ? historyMessageCursor(latest) : undefined;
+    }
+    async readTerminalText(client, sessionKey, excludeCursor, attempts = 5) {
         for (let attempt = 0; attempt < attempts; attempt += 1) {
             const history = await this.request(client, "chat.history", { sessionKey, limit: 20 }, { timeoutMs: 10_000 });
             const messages = Array.isArray(history?.messages) ? history.messages : [];
@@ -260,7 +575,7 @@ export class OpenClawDriver {
                 if (message?.role !== "assistant")
                     continue;
                 const content = Array.isArray(message.content) ? message.content.map((part) => part?.text).filter(Boolean).join("") : typeof message.content === "string" ? message.content : undefined;
-                if (content && content !== exclude)
+                if (content && historyMessageCursor(message) !== excludeCursor)
                     return content;
             }
             if (attempt + 1 < attempts)
@@ -268,10 +583,11 @@ export class OpenClawDriver {
         }
         return undefined;
     }
-    async waitForTerminalText(client, sessionKey, exclude) {
-        const deadline = Date.now() + Math.min(this.config.timeoutSeconds * 1000, RECOVERED_RUN_HISTORY_TIMEOUT_MS);
+    async waitForTerminalText(client, sessionKey, excludeCursor) {
+        const configured = this.config.maxRunSeconds > 0 ? this.config.maxRunSeconds * 1000 : RECOVERED_RUN_HISTORY_TIMEOUT_MS;
+        const deadline = Date.now() + Math.min(configured, RECOVERED_RUN_HISTORY_TIMEOUT_MS);
         while (Date.now() < deadline) {
-            const text = await this.readTerminalText(client, sessionKey, exclude, 1);
+            const text = await this.readTerminalText(client, sessionKey, excludeCursor, 1);
             if (text !== undefined)
                 return text;
             await new Promise(resolve => setTimeout(resolve, 2_000));
@@ -292,6 +608,80 @@ function extractText(value) {
             return path;
     return undefined;
 }
+function agentWaitPending(value) {
+    const status = String(value?.status ?? value?.result?.status ?? "").toLocaleLowerCase();
+    return status === "timeout" || status === "pending" || status === "running";
+}
+function agentWaitTimedOut(error) {
+    return /(?:agent\.wait|request|operation).*(?:timed out|timeout)|(?:timed out|timeout).*(?:agent\.wait|request|operation)/i.test(error instanceof Error ? error.message : String(error));
+}
+function historyMessageText(message) {
+    if (typeof message?.content === "string")
+        return message.content;
+    if (!Array.isArray(message?.content))
+        return undefined;
+    const text = message.content.map((part) => typeof part?.text === "string" ? part.text : "").join("");
+    return text || undefined;
+}
+function historyMessageCursor(message) {
+    const stable = message?.id ?? message?.messageId ?? message?.uuid;
+    if (typeof stable === "string" && stable)
+        return stable;
+    const timestamp = historyMessageTimestamp(message);
+    const digest = createHash("sha256").update(JSON.stringify({ timestamp, role: message?.role, content: message?.content })).digest("base64url").slice(0, 16);
+    return `t:${timestamp}:${digest}`;
+}
+function historyMessageTimestamp(message) {
+    const value = Number(message?.timestamp ?? message?.createdAt ?? message?.created_at ?? 0);
+    return Number.isFinite(value) ? value : 0;
+}
+function fallbackCursorTimestamp(cursor) {
+    const match = /^t:(\d+):/u.exec(cursor ?? "");
+    if (!match?.[1])
+        return undefined;
+    const value = Number(match[1]);
+    return Number.isFinite(value) ? value : undefined;
+}
+function bridgeDeliveryMatches(observer, delivery) {
+    if (delivery.sessionKey === observer.sessionKey)
+        return true;
+    const route = delivery.route;
+    const conversation = observer.conversation;
+    return route?.spaceId === conversation.spaceId
+        && route.chatId === conversation.chatId
+        && (route.discussionRootId ?? "") === (conversation.kind === "discussion" ? conversation.discussionRootId ?? "" : "");
+}
+function renderBridgeRun(run) {
+    const parts = new Map();
+    const order = [];
+    for (const event of [...run.events.values()].sort((left, right) => left.seq - right.seq)) {
+        if (event.stream !== "assistant")
+            continue;
+        const text = typeof event.data.delta === "string" ? event.data.delta : typeof event.data.text === "string" ? event.data.text : undefined;
+        if (text === undefined)
+            continue;
+        const partId = String(event.data.itemId ?? event.data.partId ?? event.data.messageId ?? "assistant");
+        if (!parts.has(partId))
+            order.push(partId);
+        const previous = parts.get(partId) ?? "";
+        parts.set(partId, event.data.replace === true ? text : previous + text);
+    }
+    return order.map(part => parts.get(part) ?? "").filter(Boolean).join("\n\n");
+}
+function bridgeEventTerminal(event) {
+    if (event.stream !== "lifecycle")
+        return false;
+    const status = String(event.data.phase ?? event.data.status ?? event.data.state ?? "").toLowerCase();
+    return ["end", "ended", "error", "failed", "abort", "aborted", "cancelled", "canceled", "complete", "completed", "done"].includes(status);
+}
+function bridgeTerminalFailure(event) {
+    const status = String(event.data.phase ?? event.data.status ?? event.data.state ?? "").toLowerCase();
+    if (!["error", "failed", "abort", "aborted", "cancelled", "canceled"].includes(status))
+        return "";
+    const detail = typeof event.data.text === "string" ? `: ${event.data.text}` : "";
+    return `OpenClaw external run ${status}${detail}`;
+}
+function normalizeOwnedText(text) { return text.normalize("NFKC").replace(/\s+/gu, ""); }
 export function parseSilence(text) {
     const match = text.trim().match(/^\[\[AAG_STAY_SILENT(?::\s*(.*?))?\]\]$/s);
     return match ? { text: "", silent: true, ...(match[1] ? { reason: match[1] } : {}) } : { text };

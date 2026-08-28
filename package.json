@@ -42,10 +42,14 @@
     "heart-adapter/go.mod",
     "heart-adapter/go.sum",
     "heart-adapter/main.go",
-    "heart-adapter/main_test.go"
+    "heart-adapter/main_test.go",
+    "packages/openclaw-anytype-channel/dist",
+    "packages/openclaw-anytype-channel/openclaw.plugin.json",
+    "packages/openclaw-anytype-channel/package.json",
+    "packages/openclaw-anytype-channel/README.md"
   ],
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && chmod +x dist/cli.js && pnpm --filter @imai/openclaw-anytype-channel run build",
     "typecheck": "tsc -p tsconfig.check.json",
     "dev": "tsx src/cli.ts",
     "lint": "eslint .",

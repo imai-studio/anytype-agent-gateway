@@ -16,18 +16,20 @@ The current deployment model is deliberately simple: **one AAG process, one Anyt
 - Supports human wake modes `mention`, `mention-or-reply`, `every-message`, `prefix`, and `disabled`, independently for each configured chat or a space's object discussions.
 - Supports peer-agent wake modes `never`, `direct-mention`, and `every-message`, with allowed-sender lists, hop limits, and an activation circuit breaker.
 - Adds a configurable working reaction to the triggering user message, posts a reply immediately, edits that reply with progress, and removes the reaction when the run finishes.
+- Streams safe thinking/progress into that first reply, replaces it with the following answer text in the same message, and gives each later assistant text part its own streamed message.
 - Treats a qualifying follow-up during an active run as steering. The gateway freezes the previous progress reply, creates a new reply beneath the follow-up, and continues there.
 - Starts a fresh persisted harness session for the current chat or comment thread when an authorized wake message contains `/new`; an active run is replaced instead of steered.
 - Preserves every reply created by a steered run so a later reply to any of them is still recognized as a follow-up.
 - Allows a runtime to stay silent by returning exactly `[[AAG_STAY_SILENT]]` or `[[AAG_STAY_SILENT: reason]]`. The placeholder can be deleted, retained, or replaced according to configuration.
 - Builds bounded context from recent messages, reply ancestry, the object owning a discussion, and objects referenced by Anytype marks.
 - Converts explicit `[[AAG_MENTION:Peer Name]]` output for configured peers into real Anytype mention marks, bounded by `coordination.maxFanout`.
-- Stores route baselines, content fingerprints for edited-message idempotency, runs, durable Codex session IDs, and discovered discussions in SQLite using WAL mode.
-- Serializes projection edits, applies run/API timeouts, reconciles interrupted placeholders/reactions on restart, cancels active runs cleanly on shutdown, and holds a state-file singleton lock.
+- Stores route baselines, content fingerprints, response IDs, native session bindings, delivery deduplication, bridge cursors, and durable outbound work in SQLite using WAL mode.
+- Uses inactivity and maximum-run watchdogs independently. Both are disabled by default, so a healthy long run is not failed at 900 seconds.
+- Gives connected harnesses policy-mediated tools to search, read, create, update, organize, upload, and optionally archive objects in explicitly allowed Anytype spaces.
 
 The repository includes two runtime adapters:
 
-- **OpenClaw native Gateway.** AAG connects to OpenClaw's authenticated WebSocket Gateway, starts the configured agent and session, receives tool and text events, uses `sessions.steer` for follow-ups, and reads the final chat reply when needed. OpenClaw's agent, workspace, and tool settings must enforce project access.
+- **OpenClaw Gateway plus native Anytype channel.** AAG uses the authenticated Gateway for starts, cancellation, and true `sessions.steer`. The bundled OpenClaw channel plugin binds that same session to its Anytype route and durably forwards assistant output from cron jobs, heartbeats, subagents, and external continuations. It does not introduce a second session or scheduler.
 - **Codex over ACP.** AAG starts `codex-acp`, saves and resumes one ACP session per Anytype conversation, streams agent and tool updates, and uses ACP steering. AAG reports steering failures instead of canceling and sending the prompt again, which could repeat tool side effects. It denies permission requests by default or can allow one request for the current run. ACP project settings tell Codex which directories to use, but they do not restrict filesystem access.
 
 Claude Code is not part of this release.
@@ -79,6 +81,14 @@ install -m 0755 aag-heart-adapter ~/.local/bin/aag-heart-adapter
 The Go module pins `github.com/anyproto/anytype-heart` to `v0.50.10`. Treat an Anytype/Heart upgrade as a compatibility change and test it before changing that pin.
 
 The core gateway and adapter source in this repository are Apache-2.0. The optional adapter links against `anytype-heart`, which is distributed under the Any Source Available License 1.0 and limits permitted use. Review [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before building or distributing the adapter binary.
+
+For OpenClaw, install the bundled channel after installing AAG:
+
+```bash
+aag openclaw plugin install
+```
+
+`aag openclaw plugin path` prints the packaged directory when an operator wants to inspect or install it manually.
 
 ## Create the Anytype member
 
@@ -153,12 +163,31 @@ runtime:
     configFile: ~/.openclaw/openclaw.json
     clientModule: /absolute/path/to/openclaw/packages/gateway-client/dist/index.mjs
     protocolVersion: 4
+  channelBridge:
+    enabled: true
+    url: http://127.0.0.1:18791
+    tokenEnv: AAG_OPENCLAW_BRIDGE_TOKEN
+    tokenFile: ~/.config/aag/openclaw-bridge-token
+    accountId: default
+    pollIntervalMilliseconds: 500
+  inactivityTimeoutSeconds: 0
+  maxRunSeconds: 0
   defaultProject: /absolute/path/to/default-project
   allowedProjects: []
+
+tools:
+  anytype:
+    enabled: true
+    allowWrite: true
+    allowArchive: false
+    allowedSpaceIds: [_space_replace_me]
+    allowedFileRoots: [/absolute/path/to/default-project]
 
 responses:
   mode: single
   streaming: true
+  thinking: stream
+  editIntervalMilliseconds: 900
   workingText: Working…
   workingReaction: 👀
   silentPlaceholder: delete
@@ -182,6 +211,45 @@ Set `agent.participantId` to the bot member's stable Anytype participant ID. AAG
 Anytype participant IDs can be space-scoped. When one identity joins multiple spaces, set `spaces[].participantId` for each space; it overrides `agent.participantId` for self-filtering and mention matching on that space's routes.
 
 For OpenClaw, AAG loads `gateway.clientModule` dynamically. The npm name shown by the schema default is not available in every OpenClaw distribution, so a source installation should normally use the absolute path to its built `packages/gateway-client/dist/index.mjs`. The Gateway token is read from the environment variable named by `gateway.tokenEnv` (default `OPENCLAW_GATEWAY_TOKEN`) or from `gateway.configFile`; it is never included in an agent prompt.
+
+### Native OpenClaw session output
+
+The bundled channel plugin runs inside OpenClaw. AAG registers its exact Gateway session key and Anytype route with the plugin before starting a run, then pulls the plugin's durable local outbox. This keeps one native OpenClaw session per Anytype chat or discussion root while preserving Gateway steering.
+
+Configure the same random token, at least 24 characters long, in a mode-`0600` file selected by `runtime.channelBridge.tokenFile` (or the environment variable selected by `tokenEnv`) and in OpenClaw's `channels.anytype.bridgeToken`. A token file is usually more reliable for a service because it does not depend on interactive shell environment propagation. Keep the plugin listener on loopback. A minimal OpenClaw block is:
+
+```json5
+{
+  channels: {
+    anytype: {
+      enabled: true,
+      listenHost: "127.0.0.1",
+      listenPort: 18791,
+      bridgeToken: "${AAG_OPENCLAW_BRIDGE_TOKEN}",
+      databasePath: "/home/agent/.openclaw/anytype/default.sqlite",
+      allowFrom: ["_participant_authorized_human_id"]
+    }
+  },
+  mcp: {
+    servers: {
+      aag_anytype: {
+        command: "aag",
+        args: ["mcp", "--config", "/home/agent/.config/aag/agent.yaml"]
+      }
+    }
+  }
+}
+```
+
+AAG pulls and acknowledges the plugin's durable loopback outbox; the plugin does not expose a push-delivery setting. OpenClaw's native scheduler remains the scheduler. Once a session has been bound, cron, heartbeat, subagent, and externally continued assistant output is returned to the same Anytype route. AAG mirrors agent output only, not the external user prompt.
+
+### Anytype object tools
+
+`aag mcp` exposes `aag_context`, search/get/create/update/list/upload tools, optional archive, and route-bound wake changes. Codex ACP receives it automatically. Add the same command to OpenClaw's native MCP configuration as shown above.
+
+The Anytype tool server defaults to off. Turn on `tools.anytype.enabled` only after registering `aag mcp` with the harness. Object writes remain separately off; enable `allowWrite` for an agent that should create or edit objects, and list `allowedSpaceIds`. File upload resolves symlinks before enforcing `allowedFileRoots`. Archive stays separately disabled unless explicitly enabled. The Anytype API key stays in the AAG configuration boundary and is never returned by a tool; because the harness runs under the same operating-system account, use its sandbox or a separate service account if the key file itself must be inaccessible to shell tools.
+
+Tools return native `anytype://` links. The harness is instructed to include those links when it creates or finds an object for the user.
 
 For Codex, the npm package includes `codex-acp`; the default `command: codex-acp` resolves that packaged executable automatically and falls back to `PATH` in source/operator-managed layouts. `runtime.defaultProject` becomes the ACP session working directory and `allowedProjects` become ACP additional directories. These are declarations to the ACP implementation, not a security sandbox. `runtime.permissions` is `deny` by default; `allow-once` selects an available one-run allow option for permission requests. For OpenClaw, project values are context declarations only; configure actual filesystem/tool permissions in OpenClaw.
 
@@ -219,6 +287,8 @@ Every configured chat must include its `wake` block; there is no implicit broad 
 - `agents` applies only to creators listed in `coordination.peers` or the legacy `coordination.agentParticipants` list. A peer entry supplies a stable participant ID plus the name/aliases used for outbound coordination.
 - `spaces[].chatDiscovery` is disabled by default. When enabled with its own required `wake` block, AAG subscribes to current and newly created chats in that space. Existing history is baselined; a bounded recent tail is checked when a chat appears after startup so its first mention is not lost.
 - `responses.streaming: true` edits the stable reply with text as the runtime produces it. Streaming is enabled by default and coalesced to avoid excessive API writes; set it to `false` to keep the placeholder unchanged until the final answer. `responses.mode: single` hides tool and status chatter, `milestones` exposes tool lifecycle milestones, and `verbose` also exposes runtime status output.
+- `responses.thinking: stream` displays only the safe progress/thinking text emitted by the harness. It does not expose hidden model chain-of-thought. The first following assistant text replaces thinking in the same message; later assistant parts get separate messages. `editIntervalMilliseconds` controls edit coalescing.
+- `runtime.inactivityTimeoutSeconds` and `runtime.maxRunSeconds` are independent and default to `0` (disabled). Set an inactivity watchdog only when the harness emits reliable liveness events; set a maximum only when the operator intentionally wants a hard cap.
 
 An authorized wake message containing `/new` increments the persistent session generation for that chat or comment thread. AAG starts a fresh OpenClaw/ACP session with only the current message and directly referenced object context. For example, `@Anya /new plan the release` starts cleanly with “plan the release”; if another run is active, AAG marks its reply as replaced and does not steer it.
 
@@ -254,6 +324,7 @@ Use `comments.mode: filtered` with `includeObjectTypes`/`excludeObjectTypes` for
 - Sender allowlists and wake policies control activation; they are not filesystem sandboxes.
 - Codex and OpenClaw project lists tell the runtime which directories to use. Enforce filesystem and tool access in the runtime settings, sandbox, service account, or container. AAG cannot contain a runtime that escapes those controls.
 - Prompts label channel/object content as untrusted, but content can still attempt prompt injection. Apply runtime tool and approval policies appropriate to the workspace.
+- Anytype MCP tools enforce the configured space/write/archive/file policy. They are a policy boundary, not an operating-system sandbox against a harness running as the same user.
 - SQLite contains message IDs, run metadata, and discovered object/discussion metadata. Protect the state directory as workspace metadata.
 
 ## Current limitations
@@ -264,6 +335,7 @@ Use `comments.mode: filtered` with `includeObjectTypes`/`excludeObjectTypes` for
 - Reconnect catch-up and orphan-reply reconciliation cover interrupted dispatch, while startup reconciliation clears a stale working reaction and marks an already-recorded interrupted run. SQLite is still not a durable distributed job queue.
 - Discussion discovery depends on the private Heart protocol pinned in this repository and may require an adapter update when Anytype changes.
 - The OpenClaw Gateway client module path is distribution-specific.
+- Codex ACP supports session continuity, streaming, and steering, but it does not expose the Codex desktop scheduled-task system. AAG does not emulate one. Native recurring delivery is currently an OpenClaw capability; a future Codex app-server adapter must provide equivalent session observation before Codex scheduling can be advertised.
 
 ## Development checks
 

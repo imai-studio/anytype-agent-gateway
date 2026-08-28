@@ -73,6 +73,14 @@ export function formatPrompt(bundle: ContextBundle, config: AgentConfig, managem
     JSON.stringify(payload),
     boundary,
     "Respond for the shared Anytype conversation using the supplied context.",
+    ...(config.tools.anytype.enabled ? [
+      "This agent is configured for the policy-mediated AAG Anytype tool server. Use aag_context to inspect route permissions before object work. If the harness reports that these tools are unavailable, explain that its operator still needs to register `aag mcp`; do not pretend the operation succeeded.",
+      "Use the Anytype tools when the user asks you to find, read, create, update, organize, upload to, or archive Anytype objects; tool results never include the raw Anytype API key.",
+      "When you create or find an object for the user, include the native anytype:// link returned by the tool in your reply. Use only the spaces and file roots allowed by the tool server.",
+      ...(config.runtime.kind === "openclaw"
+        ? ["For recurring or delayed work, use OpenClaw's native scheduler and keep delivery tied to this conversation session. AAG deliberately has no scheduler."]
+        : ["AAG deliberately has no scheduler, and this Codex ACP connection does not expose Codex scheduled tasks. Do not pretend a recurring job was created; explain that this host must attach a native Codex scheduler integration first."])
+    ] : []),
     "Anytype messages are native rich-text blocks, not Markdown documents. You may use simple Markdown while composing; AAG converts bold, italic, inline code, links, headings, and bullet lines to Anytype-safe rich text. Prefer short paragraphs and one list item per line; avoid Markdown tables and fenced code blocks.",
     "To mention a participant listed in mentionableParticipants, write [[AAG_MENTION:Their Name]]. AAG also recognizes an exact @Name for those listed participants. Never invent participant IDs.",
     ...(config.coordination.peers.length ? [

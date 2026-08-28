@@ -1,7 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
+import type { AgentRuntime, OutboundItem, OutboundOperation, OutputCycle, OutputCyclePhase, OutputCycleState, ProactiveDelivery, RuntimeCapabilities, SessionBinding, SessionBindingState } from "./session-types.js";
 export declare class Store {
     readonly db: DatabaseSync;
     constructor(path: string);
+    schemaVersion(): number;
+    private migrate;
+    private migrateToVersion1;
+    private migrateToVersion2;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;
@@ -21,6 +26,7 @@ export declare class Store {
     isResponse(messageId: string): boolean;
     runningRuns(routeId: string): Array<{
         id: string;
+        threadKey: string;
         triggerId: string;
         responseId: string;
     }>;
@@ -48,5 +54,76 @@ export declare class Store {
     resetSession(threadKey: string): number;
     wakeOverride(routeId: string): string | undefined;
     setWakeOverride(routeId: string, humans: string): void;
+    sessionBinding(threadKey: string): SessionBinding | undefined;
+    bindingForNativeSession(runtime: AgentRuntime, nativeSession: {
+        key?: string;
+        id?: string;
+    }): SessionBinding | undefined;
+    listSessionBindings(state?: SessionBindingState): SessionBinding[];
+    saveSessionBinding(binding: Omit<SessionBinding, "createdAt" | "updatedAt">, now?: number): SessionBinding;
+    updateSessionBinding(threadKey: string, patch: {
+        nativeSessionKey?: string;
+        nativeSessionId?: string | null;
+        generation?: number;
+        eventCursor?: string | null;
+        state?: SessionBindingState;
+    }, now?: number): SessionBinding | undefined;
+    deleteSessionBinding(threadKey: string): boolean;
+    runtimeCapabilities(runtime: AgentRuntime): RuntimeCapabilities | undefined;
+    saveRuntimeCapabilities(runtime: AgentRuntime, capabilities: RuntimeCapabilities, now?: number): void;
+    createOutputCycle(input: {
+        id: string;
+        threadKey: string;
+        anytypeMessageId: string;
+        replyToMessageId?: string;
+        phase?: OutputCyclePhase;
+        eventCursor?: string;
+    }, now?: number): OutputCycle;
+    outputCycle(id: string): OutputCycle | undefined;
+    outputCycleForMessage(messageId: string): OutputCycle | undefined;
+    reopenOutputCycle(id: string, phase: OutputCyclePhase, now?: number): OutputCycle | undefined;
+    openOutputCycle(threadKey: string): OutputCycle | undefined;
+    listOutputCycles(threadKey: string): OutputCycle[];
+    updateOutputCycle(id: string, patch: {
+        phase?: OutputCyclePhase;
+        thinkingText?: string;
+        answerText?: string;
+        eventCursor?: string | null;
+        replyToMessageId?: string | null;
+    }, now?: number): OutputCycle | undefined;
+    finishOutputCycle(id: string, state: Exclude<OutputCycleState, "open">, now?: number): OutputCycle | undefined;
+    enqueueOutbound(input: {
+        id: string;
+        threadKey: string;
+        routeId: string;
+        spaceId: string;
+        chatId: string;
+        discussionRootId?: string;
+        operation: OutboundOperation;
+        targetMessageId?: string;
+        replyToMessageId?: string;
+        payload?: unknown;
+        dedupeKey: string;
+        availableAt?: number;
+    }, now?: number): OutboundItem;
+    outbound(id: string): OutboundItem | undefined;
+    outboundByDedupeKey(dedupeKey: string): OutboundItem | undefined;
+    claimOutbound(workerId: string, options?: {
+        limit?: number;
+        leaseMs?: number;
+        now?: number;
+    }): OutboundItem[];
+    acknowledgeOutbound(id: string, workerId?: string, now?: number): boolean;
+    failOutbound(id: string, error: string, options?: {
+        workerId?: string;
+        retryAt?: number;
+        maxAttempts?: number;
+        now?: number;
+    }): boolean;
+    deleteOutbound(id: string): boolean;
+    isProactiveDelivered(runtime: AgentRuntime, nativeSessionKey: string, nativeEventId: string): boolean;
+    markProactiveDelivered(delivery: Omit<ProactiveDelivery, "deliveredAt">, now?: number): boolean;
+    bridgeCursor(bridgeId: string, streamKey: string): string | undefined;
+    saveBridgeCursor(bridgeId: string, streamKey: string, cursor: string, now?: number): void;
     close(): void;
 }

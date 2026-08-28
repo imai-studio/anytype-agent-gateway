@@ -25,6 +25,18 @@ runtime:
   defaultProject: /absolute/path/to/default-project
   allowedProjects:
     - /absolute/path/to/another-project
+  inactivityTimeoutSeconds: 0
+  maxRunSeconds: 0
+tools:
+  anytype:
+    enabled: true
+    allowWrite: true
+    allowArchive: false
+    allowedSpaceIds: [_space_replace_me]
+    allowedFileRoots:
+      - /absolute/path/to/default-project
 responses:
   mode: milestones
   streaming: true
+  thinking: stream
+  editIntervalMilliseconds: 900

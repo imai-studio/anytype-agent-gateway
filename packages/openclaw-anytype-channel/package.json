@@ -1,0 +1,65 @@
+{
+  "name": "@imai/openclaw-anytype-channel",
+  "version": "0.1.0",
+  "description": "Native Anytype channel and durable local bridge for OpenClaw.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge.d.ts",
+      "default": "./dist/bridge.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "openclaw.plugin.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.28"
+  },
+  "devDependencies": {
+    "@types/node": "24.5.2",
+    "openclaw": "2026.5.28",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.7",
+    "zod": "4.4.3"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "channel": {
+      "id": "anytype",
+      "label": "Anytype",
+      "selectionLabel": "Anytype (AAG bridge)",
+      "docsPath": "/channels/anytype",
+      "docsLabel": "anytype",
+      "blurb": "Anytype chats and object discussions through AAG."
+    },
+    "install": {
+      "npmSpec": "@imai/openclaw-anytype-channel",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.5.28"
+    },
+    "compat": {
+      "pluginApi": ">=2026.5.28"
+    }
+  }
+}

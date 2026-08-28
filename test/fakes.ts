@@ -28,6 +28,7 @@ function deferred(): Deferred { let resolve!: (value: RuntimeResult) => void; le
 export class FakeRuntime implements RuntimeDriver {
   readonly name = "fake";
   readonly projectEnforcement = "enforced" as const;
+  readonly capabilities = { steering: true, thinking: true, multipleOutputParts: true, sessionObservation: false, nativeScheduling: false } as const;
   starts: Array<{ sessionKey: string; prompt: string }> = [];
   steers: string[] = [];
   events?: (event: RuntimeEvent) => void;

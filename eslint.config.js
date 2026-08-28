@@ -2,7 +2,7 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "heart-adapter/vendor/**"] },
+  { ignores: ["**/dist/**", "**/node_modules/**", "heart-adapter/vendor/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

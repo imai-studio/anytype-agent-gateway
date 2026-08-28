@@ -9,6 +9,9 @@ import { parseSilence } from "./openclaw.js";
 
 type ClientCtx = Parameters<Parameters<ReturnType<typeof acp.client>["connectWith"]>[1]>[0];
 type CodexSessionStore = Pick<Store, "codexAcpSession" | "saveCodexAcpSession" | "deleteCodexAcpSession">;
+type McpServerCommand = { command: string; args: string[]; env?: Record<string, string> };
+type CodexRuntimeConfig = Extract<AgentConfig["runtime"], { kind: "codex" }>;
+type CodexDriverConfig = Omit<CodexRuntimeConfig, "maxRunSeconds" | "setupTimeoutSeconds" | "livenessProbeSeconds" | "terminationGraceSeconds"> & Partial<Pick<CodexRuntimeConfig, "maxRunSeconds" | "setupTimeoutSeconds" | "livenessProbeSeconds" | "terminationGraceSeconds">>;
 
 const SKILL_WARNING_PREFIX = "Warning: Skill descriptions were shortened";
 const LEADING_SKILL_WARNING = /^\s*Warning:\s*Skill descriptions were shortened to fit the (?:\d+%\s+)?skills context budget\. Codex can still see every skill, but some descriptions are shorter\. Disable unused skills or plugins to leave more room for the rest\./;
@@ -16,7 +19,8 @@ const LEADING_SKILL_WARNING = /^\s*Warning:\s*Skill descriptions were shortened 
 export class CodexAcpDriver implements RuntimeDriver {
   readonly name = "codex-acp";
   readonly projectEnforcement = "advisory" as const;
-  constructor(private readonly config: Extract<AgentConfig["runtime"], { kind: "codex" }>, private readonly store?: CodexSessionStore) {}
+  readonly capabilities = { steering: true, thinking: true, multipleOutputParts: true, sessionObservation: false, nativeScheduling: false } as const;
+  constructor(private readonly config: CodexDriverConfig, private readonly store?: CodexSessionStore, private readonly mcpServer?: McpServerCommand) {}
 
   async doctor(): Promise<string[]> {
     if (!await commandExists(this.config.command)) throw new Error(`Codex ACP command not found: ${this.config.command}`);
@@ -37,9 +41,9 @@ export class CodexAcpDriver implements RuntimeDriver {
     let finalMessageId: string | undefined;
     let acceptingSteers = true;
     let replayingHistory = false;
-    const filteredText = new LeadingSkillWarningFilter(text => {
+    const filteredText = new LeadingSkillWarningFilter((text, metadata) => {
       output += text;
-      onEvent({ type: "text-delta", text });
+      onEvent({ type: "text-delta", text, ...metadata });
     });
     let markReady!: () => void;
     let failReady!: (error: unknown) => void;
@@ -55,12 +59,19 @@ export class CodexAcpDriver implements RuntimeDriver {
         if (replayingHistory) return;
         const update = ctx.params.update as any;
         if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") {
+          const metadata = {
+            ...(typeof update.messageId === "string" ? { partId: update.messageId } : {}),
+            ...(typeof update._meta?.codex?.phase === "string" ? { phase: update._meta.codex.phase } : {}),
+            ...(update._meta?.codex?.replace === true ? { replace: true as const } : {})
+          };
           if (typeof update.messageId === "string") {
-            messageTexts.set(update.messageId, `${messageTexts.get(update.messageId) ?? ""}${update.content.text}`);
+            messageTexts.set(update.messageId, metadata.replace ? update.content.text : `${messageTexts.get(update.messageId) ?? ""}${update.content.text}`);
             latestMessageId = update.messageId;
             if (update._meta?.codex?.phase === "final_answer") finalMessageId = update.messageId;
           }
-          filteredText.push(update.content.text);
+          filteredText.push(update.content.text, metadata);
+        } else if (update.sessionUpdate === "agent_thought_chunk" && update.content?.type === "text") {
+          onEvent({ type: "thinking-delta", text: update.content.text, ...(typeof update.messageId === "string" ? { partId: update.messageId } : {}), ...(typeof update._meta?.codex?.phase === "string" ? { phase: update._meta.codex.phase } : {}), ...(update._meta?.codex?.replace === true ? { replace: true } : {}) });
         } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
           onEvent({ type: "tool", name: update.title ?? update.toolCallId ?? "tool", status: update.status ?? "running" });
         }
@@ -71,7 +82,12 @@ export class CodexAcpDriver implements RuntimeDriver {
         const initialized = await ctx.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
         const sessionSetup = {
           cwd: this.config.defaultProject ?? process.cwd(),
-          mcpServers: [],
+          mcpServers: this.mcpServer ? [{
+            name: "aag-anytype",
+            command: this.mcpServer.command,
+            args: this.mcpServer.args,
+            env: Object.entries({ ...this.mcpServer.env, AAG_ROUTE_ID: input.sessionKey }).map(([name, value]) => ({ name, value }))
+          }] : [],
           ...(this.config.allowedProjects.length ? { additionalDirectories: this.config.allowedProjects } : {})
         };
         const savedSessionId = this.store?.codexAcpSession(input.sessionKey);
@@ -111,8 +127,11 @@ export class CodexAcpDriver implements RuntimeDriver {
       }
     }).finally(() => child.kill("SIGTERM"));
     void result.catch(() => undefined);
-    await waitForSetup(ready, Math.min(this.config.timeoutSeconds * 1000, 30_000), () => child.kill("SIGTERM"));
+    const setupSeconds = this.config.setupTimeoutSeconds ?? (this.config.timeoutSeconds > 0 ? Math.min(this.config.timeoutSeconds, 30) : 30);
+    await waitForSetup(ready, setupSeconds * 1000, () => child.kill("SIGTERM"));
     return {
+      sessionKey: input.sessionKey,
+      ...(sessionId ? { sessionId } : {}),
       result,
       steer: async message => {
         if (!context || !sessionId) throw new Error("Codex ACP session is not ready");
@@ -169,11 +188,13 @@ function inheritedAgentEnvironment(configured: Record<string, string>): NodeJS.P
 class LeadingSkillWarningFilter {
   private pending = "";
   private decided = false;
+  private metadata: { partId?: string; phase?: string; replace?: boolean } = {};
 
-  constructor(private readonly emit: (text: string) => void) {}
+  constructor(private readonly emit: (text: string, metadata: { partId?: string; phase?: string; replace?: boolean }) => void) {}
 
-  push(text: string): void {
-    if (this.decided) { this.emit(text); return; }
+  push(text: string, metadata: { partId?: string; phase?: string; replace?: boolean }): void {
+    if (this.decided) { this.emit(text, metadata); return; }
+    this.metadata = metadata;
     this.pending += text;
     const warning = LEADING_SKILL_WARNING.exec(this.pending);
     if (warning) {
@@ -194,6 +215,6 @@ class LeadingSkillWarningFilter {
   private flush(text: string): void {
     this.decided = true;
     this.pending = "";
-    if (text) this.emit(text);
+    if (text) this.emit(text, this.metadata);
   }
 }

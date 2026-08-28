@@ -4,53 +4,84 @@ export class RunProjection {
     conversation;
     responseId;
     reactionTargetId;
-    text = "";
+    replyTargetId;
+    cycles = [];
+    activeCycle;
     timer;
     closed = false;
     writes = Promise.resolve();
+    onMessage;
+    onCycle;
+    createdMessageIds = new Set();
     mentionTargets = new Map();
-    constructor(anytype, config, conversation, responseId, reactionTargetId, mentionTargets = []) {
+    constructor(anytype, config, conversation, responseId, reactionTargetId, replyTargetId, mentionTargets = []) {
         this.anytype = anytype;
         this.config = config;
         this.conversation = conversation;
         this.responseId = responseId;
         this.reactionTargetId = reactionTargetId;
+        this.replyTargetId = replyTargetId;
+        this.activeCycle = { id: crypto.randomUUID(), state: "transient", sourceId: undefined, text: config.responses.workingText, replyToMessageId: replyTargetId, messageId: responseId, completed: false };
+        this.cycles.push(this.activeCycle);
+        this.createdMessageIds.add(responseId);
         this.addMentionTargets(mentionTargets);
     }
     static async create(anytype, config, conversation, triggerId, replyTargetId = triggerId, mentionTargets = []) {
         await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
         try {
             const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, { text: config.responses.workingText, replyTo: replyTargetId });
-            return new RunProjection(anytype, config, conversation, responseId, triggerId, mentionTargets);
+            return new RunProjection(anytype, config, conversation, responseId, triggerId, replyTargetId, mentionTargets);
         }
         catch (error) {
             await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, false).catch(() => undefined);
             throw error;
         }
     }
-    static async resume(anytype, config, conversation, responseId, triggerId, text = "", mentionTargets = []) {
-        const projection = new RunProjection(anytype, config, conversation, responseId, triggerId, mentionTargets);
-        projection.text = text === config.responses.workingText ? "" : text;
+    static async resume(anytype, config, conversation, responseId, triggerId, replyTargetId = triggerId, text = "", mentionTargets = []) {
+        const projection = new RunProjection(anytype, config, conversation, responseId, triggerId, replyTargetId, mentionTargets);
+        if (text && text !== config.responses.workingText) {
+            projection.activeCycle.state = "text";
+            projection.activeCycle.text = text;
+        }
         await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
         return projection;
     }
     get messageId() { return this.responseId; }
+    trackMessages(callback) {
+        this.onMessage = callback;
+        for (const messageId of this.createdMessageIds)
+            callback(messageId);
+    }
+    trackCycles(callback) {
+        this.onCycle = callback;
+        for (const cycle of this.cycles)
+            this.emitCycle(cycle);
+    }
     addMentionTargets(targets) {
         for (const target of targets)
             this.mentionTargets.set(target.participantId, target);
     }
     async move(triggerId, replyTargetId = triggerId) {
-        if (this.timer) {
-            clearTimeout(this.timer);
-            this.timer = undefined;
-        }
+        this.cancelScheduledEdit();
         return this.enqueue(async () => {
-            const previousId = this.responseId;
-            const current = this.currentDisplay();
-            await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, previousId, current.text, current.marks);
+            const previous = this.activeCycle;
+            if (previous.state === "text") {
+                previous.completed = true;
+                await this.editCycleNow(previous);
+                this.emitCycle(previous);
+            }
+            else if (previous.messageId && !previous.deleted) {
+                await this.anytype.deleteMessage(this.conversation.spaceId, this.conversation.chatId, previous.messageId);
+                previous.deleted = true;
+                this.emitCycle(previous);
+            }
             await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false);
-            this.responseId = await this.anytype.sendMessage(this.conversation.spaceId, this.conversation.chatId, { text: current.text, marks: current.marks, replyTo: replyTargetId });
+            this.replyTargetId = replyTargetId;
             this.reactionTargetId = triggerId;
+            const cycle = { id: crypto.randomUUID(), state: "transient", sourceId: undefined, text: this.config.responses.workingText, replyToMessageId: replyTargetId, completed: false };
+            this.cycles.push(cycle);
+            this.activeCycle = cycle;
+            await this.createCycleMessageNow(cycle);
             await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, true);
             return this.responseId;
         });
@@ -59,83 +90,252 @@ export class RunProjection {
         if (this.closed)
             return;
         if (event.type === "text-delta") {
-            this.text += event.text;
-            if (this.config.responses.streaming)
-                this.schedule();
+            this.updateText(event.text, event.partId ?? event.phase, event.replace === true);
+        }
+        else if (event.type === "thinking-delta" && this.config.responses.thinking === "stream") {
+            this.updateThinking(event.text, event.partId, event.replace === true);
         }
         else if (event.type === "tool" && this.config.responses.mode !== "single") {
-            this.text = `${this.text.trimEnd()}\n\n${event.status === "completed" ? "✓" : "↻"} ${event.name}`.trim();
-            this.schedule();
+            this.updateTransient(`${event.status === "completed" ? "✓" : "↻"} ${event.name}`);
         }
         else if (event.type === "status" && this.config.responses.mode === "verbose" && event.text) {
-            this.text = `${this.text.trimEnd()}\n\n${event.text}`.trim();
-            this.schedule();
+            this.updateTransient(event.text);
         }
     }
     async finish(result) {
         this.closed = true;
-        if (this.timer)
-            clearTimeout(this.timer);
+        this.cancelScheduledEdit();
         return this.enqueue(async () => {
             await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false);
             if (result.silent) {
                 if (this.config.responses.silentPlaceholder === "delete")
-                    await this.anytype.deleteMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId);
-                else if (this.config.responses.silentPlaceholder === "replace")
+                    for (const cycle of this.cycles) {
+                        if (!cycle.messageId || cycle.deleted)
+                            continue;
+                        await this.anytype.deleteMessage(this.conversation.spaceId, this.conversation.chatId, cycle.messageId);
+                        cycle.deleted = true;
+                        this.emitCycle(cycle);
+                    }
+                else if (this.config.responses.silentPlaceholder === "replace") {
                     await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, this.config.responses.silentText);
+                    for (const cycle of this.cycles) {
+                        if (!cycle.messageId || cycle.messageId === this.responseId || cycle.deleted)
+                            continue;
+                        await this.anytype.deleteMessage(this.conversation.spaceId, this.conversation.chatId, cycle.messageId);
+                        cycle.deleted = true;
+                        this.emitCycle(cycle);
+                    }
+                }
+                else if (this.activeCycle.state !== "text" && this.activeCycle.messageId) {
+                    this.activeCycle.state = "transient";
+                    this.activeCycle.text = this.config.responses.workingText;
+                    await this.editCycleNow(this.activeCycle);
+                }
+                for (const cycle of this.cycles) {
+                    if (cycle.deleted)
+                        continue;
+                    cycle.completed = true;
+                    this.emitCycle(cycle);
+                }
                 return "silent";
             }
-            const rendered = renderForAnytype(result.text || this.text || "Completed without a text response.", this.config, [...this.mentionTargets.values()]);
-            const finalText = truncateResponse(rendered.text, this.config.responses.maxCharacters);
-            const marks = rendered.marks.filter(mark => (mark.to ?? 0) <= finalText.length);
-            await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, finalText, marks);
+            const textCycles = this.cycles.filter(cycle => cycle.state === "text" && !cycle.deleted);
+            if (this.activeCycle.state !== "text") {
+                this.activeCycle.state = "text";
+                this.activeCycle.sourceId = "terminal-result";
+                this.activeCycle.text = result.text || "Completed without a text response.";
+            }
+            else if (result.text && textCycles.length === 1) {
+                this.activeCycle.text = result.text;
+            }
+            else if (result.text && textCycles.length > 1 && !textCycles.some(cycle => sameRenderedText(cycle.text, result.text))) {
+                const joined = textCycles.map(cycle => cycle.text.trim()).filter(Boolean).join("\n\n");
+                const last = textCycles.at(-1);
+                if (sameRenderedText(joined, result.text)) {
+                    // The runtime returned all streamed text parts flattened together.
+                }
+                else if (result.text.startsWith(last.text) || last.text.startsWith(result.text)) {
+                    last.text = result.text;
+                }
+            }
+            this.activeCycle.completed = true;
+            this.emitCycle(this.activeCycle);
+            for (const cycle of this.cycles) {
+                if (cycle.state === "text" && !cycle.deleted)
+                    await this.editCycleNow(cycle);
+            }
             return "done";
         });
     }
     async fail(error) {
         this.closed = true;
-        if (this.timer)
-            clearTimeout(this.timer);
+        this.cancelScheduledEdit();
         await this.enqueue(async () => {
             await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false).catch(() => undefined);
             const message = error instanceof Error ? error.message : String(error);
-            await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, `Agent run failed: ${message.slice(0, 1000)}`);
+            await this.writeTerminalNotice(`Agent run failed: ${message.slice(0, 1000)}`);
+            this.activeCycle.failed = true;
+            this.emitCycle(this.activeCycle);
         });
     }
     async interrupt(message = "Agent run interrupted before completion.") {
         this.closed = true;
-        if (this.timer)
-            clearTimeout(this.timer);
+        this.cancelScheduledEdit();
         await this.enqueue(async () => {
             await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false).catch(() => undefined);
-            await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, message);
+            await this.writeTerminalNotice(message);
+            this.activeCycle.failed = true;
+            this.emitCycle(this.activeCycle);
         });
     }
-    schedule() {
+    updateText(text, sourceId, replace) {
+        if (!text && !replace)
+            return;
+        const current = this.activeCycle;
+        if (current.state === "transient" || current.state === "thinking") {
+            current.state = "text";
+            current.sourceId = sourceId;
+            current.text = text;
+            this.emitCycle(current);
+            if (this.config.responses.streaming)
+                this.schedule(current);
+            return;
+        }
+        const continues = current.state === "text" && current.sourceId === sourceId;
+        if (continues) {
+            current.text = replace ? text : `${current.text}${text}`;
+            this.emitCycle(current);
+            if (this.config.responses.streaming)
+                this.schedule(current);
+            return;
+        }
+        this.startCycle({ id: crypto.randomUUID(), state: "text", sourceId, text, replyToMessageId: this.replyTargetId, completed: false });
+    }
+    updateThinking(text, sourceId, replace) {
+        if (!text && !replace)
+            return;
+        const current = this.activeCycle;
+        if (current.state === "text") {
+            this.startCycle({ id: crypto.randomUUID(), state: "thinking", sourceId, text, replyToMessageId: this.replyTargetId, completed: false });
+            return;
+        }
+        if (current.state === "transient") {
+            current.state = "thinking";
+            current.sourceId = sourceId;
+            current.text = text;
+        }
+        else if (replace) {
+            current.sourceId = sourceId ?? current.sourceId;
+            current.text = text;
+        }
+        else {
+            current.text = `${current.text}${text}`;
+        }
+        this.emitCycle(current);
+        if (this.config.responses.streaming)
+            this.schedule(current);
+    }
+    updateTransient(text) {
+        if (this.activeCycle.state !== "transient")
+            return;
+        this.activeCycle.text = text;
+        this.emitCycle(this.activeCycle);
+        if (this.config.responses.streaming)
+            this.schedule(this.activeCycle);
+    }
+    startCycle(cycle) {
+        this.cancelScheduledEdit();
+        this.activeCycle.completed = true;
+        this.emitCycle(this.activeCycle);
+        if (this.config.responses.streaming)
+            void this.flushCycle(this.activeCycle).catch(() => undefined);
+        this.cycles.push(cycle);
+        this.activeCycle = cycle;
+        if (this.config.responses.streaming)
+            void this.enqueue(() => this.createCycleMessageNow(cycle)).catch(() => undefined);
+    }
+    schedule(cycle) {
         if (this.timer)
             return;
         this.timer = setTimeout(() => {
             this.timer = undefined;
-            void this.flush().catch(() => undefined);
-        }, 900);
+            void this.flushCycle(cycle).catch(() => undefined);
+        }, this.config.responses.editIntervalMilliseconds);
     }
-    currentDisplay() {
-        const rendered = renderForAnytype(this.text || this.config.responses.workingText, this.config, [...this.mentionTargets.values()]);
+    cancelScheduledEdit() {
+        if (!this.timer)
+            return;
+        clearTimeout(this.timer);
+        this.timer = undefined;
+    }
+    currentDisplay(cycle = this.activeCycle) {
+        const raw = cycle.text || this.config.responses.workingText;
+        const labeled = cycle.state === "thinking" ? `Thinking…\n\n${raw}` : raw;
+        const rendered = renderForAnytype(labeled, this.config, [...this.mentionTargets.values()]);
         const text = truncateResponse(rendered.text, this.config.responses.maxCharacters);
         return { text, marks: rendered.marks.filter(mark => (mark.to ?? 0) <= text.length) };
     }
-    async flush() {
-        if (this.closed)
+    async flushCycle(cycle) {
+        await this.enqueue(() => this.editCycleNow(cycle));
+    }
+    async editCycleNow(cycle) {
+        if (cycle.deleted)
             return;
-        const responseId = this.responseId;
-        const current = this.currentDisplay();
-        await this.enqueue(() => this.closed ? Promise.resolve() : this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, responseId, current.text, current.marks));
+        if (!cycle.messageId) {
+            await this.createCycleMessageNow(cycle);
+            return;
+        }
+        const current = this.currentDisplay(cycle);
+        await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, cycle.messageId, current.text, current.marks);
+    }
+    async createCycleMessageNow(cycle) {
+        if (cycle.messageId || cycle.deleted)
+            return;
+        const current = this.currentDisplay(cycle);
+        cycle.messageId = await this.anytype.sendMessage(this.conversation.spaceId, this.conversation.chatId, { text: current.text, marks: current.marks, replyTo: cycle.replyToMessageId });
+        this.responseId = cycle.messageId;
+        this.createdMessageIds.add(cycle.messageId);
+        this.onMessage?.(cycle.messageId);
+        this.emitCycle(cycle);
+    }
+    async writeTerminalNotice(text) {
+        if (this.activeCycle.state !== "text" && !this.activeCycle.deleted) {
+            this.activeCycle.state = "transient";
+            this.activeCycle.text = text;
+            await this.editCycleNow(this.activeCycle);
+            return;
+        }
+        this.activeCycle.completed = true;
+        this.emitCycle(this.activeCycle);
+        const messageId = await this.anytype.sendMessage(this.conversation.spaceId, this.conversation.chatId, { text, replyTo: this.replyTargetId });
+        const cycle = { id: crypto.randomUUID(), state: "transient", sourceId: "terminal-notice", text, replyToMessageId: this.replyTargetId, messageId, completed: false, failed: true };
+        this.cycles.push(cycle);
+        this.activeCycle = cycle;
+        this.responseId = messageId;
+        this.createdMessageIds.add(messageId);
+        this.onMessage?.(messageId);
+        this.emitCycle(cycle);
     }
     enqueue(write) {
         const next = this.writes.then(write, write);
         this.writes = next.catch(() => undefined);
         return next;
     }
+    emitCycle(cycle) {
+        if (!this.onCycle || !cycle.messageId)
+            return;
+        this.onCycle({
+            id: cycle.id,
+            messageId: cycle.messageId,
+            replyToMessageId: cycle.replyToMessageId,
+            phase: cycle.failed ? "error" : cycle.state === "thinking" ? "thinking" : cycle.state === "text" ? "answer" : "working",
+            state: cycle.deleted ? "deleted" : cycle.failed ? "failed" : cycle.completed ? "complete" : "open",
+            text: cycle.text,
+        });
+    }
+}
+function sameRenderedText(left, right) {
+    return left.trim().replace(/\s+/g, " ") === right.trim().replace(/\s+/g, " ");
 }
 function truncateResponse(text, maxCharacters) {
     if (text.length <= maxCharacters)

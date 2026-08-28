@@ -163,10 +163,10 @@ describe("example workflows", () => {
     const moveGate = new Promise<void>(resolve => { releaseMove = resolve; });
     const started = new Promise<void>(resolve => { moveStarted = resolve; });
     class SlowMoveAnytype extends FakeAnytype {
-      private workingEdits = 0;
-      override async editMessage(spaceId: string, chatId: string, messageId: string, text: string): Promise<void> {
-        if (text === "Working…" && this.workingEdits++ === 0) { moveStarted(); await moveGate; }
-        await super.editMessage(spaceId, chatId, messageId, text);
+      private transientDeletes = 0;
+      override async deleteMessage(spaceId: string, chatId: string, messageId: string): Promise<void> {
+        if (this.transientDeletes++ === 0) { moveStarted(); await moveGate; }
+        await super.deleteMessage(spaceId, chatId, messageId);
       }
     }
     const anytype = new SlowMoveAnytype();

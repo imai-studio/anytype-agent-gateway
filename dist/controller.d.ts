@@ -1,4 +1,4 @@
-import type { AgentConfig, WakeConfig } from "./config.js";
+import { type AgentConfig, type WakeConfig } from "./config.js";
 import { Store } from "./store.js";
 import type { AnytypePort, ChatMessage, ConversationRef, RuntimeDriver } from "./types.js";
 export declare class AgentController {
@@ -11,6 +11,11 @@ export declare class AgentController {
     private readonly managementCommand?;
     private readonly active;
     private readonly processing;
+    private readonly observers;
+    private readonly observerStarts;
+    private readonly outboxWorkerId;
+    private readonly outboxTimer;
+    private readonly observerTimer;
     constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, log: (event: string, fields?: Record<string, unknown>) => void, discussionAnytype?: AnytypePort, managementCommand?: ((routeId: string) => string) | undefined);
     process(conversation: ConversationRef, wake: WakeConfig, message: ChatMessage): Promise<void>;
     private processClaimed;
@@ -21,5 +26,12 @@ export declare class AgentController {
     private thread;
     private agentHop;
     private port;
+    private runtimeName;
+    private ensureObserver;
+    private startObserver;
+    restoreObserversForRoute(conversation: ConversationRef): Promise<void>;
+    private receiveSessionOutput;
+    private drainOutbox;
+    private persistProjectionCycle;
 }
 export declare function messageFingerprint(message: ChatMessage): string;

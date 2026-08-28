@@ -71,7 +71,7 @@ Context is bounded by three configuration values:
 
 For an object discussion, the owning object is added to referenced-object context. History is filtered to the trigger's root comment thread, and each root thread gets a distinct session/active-run key; separate comment threads under one object can therefore run independently. The runtime prompt includes route/sender metadata, the current message, reply ancestry, recent thread context, object names/Markdown, and declared project roots. Untrusted data is serialized as JSON inside a randomized boundary and explicitly described as conversation data rather than instructions.
 
-A runtime is not given the Anytype API key or OpenClaw Gateway token in the prompt. If it needs broader Anytype access through another tool integration, that access belongs to the runtime's own configuration and security boundary.
+A runtime is not given the Anytype API key or OpenClaw Gateway token in the prompt. AAG supplies a policy-mediated MCP surface for allowed Anytype search/get/create/update/list/upload/archive operations. Codex ACP receives it during session creation; OpenClaw receives the same server through its native MCP configuration. Space, write, archive, and real-path upload policy are evaluated inside AAG. Strong protection from a harness shell still requires an OS/runtime sandbox because the processes normally share one service account.
 
 ## Run projection and steering
 
@@ -83,13 +83,13 @@ Runtime events are projected according to `responses.mode`:
 - `milestones`: stream answer text and include tool lifecycle/status milestones;
 - `verbose`: stream answer text and include tool and runtime status output.
 
-`responses.streaming` controls incremental answer edits independently of verbosity and defaults to `true`. A short timer combines nearby deltas. A per-reply promise chain writes them in order, so a progress flush cannot overwrite a move or final edit. AAG truncates final output to `responses.maxCharacters`, writes it to the same message, and removes the working reaction from the trigger.
+`responses.streaming` controls incremental edits independently of verbosity and defaults to `true`. Safe thinking/progress temporarily replaces the working text. The first following assistant text replaces that thinking in the same message. A new assistant part starts a new Anytype message, so harness message boundaries survive projection. A short configurable timer combines nearby deltas. Per-cycle promise chains keep edits ordered, so a progress flush cannot overwrite a move or final edit. AAG truncates each visible cycle to `responses.maxCharacters` and removes the working reaction from the trigger when the run ends.
 
 If a qualifying message arrives while the same chat or root discussion thread has an active run, AAG treats it as steering. AAG flushes the old response, removes the reaction from the previous trigger, reacts to the follow-up, and sends later progress and final output to a new reply beneath it. `run_messages` keeps every response ID, so a reply to an earlier frozen response still counts as a follow-up. AAG does not queue a second run for that thread.
 
 An authorized wake message containing the standalone command token `/new` is the exception to steering. AAG cancels and visibly replaces an active run, increments a SQLite-backed generation for that chat or root comment thread, and starts the runtime with a new session key. Generation zero retains the legacy key, so upgrades preserve existing continuity. A reset prompt excludes earlier channel history and reply ancestry while retaining the current message, route metadata, the owning discussion object, and objects referenced by the current message.
 
-The configured runtime timeout races the result and cancels an overlong run. Shutdown aborts route streams, cancels all active handles, clears their working reactions, marks the visible replies interrupted, waits for their completion paths to settle, and only then closes SQLite and releases the process lock. On startup, each route also reconciles any run still recorded as `running`, clears its reaction, marks the reply interrupted, and closes the run as failed.
+The inactivity watchdog and absolute maximum race the result independently; both are disabled by default. Runtime events reset only the inactivity watchdog. Shutdown aborts route streams, cancels all active handles, clears their working reactions, marks visible replies interrupted, waits for completion paths to settle, and only then closes SQLite and releases the process lock. Startup reconciliation preserves streamed text, appends an interruption notice, restores observers for persisted native-session bindings, and closes stale runs as failed.
 
 The exact runtime result `[[AAG_STAY_SILENT]]` (optionally with a reason after a colon) maps to a silent result. AAG deletes, retains, or replaces the current placeholder according to `responses.silentPlaceholder`.
 
@@ -108,6 +108,10 @@ start(session key, prompt, event callback)
 ### OpenClaw
 
 `OpenClawDriver` loads the configured Gateway client module and opens an authenticated WebSocket connection as an operator with read/write scopes. The token comes from the configured environment variable or OpenClaw JSON config. It sends `agent`, observes agent/tool events keyed by run ID, waits with `agent.wait`, and falls back to `chat.history` when a terminal reply is absent. Steering uses `sessions.steer`; cancellation uses `sessions.abort`.
+
+The bundled `@imai/openclaw-anytype-channel` plugin runs inside OpenClaw. Before the Gateway starts a run, AAG binds that exact session key to the exact Anytype chat or discussion-root route through an authenticated loopback endpoint. The plugin observes assistant/thinking/tool/lifecycle events for bound sessions only and writes them to its SQLite outbox. AAG pulls and acknowledges that outbox, suppresses events belonging to the direct run it already projected, and turns external/scheduled run output into durable Anytype replies. This hybrid keeps Gateway steering and native OpenClaw scheduling while avoiding a second session per route.
+
+One process-wide poller serves all persisted session bindings. It routes each record by exact native session or exact Anytype route, reconstructs chunks by OpenClaw sequence number, and acknowledges a run's event records atomically only after its terminal lifecycle event is durable in AAG. A durable owned-run marker prevents a direct Gateway run from being mirrored after either process restarts. Historical chats and discussion roots therefore do not each create their own HTTP polling loop; unmatched pending records expire after 30 days.
 
 The initial conversation session key is `aag:<route-or-thread-key>`. After `/new`, it becomes `aag:<route-or-thread-key>:g<generation>`. `runtime.sessionKey` adds a prefix instead of replacing the key. OpenClaw owns its agent lifecycle, memory, approvals, tools, and filesystem policy. AAG passes project fields to this adapter as context only.
 
@@ -131,6 +135,9 @@ The SQLite database uses WAL mode and contains:
 - `run_messages`: every response emitted by a run, including frozen responses before a steer;
 - `discussions`: object-to-discussion mappings discovered through Heart.
 - `codex_acp_sessions`: the durable ACP session ID for each AAG conversation key.
+- `session_bindings`: exact Anytype thread to native runtime session identity, generation, and observer cursor.
+- `outbound_outbox` and `proactive_deliveries`: retryable Anytype writes and native-output deduplication.
+- `runtime_capabilities` and `bridge_cursors`: adapter capability snapshots and durable stream progress.
 
 It is local coordination state, not a durable distributed work queue. The CLI also acquires `<state.path>.lock`, removes a stale lock only after verifying its PID is dead, and refuses to start when another local AAG process owns it. This is a host-local singleton, not cross-machine locking.
 

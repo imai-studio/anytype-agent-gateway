@@ -1,5 +1,6 @@
 import type { AgentConfig } from "./config.js";
 import type { AnytypeEvent, AnytypePort, ChatMessage, TextMark } from "./types.js";
+type JsonRecord = Record<string, any>;
 export declare class AnytypeClient implements AnytypePort {
     private readonly base;
     private readonly headers;
@@ -49,8 +50,33 @@ export declare class AnytypeClient implements AnytypePort {
         name?: string;
         type?: string;
     }>>;
+    searchSpace(spaceId: string, input: {
+        query?: string;
+        types?: string[];
+        offset?: number;
+        limit?: number;
+    }): Promise<JsonRecord[]>;
+    createObject(spaceId: string, input: {
+        type_key: string;
+        name?: string;
+        body?: string;
+        template_id?: string;
+        properties?: JsonRecord[];
+        icon?: JsonRecord;
+    }): Promise<JsonRecord>;
+    updateObject(spaceId: string, objectId: string, input: {
+        type_key?: string;
+        name?: string;
+        markdown?: string;
+        properties?: JsonRecord[];
+        icon?: JsonRecord;
+    }): Promise<JsonRecord>;
+    archiveObject(spaceId: string, objectId: string): Promise<JsonRecord>;
+    addObjectsToList(spaceId: string, listId: string, objectIds: string[]): Promise<void>;
+    uploadFile(spaceId: string, path: string): Promise<JsonRecord>;
     private messagesPath;
     private messagePath;
     private listPages;
 }
 export declare function parseSseBlock(block: string): AnytypeEvent | undefined;
+export {};

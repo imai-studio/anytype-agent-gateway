@@ -1,4 +1,6 @@
+import { openAsBlob } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import type { AgentConfig } from "./config.js";
 import type { AnytypeEvent, AnytypePort, ChatMessage, TextMark } from "./types.js";
 
@@ -33,7 +35,8 @@ export class AnytypeClient implements AnytypePort {
       try {
         const timeout = streaming ? undefined : AbortSignal.timeout(15_000);
         const signal = timeout && init.signal ? AbortSignal.any([timeout, init.signal]) : timeout ?? init.signal;
-        const response = await fetch(`${this.base}${path}`, { ...init, ...(signal ? { signal } : {}), headers: { ...this.headers, "Content-Type": "application/json", ...init.headers } });
+        const contentHeaders = init.body instanceof FormData ? {} : { "Content-Type": "application/json" };
+        const response = await fetch(`${this.base}${path}`, { ...init, ...(signal ? { signal } : {}), headers: { ...this.headers, ...contentHeaders, ...init.headers } });
         if (response.ok) return response;
         const retryable = response.status === 429 || (method === "GET" && response.status >= 500);
         const retryAfter = response.status === 429 ? retryAfterMs(response.headers.get("retry-after")) : undefined;
@@ -144,6 +147,37 @@ export class AnytypeClient implements AnytypePort {
   async searchObjects(spaceId: string, offset: number, limit: number): Promise<Array<{ id: string; name?: string; type?: string }>> {
     const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?offset=${offset}&limit=${limit}`, { method: "POST", body: JSON.stringify({ query: "" }) })).json() as JsonRecord;
     return (json.data ?? []).map((item: JsonRecord) => ({ id: item.id, ...(item.name ? { name: item.name } : {}), ...(item.type?.key ? { type: item.type.key } : item.type ? { type: String(item.type) } : {}) }));
+  }
+
+  async searchSpace(spaceId: string, input: { query?: string; types?: string[]; offset?: number; limit?: number }): Promise<JsonRecord[]> {
+    const query = new URLSearchParams({ offset: String(input.offset ?? 0), limit: String(input.limit ?? 100) });
+    const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?${query}`, { method: "POST", body: JSON.stringify({ query: input.query ?? "", ...(input.types?.length ? { types: input.types } : {}) }) })).json() as JsonRecord;
+    return Array.isArray(json.data) ? json.data : [];
+  }
+
+  async createObject(spaceId: string, input: { type_key: string; name?: string; body?: string; template_id?: string; properties?: JsonRecord[]; icon?: JsonRecord }): Promise<JsonRecord> {
+    const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects`, { method: "POST", body: JSON.stringify(input) })).json() as JsonRecord;
+    return json.object ?? json;
+  }
+
+  async updateObject(spaceId: string, objectId: string, input: { type_key?: string; name?: string; markdown?: string; properties?: JsonRecord[]; icon?: JsonRecord }): Promise<JsonRecord> {
+    const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "PATCH", body: JSON.stringify(input) })).json() as JsonRecord;
+    return json.object ?? json;
+  }
+
+  async archiveObject(spaceId: string, objectId: string): Promise<JsonRecord> {
+    const json = await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "DELETE" })).json() as JsonRecord;
+    return json.object ?? json;
+  }
+
+  async addObjectsToList(spaceId: string, listId: string, objectIds: string[]): Promise<void> {
+    await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/objects`, { method: "POST", body: JSON.stringify({ objects: objectIds }) });
+  }
+
+  async uploadFile(spaceId: string, path: string): Promise<JsonRecord> {
+    const form = new FormData();
+    form.append("file", await openAsBlob(path), basename(path));
+    return await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/files`, { method: "POST", body: form })).json() as JsonRecord;
   }
 
   private messagesPath(spaceId: string, chatId: string): string { return `/v1/spaces/${encodeURIComponent(spaceId)}/chats/${encodeURIComponent(chatId)}/messages`; }

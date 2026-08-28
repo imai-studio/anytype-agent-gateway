@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { access, constants, mkdir, open, readFile, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 import YAML from "yaml";
@@ -9,12 +10,13 @@ import { configSchema, loadConfig } from "./config.js";
 import { HeartDiscussionAdapter } from "./discussions.js";
 import { Gateway } from "./gateway.js";
 import { createIdentity, joinSpaces } from "./identity.js";
-import { commandExists } from "./process.js";
+import { commandExists, runProcess } from "./process.js";
 import { CodexAcpDriver } from "./runtime/codex-acp.js";
 import { OpenClawDriver } from "./runtime/openclaw.js";
 import { installService, serviceCommand } from "./service.js";
 import { Store } from "./store.js";
 import { setRouteWake } from "./management.js";
+import { runMcpServer } from "./mcp.js";
 import type { RuntimeDriver } from "./types.js";
 import { VERSION } from "./version.js";
 
@@ -33,12 +35,13 @@ program.command("init").description("Interactively create a one-agent configurat
     const runtimeKind = (await prompt.question("Runtime (openclaw/codex) [openclaw]: ")).trim().toLowerCase() || "openclaw";
     if (runtimeKind !== "openclaw" && runtimeKind !== "codex") throw new Error("Runtime must be openclaw or codex");
     const defaultProject = (await prompt.question("Default project directory (optional): ")).trim();
+    const allowAnytypeWrites = /^y(?:es)?$/i.test((await prompt.question("Allow this agent to create and update Anytype objects [y/N]: ")).trim());
     const runtime = runtimeKind === "openclaw"
       ? { kind: "openclaw", agentId: (await prompt.question("OpenClaw agent ID [main]: ")).trim() || "main", ...(defaultProject ? { defaultProject } : {}) }
       : { kind: "codex", permissions: "deny", ...(defaultProject ? { defaultProject } : {}) };
     if (!chatId && !discoverChats) throw new Error("Provide an initial chat ID or enable chat discovery");
     const wake = { humans: "mention-or-reply", agents: "never", allowedUsers } as const;
-    const value = { version: 1, agent: { name, participantId }, anytype: { apiKeyFile }, spaces: [{ id: spaceId, chats: chatId ? [{ id: chatId, wake }] : [], ...(discoverChats ? { chatDiscovery: { enabled: true, discoveryIntervalSeconds: 30, wake } } : {}), comments: { mode: "disabled" } }], runtime, responses: { mode: "single", streaming: true } };
+    const value = { version: 1, agent: { name, participantId }, anytype: { apiKeyFile }, spaces: [{ id: spaceId, chats: chatId ? [{ id: chatId, wake }] : [], ...(discoverChats ? { chatDiscovery: { enabled: true, discoveryIntervalSeconds: 30, wake } } : {}), comments: { mode: "disabled" } }], runtime, tools: { anytype: { allowWrite: allowAnytypeWrites, allowedSpaceIds: [spaceId] } }, responses: { mode: "single", streaming: true } };
     configSchema.parse(value);
     const output = resolve(options.output);
     await mkdir(dirname(output), { recursive: true });
@@ -72,7 +75,7 @@ program.command("doctor").description("Check Anytype, configured routes, adapter
     if (!await commandExists(config.anytype.heartAdapter.command)) throw new Error(`Heart adapter not found: ${config.anytype.heartAdapter.command}`);
     console.log(`ok: Heart discussion adapter ${config.anytype.heartAdapter.command}`);
   }
-  const runtime = makeRuntime(config);
+  const runtime = makeRuntime(config, undefined, resolve(options.config));
   for (const line of await runtime.doctor()) console.log(`ok: ${line}`);
   for (const project of [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter(Boolean) as string[]) { await access(project, constants.R_OK); console.log(`ok: project ${project}`); }
 });
@@ -85,7 +88,7 @@ program.command("run").description("Run one configured Anytype agent in the fore
   try {
     store = new Store(config.state.path);
     const configPath = resolve(options.config);
-    const gateway = new Gateway(anytype, makeRuntime(config, store), config, store, new HeartDiscussionAdapter(config), log, routeId => managementCommand(configPath, routeId));
+    const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, routeId => managementCommand(configPath, routeId));
     const stop = () => gateway.stop();
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
@@ -104,6 +107,12 @@ config.command("wake").description("Set the human wake mode for one AAG route")
     console.log(`Updated ${options.routeId} to humans=${options.humans}. The running gateway will apply it to the next message.`);
   });
 
+program.command("mcp").description("Run the policy-mediated Anytype tool server over stdio")
+  .requiredOption("-c, --config <path>")
+  .option("--route-id <id>")
+  .option("--space-id <id>")
+  .action(async options => runMcpServer(resolve(options.config), { ...(options.routeId ? { routeId: options.routeId } : {}), ...(options.spaceId ? { spaceId: options.spaceId } : {}) }));
+
 const identity = program.command("identity").description("Manage the one Anytype bot identity on this machine");
 identity.command("create").argument("<name>").option("--anytype <command>", "Anytype CLI command", "anytype").option("--invite <url...>", "space invite link(s)", []).option("--api-key-file <path>", "where to save the API key", "./aag-anytype-api-key").option("--data-path <path>").action(async (name, options) => {
   const keyFile = resolve(options.apiKeyFile);
@@ -115,14 +124,28 @@ program.command("join").description("Join this machine's bot identity to one or 
   await joinSpaces(options.anytype, invites, options.dataPath);
 });
 
+const openclaw = program.command("openclaw").description("Manage the bundled native OpenClaw Anytype channel");
+const openclawPlugin = openclaw.command("plugin").description("Locate or install the OpenClaw channel plugin");
+openclawPlugin.command("path").action(() => console.log(bundledOpenClawPluginPath()));
+openclawPlugin.command("install").option("--openclaw <command>", "OpenClaw CLI command", "openclaw").action(async options => {
+  const path = bundledOpenClawPluginPath();
+  await access(path, constants.R_OK);
+  const result = await runProcess(options.openclaw, ["plugins", "install", path], { timeoutMs: 120_000 });
+  if (result.stdout.trim()) console.log(result.stdout.trim());
+  if (result.stderr.trim()) console.error(result.stderr.trim());
+});
+
 const service = program.command("service").description("Manage the Linux systemd user service or macOS launch agent");
 service.command("install").requiredOption("-c, --config <path>").action(async options => installService(options.config));
 for (const command of ["status", "restart", "stop", "logs"] as const) service.command(command).action(async () => serviceCommand(command));
 
 program.parseAsync().catch(error => { console.error(`error: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; });
 
-function makeRuntime(config: Awaited<ReturnType<typeof loadConfig>>, store?: Store): RuntimeDriver {
-  return config.runtime.kind === "openclaw" ? new OpenClawDriver(config.runtime) : new CodexAcpDriver(config.runtime, store);
+function makeRuntime(config: Awaited<ReturnType<typeof loadConfig>>, store?: Store, configPath?: string): RuntimeDriver {
+  if (config.runtime.kind === "openclaw") return new OpenClawDriver(config.runtime);
+  const executable = resolve(process.argv[1]!);
+  const mcpServer = config.tools.anytype.enabled && configPath ? { command: resolve(process.execPath), args: [executable, "mcp", "--config", configPath] } : undefined;
+  return new CodexAcpDriver(config.runtime, store, mcpServer);
 }
 
 function log(event: string, fields: Record<string, unknown> = {}): void { console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields })); }
@@ -133,6 +156,10 @@ function managementCommand(configPath: string, routeId: string): string {
 }
 
 function shellQuote(value: string): string { return `'${value.replaceAll("'", `'\\''`)}'`; }
+
+function bundledOpenClawPluginPath(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "packages", "openclaw-anytype-channel");
+}
 
 async function acquireProcessLock(path: string): Promise<() => Promise<void>> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });

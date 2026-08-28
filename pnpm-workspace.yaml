@@ -1,5 +1,13 @@
+packages:
+  - packages/*
+
 allowBuilds:
   esbuild: true
+ignoredBuiltDependencies:
+  - '@google/genai'
+  - openclaw
+  - protobufjs
+  - tree-sitter-bash
 minimumReleaseAgeExclude:
   - '@agentclientprotocol/codex-acp@1.7.0'
 onlyBuiltDependencies:
