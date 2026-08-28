@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { access, constants, mkdir, open, readFile, unlink } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { access, constants, cp, mkdir, mkdtemp, open, readFile, rm, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
@@ -41,7 +42,7 @@ program.command("init").description("Interactively create a one-agent configurat
       : { kind: "codex", permissions: "deny", ...(defaultProject ? { defaultProject } : {}) };
     if (!chatId && !discoverChats) throw new Error("Provide an initial chat ID or enable chat discovery");
     const wake = { humans: "mention-or-reply", agents: "never", allowedUsers } as const;
-    const value = { version: 1, agent: { name, participantId }, anytype: { apiKeyFile }, spaces: [{ id: spaceId, chats: chatId ? [{ id: chatId, wake }] : [], ...(discoverChats ? { chatDiscovery: { enabled: true, discoveryIntervalSeconds: 30, wake } } : {}), comments: { mode: "disabled" } }], runtime, tools: { anytype: { allowWrite: allowAnytypeWrites, allowedSpaceIds: [spaceId] } }, responses: { mode: "single", streaming: true } };
+    const value = { version: 1, agent: { name, participantId }, anytype: { apiKeyFile }, spaces: [{ id: spaceId, chats: chatId ? [{ id: chatId, wake }] : [], ...(discoverChats ? { chatDiscovery: { enabled: true, discoveryIntervalSeconds: 30, wake } } : {}), comments: { mode: "disabled" } }], runtime, tools: { anytype: { enabled: allowAnytypeWrites, allowWrite: allowAnytypeWrites, allowedSpaceIds: [spaceId] } }, responses: { mode: "single", streaming: true } };
     configSchema.parse(value);
     const output = resolve(options.output);
     await mkdir(dirname(output), { recursive: true });
@@ -130,9 +131,13 @@ openclawPlugin.command("path").action(() => console.log(bundledOpenClawPluginPat
 openclawPlugin.command("install").option("--openclaw <command>", "OpenClaw CLI command", "openclaw").action(async options => {
   const path = bundledOpenClawPluginPath();
   await access(path, constants.R_OK);
-  const result = await runProcess(options.openclaw, ["plugins", "install", path], { timeoutMs: 120_000 });
-  if (result.stdout.trim()) console.log(result.stdout.trim());
-  if (result.stderr.trim()) console.error(result.stderr.trim());
+  const staging = await mkdtemp(join(tmpdir(), "aag-openclaw-plugin-"));
+  try {
+    await cp(path, staging, { recursive: true, dereference: true, force: true });
+    const result = await runProcess(options.openclaw, ["plugins", "install", "--force", staging], { timeoutMs: 120_000 });
+    if (result.stdout.trim()) console.log(result.stdout.trim());
+    if (result.stderr.trim()) console.error(result.stderr.trim());
+  } finally { await rm(staging, { recursive: true, force: true }); }
 });
 
 const service = program.command("service").description("Manage the Linux systemd user service or macOS launch agent");

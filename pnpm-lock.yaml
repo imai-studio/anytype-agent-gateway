@@ -58,6 +58,9 @@ importers:
       '@types/node':
         specifier: 24.5.2
         version: 24.5.2
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       openclaw:
         specifier: 2026.5.28
         version: 2026.5.28(supports-color@7.2.0)

@@ -20,7 +20,7 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && esbuild src/index.ts --bundle --minify --platform=node --format=esm --target=node24 --sourcemap --outfile=dist/index.js --external:openclaw/* && node -e \"const f=require('node:fs'),p='dist/index.js',s=f.readFileSync(p,'utf8');f.writeFileSync(p,s.replace(/[ \\\\t]+$/gm,''))\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build"
@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@types/node": "24.5.2",
+    "esbuild": "0.28.2",
     "openclaw": "2026.5.28",
     "typescript": "5.9.2",
     "vitest": "^3.2.7",
