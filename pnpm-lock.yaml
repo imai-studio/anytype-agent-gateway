@@ -50,10 +50,6 @@ importers:
         version: 3.2.7(@types/node@24.5.2)(jiti@2.7.0)(supports-color@7.2.0)(tsx@4.20.5)(yaml@2.9.0)
 
   packages/openclaw-anytype-channel:
-    dependencies:
-      zod:
-        specifier: 4.4.3
-        version: 4.4.3
     devDependencies:
       '@types/node':
         specifier: 24.5.2
@@ -70,6 +66,9 @@ importers:
       vitest:
         specifier: ^3.2.7
         version: 3.2.7(@types/node@24.5.2)(jiti@2.7.0)(supports-color@7.2.0)(tsx@4.20.5)(yaml@2.9.0)
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
 packages:
 

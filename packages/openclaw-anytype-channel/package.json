@@ -39,9 +39,6 @@
     "vitest": "^3.2.7",
     "zod": "4.4.3"
   },
-  "dependencies": {
-    "zod": "4.4.3"
-  },
   "openclaw": {
     "extensions": [
       "./dist/index.js"
