@@ -197,10 +197,25 @@ function sanitizeAgentEventData(
   return sanitized;
 }
 
-let activeRuntime: AnytypeChannelRuntime | undefined;
+const activeRuntimeKey = Symbol.for("@imai/openclaw-anytype-channel/active-runtime");
+type RuntimeGlobal = typeof globalThis & {
+  [activeRuntimeKey]?: AnytypeChannelRuntime;
+};
+
+function activeRuntime(): AnytypeChannelRuntime | undefined {
+  return (globalThis as RuntimeGlobal)[activeRuntimeKey];
+}
+
+function setActiveRuntime(runtime: AnytypeChannelRuntime | undefined): void {
+  const shared = globalThis as RuntimeGlobal;
+  if (runtime) shared[activeRuntimeKey] = runtime;
+  else delete shared[activeRuntimeKey];
+}
+
 const requireRuntime = (): AnytypeChannelRuntime => {
-  if (!activeRuntime) throw new Error("Anytype channel runtime is not active");
-  return activeRuntime;
+  const runtime = activeRuntime();
+  if (!runtime) throw new Error("Anytype channel runtime is not active");
+  return runtime;
 };
 
 const channel = createAnytypeChannel({
@@ -239,7 +254,10 @@ export default defineChannelPluginEntry({
   configSchema: anytypePluginConfigSchema,
   registerFull(api) {
     const runtime = new AnytypeChannelRuntime(api);
-    activeRuntime = runtime;
+    // OpenClaw may evaluate the channel contribution and the full plugin entry
+    // through separate module instances. A global symbol keeps both copies on
+    // the same runtime without exposing it outside this process.
+    setActiveRuntime(runtime);
     api.agent.events.registerAgentEventSubscription({
       id: "anytype-session-output",
       description: "Streams bound Anytype session output to AAG, including scheduled runs.",
@@ -252,7 +270,7 @@ export default defineChannelPluginEntry({
       id: "anytype-bridge-cleanup",
       cleanup: async () => {
         await runtime.stopAll();
-        if (activeRuntime === runtime) activeRuntime = undefined;
+        if (activeRuntime() === runtime) setActiveRuntime(undefined);
       },
     });
   },
