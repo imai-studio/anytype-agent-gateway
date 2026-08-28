@@ -20,7 +20,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
       - run: test "$(node dist/cli.js --version)" = "$(node -p "require('./package.json').version")"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: 1.25.7
           cache-dependency-path: heart-adapter/go.sum
