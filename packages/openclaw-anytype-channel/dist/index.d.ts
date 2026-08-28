@@ -39,7 +39,7 @@ declare const _default: {
     name: string;
     description: string;
     configSchema: import("openclaw/plugin-sdk").ChannelConfigSchema;
-    register: (api: OpenClawPluginApi) => void;
+    register: (api: import("openclaw/plugin-sdk").OpenClawPluginApi) => void;
     channelPlugin: import("openclaw/plugin-sdk/core").ChannelPlugin<ResolvedAnytypeAccount>;
     setChannelRuntime?: (runtime: import("openclaw/plugin-sdk/core").PluginRuntime) => void;
 };

@@ -22,7 +22,11 @@ const ConfigSchema = AccountSchema.partial()
     defaultAccount: z.string().optional(),
 })
     .strict();
-export const anytypePluginConfigSchema = buildChannelConfigSchema(ConfigSchema);
+export const anytypePluginConfigSchema = 
+// OpenClaw publishes its SDK schema type through a bundled Zod instance.
+// Runtime parsing still uses this concrete schema; erase only the duplicate
+// package identity at the SDK boundary.
+buildChannelConfigSchema(ConfigSchema);
 const helpers = createAccountListHelpers("anytype", {
     normalizeAccountId,
     implicitDefaultAccount: { channelKeys: ["bridgeToken"] },

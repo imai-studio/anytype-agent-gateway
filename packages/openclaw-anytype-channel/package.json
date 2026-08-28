@@ -30,7 +30,7 @@
   "devDependencies": {
     "@types/node": "24.5.2",
     "esbuild": "0.28.2",
-    "openclaw": "2026.5.28",
+    "openclaw": "2026.7.1-2",
     "typescript": "5.9.2",
     "vitest": "^3.2.7",
     "zod": "4.4.3"

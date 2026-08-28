@@ -27,7 +27,10 @@ const ConfigSchema = AccountSchema.partial()
   .strict();
 
 export const anytypePluginConfigSchema: ChannelConfigSchema =
-  buildChannelConfigSchema(ConfigSchema);
+  // OpenClaw publishes its SDK schema type through a bundled Zod instance.
+  // Runtime parsing still uses this concrete schema; erase only the duplicate
+  // package identity at the SDK boundary.
+  buildChannelConfigSchema(ConfigSchema as never);
 export type AnytypeAccountConfig = z.infer<typeof AccountSchema>;
 
 export type CoreConfig = {
