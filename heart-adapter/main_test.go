@@ -77,3 +77,21 @@ func TestOutboundMessageUsesBlockContent(t *testing.T) {
 		t.Fatalf("unexpected block content %#v", text)
 	}
 }
+
+func TestOutboundMessageCreatesParagraphBlocksAndRebasesMarks(t *testing.T) {
+	message := outboundMessage(mutationRequest{
+		Text:  "First line\n• Bold item",
+		Marks: []textMark{{Type: "bold", From: 13, To: 22}},
+	})
+	if len(message.GetBlocks()) != 2 {
+		t.Fatalf("expected two blocks, got %d", len(message.GetBlocks()))
+	}
+	second := message.GetBlocks()[1].GetText()
+	if second.GetText() != "• Bold item" || len(second.GetMarks()) != 1 {
+		t.Fatalf("unexpected second block %#v", second)
+	}
+	mark := second.GetMarks()[0]
+	if mark.GetType() != model.BlockContentTextMark_Bold || mark.GetRange().GetFrom() != 2 || mark.GetRange().GetTo() != 11 {
+		t.Fatalf("unexpected rebased mark %#v", mark)
+	}
+}

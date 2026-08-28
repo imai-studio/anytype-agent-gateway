@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/anyproto/anytype-heart/pb"
 	"github.com/anyproto/anytype-heart/pb/service"
@@ -163,11 +164,33 @@ func outboundMessage(input mutationRequest) *model.ChatMessage {
 		// Populate both representations to avoid a nil-message panic while still
 		// giving object discussions their block-based content.
 		Message: &model.ChatMessageMessageContent{Text: input.Text, Style: model.BlockContentText_Paragraph, Marks: marks},
-		Blocks: []*model.ChatMessageMessageBlock{{
-			Content: &model.ChatMessageMessageBlockContentOfText{Text: &model.ChatMessageMessageBlockText{Text: input.Text, Style: model.BlockContentText_Paragraph, Marks: marks}},
-		}},
+		Blocks:  outboundBlocks(input.Text, marks),
 	}
 }
+
+func outboundBlocks(text string, marks []*model.BlockContentTextMark) []*model.ChatMessageMessageBlock {
+	lines := strings.Split(text, "\n")
+	blocks := make([]*model.ChatMessageMessageBlock, 0, len(lines))
+	start := int32(0)
+	for _, line := range lines {
+		length := utf16Length(line)
+		localMarks := make([]*model.BlockContentTextMark, 0)
+		for _, mark := range marks {
+			rangeValue := mark.GetRange()
+			if rangeValue == nil || rangeValue.GetTo() <= start || rangeValue.GetFrom() >= start+length {
+				continue
+			}
+			from := max(rangeValue.GetFrom(), start) - start
+			to := min(rangeValue.GetTo(), start+length) - start
+			localMarks = append(localMarks, &model.BlockContentTextMark{Type: mark.GetType(), Param: mark.GetParam(), Range: &model.Range{From: from, To: to}})
+		}
+		blocks = append(blocks, &model.ChatMessageMessageBlock{Content: &model.ChatMessageMessageBlockContentOfText{Text: &model.ChatMessageMessageBlockText{Text: line, Style: model.BlockContentText_Paragraph, Marks: localMarks}}})
+		start += length + 1
+	}
+	return blocks
+}
+
+func utf16Length(value string) int32 { return int32(len(utf16.Encode([]rune(value)))) }
 
 func markType(value string) (model.BlockContentTextMarkType, bool) {
 	switch strings.ToLower(value) {
@@ -181,6 +204,8 @@ func markType(value string) (model.BlockContentTextMarkType, bool) {
 		return model.BlockContentTextMark_Bold, true
 	case "italic":
 		return model.BlockContentTextMark_Italic, true
+	case "keyboard", "code":
+		return model.BlockContentTextMark_Keyboard, true
 	case "strikethrough":
 		return model.BlockContentTextMark_Strikethrough, true
 	default:

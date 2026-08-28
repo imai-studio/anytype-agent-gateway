@@ -18,7 +18,7 @@ export declare class AgentController {
     private start;
     private replaceActiveSession;
     private steerPrompt;
-    private threadKey;
+    private thread;
     private agentHop;
     private port;
 }

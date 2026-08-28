@@ -8,25 +8,27 @@ export class RunProjection {
   private timer: NodeJS.Timeout | undefined;
   private closed = false;
   private writes: Promise<unknown> = Promise.resolve();
+  private readonly mentionTargets = new Map<string, { name: string; participantId: string }>();
 
-  private constructor(private readonly anytype: AnytypePort, private readonly config: AgentConfig, private readonly conversation: ConversationRef, responseId: string, reactionTargetId: string) {
+  private constructor(private readonly anytype: AnytypePort, private readonly config: AgentConfig, private readonly conversation: ConversationRef, responseId: string, reactionTargetId: string, mentionTargets: Array<{ name: string; participantId: string }> = []) {
     this.responseId = responseId;
     this.reactionTargetId = reactionTargetId;
+    this.addMentionTargets(mentionTargets);
   }
 
-  static async create(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, triggerId: string): Promise<RunProjection> {
+  static async create(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, triggerId: string, replyTargetId = triggerId, mentionTargets: Array<{ name: string; participantId: string }> = []): Promise<RunProjection> {
     await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
     try {
-      const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, { text: config.responses.workingText, replyTo: triggerId });
-      return new RunProjection(anytype, config, conversation, responseId, triggerId);
+      const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, { text: config.responses.workingText, replyTo: replyTargetId });
+      return new RunProjection(anytype, config, conversation, responseId, triggerId, mentionTargets);
     } catch (error) {
       await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, false).catch(() => undefined);
       throw error;
     }
   }
 
-  static async resume(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, responseId: string, triggerId: string, text = ""): Promise<RunProjection> {
-    const projection = new RunProjection(anytype, config, conversation, responseId, triggerId);
+  static async resume(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, responseId: string, triggerId: string, text = "", mentionTargets: Array<{ name: string; participantId: string }> = []): Promise<RunProjection> {
+    const projection = new RunProjection(anytype, config, conversation, responseId, triggerId, mentionTargets);
     projection.text = text === config.responses.workingText ? "" : text;
     await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
     return projection;
@@ -34,13 +36,18 @@ export class RunProjection {
 
   get messageId(): string { return this.responseId; }
 
-  async move(triggerId: string): Promise<string> {
+  addMentionTargets(targets: Array<{ name: string; participantId: string }>): void {
+    for (const target of targets) this.mentionTargets.set(target.participantId, target);
+  }
+
+  async move(triggerId: string, replyTargetId = triggerId): Promise<string> {
     if (this.timer) { clearTimeout(this.timer); this.timer = undefined; }
     return this.enqueue(async () => {
       const previousId = this.responseId;
-      await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, previousId, this.currentDisplay());
+      const current = this.currentDisplay();
+      await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, previousId, current.text, current.marks);
       await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false);
-      this.responseId = await this.anytype.sendMessage(this.conversation.spaceId, this.conversation.chatId, { text: this.currentDisplay(), replyTo: triggerId });
+      this.responseId = await this.anytype.sendMessage(this.conversation.spaceId, this.conversation.chatId, { text: current.text, marks: current.marks, replyTo: replyTargetId });
       this.reactionTargetId = triggerId;
       await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, true);
       return this.responseId;
@@ -71,7 +78,7 @@ export class RunProjection {
         else if (this.config.responses.silentPlaceholder === "replace") await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, this.config.responses.silentText);
         return "silent" as const;
       }
-      const rendered = renderCoordination(result.text || this.text || "Completed without a text response.", this.config);
+      const rendered = renderForAnytype(result.text || this.text || "Completed without a text response.", this.config, [...this.mentionTargets.values()]);
       const finalText = truncateResponse(rendered.text, this.config.responses.maxCharacters);
       const marks = rendered.marks.filter(mark => (mark.to ?? 0) <= finalText.length);
       await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, finalText, marks);
@@ -106,11 +113,16 @@ export class RunProjection {
     }, 900);
   }
 
-  private currentDisplay(): string { return (this.text || this.config.responses.workingText).slice(0, this.config.responses.maxCharacters); }
+  private currentDisplay(): { text: string; marks: TextMark[] } {
+    const rendered = renderForAnytype(this.text || this.config.responses.workingText, this.config, [...this.mentionTargets.values()]);
+    const text = truncateResponse(rendered.text, this.config.responses.maxCharacters);
+    return { text, marks: rendered.marks.filter(mark => (mark.to ?? 0) <= text.length) };
+  }
   private async flush(): Promise<void> {
     if (this.closed) return;
     const responseId = this.responseId;
-    await this.enqueue(() => this.closed ? Promise.resolve() : this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, responseId, this.currentDisplay()));
+    const current = this.currentDisplay();
+    await this.enqueue(() => this.closed ? Promise.resolve() : this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, responseId, current.text, current.marks));
   }
 
   private enqueue<T>(write: () => Promise<T>): Promise<T> {
@@ -128,9 +140,10 @@ function truncateResponse(text: string, maxCharacters: number): string {
   return `${prefix}${notice}`;
 }
 
-export function renderCoordination(text: string, config: AgentConfig): { text: string; marks: TextMark[] } {
+export function renderCoordination(text: string, config: AgentConfig, dynamicTargets: Array<{ name: string; participantId: string }> = []): { text: string; marks: TextMark[] } {
   const peers = new Map<string, AgentConfig["coordination"]["peers"][number]>();
   for (const peer of config.coordination.peers) for (const name of [peer.name, ...peer.aliases]) peers.set(name.toLocaleLowerCase(), peer);
+  for (const target of dynamicTargets) peers.set(target.name.toLocaleLowerCase(), { name: target.name, participantId: target.participantId, aliases: [] });
   const marks: TextMark[] = [];
   const tagged = new Set<string>();
   const matcher = /\[\[AAG_MENTION:([^\]\n]+)\]\]/gi;
@@ -149,5 +162,77 @@ export function renderCoordination(text: string, config: AgentConfig): { text: s
     rendered += mention;
   }
   rendered += text.slice(cursor);
+  const occupied = marks.map(mark => [mark.from ?? 0, mark.to ?? 0] as const);
+  const uniqueTargets = new Map([...peers.values()].map(target => [target.participantId, target]));
+  for (const target of uniqueTargets.values()) {
+    const matcher = new RegExp(`@${escapeRegExp(target.name)}(?![\\p{L}\\p{N}_])`, "giu");
+    for (let match = matcher.exec(rendered); match; match = matcher.exec(rendered)) {
+      const from = match.index;
+      const to = from + match[0].length;
+      if (occupied.some(([occupiedFrom, occupiedTo]) => from < occupiedTo && to > occupiedFrom)) continue;
+      if (!tagged.has(target.participantId) && tagged.size >= config.coordination.maxFanout) continue;
+      marks.push({ type: "mention", from, to, param: target.participantId });
+      tagged.add(target.participantId);
+      occupied.push([from, to]);
+    }
+  }
   return { text: rendered, marks };
 }
+
+export function renderForAnytype(text: string, config: AgentConfig, dynamicTargets: Array<{ name: string; participantId: string }> = []): { text: string; marks: TextMark[] } {
+  const coordinated = renderCoordination(text, config, dynamicTargets);
+  return normalizeMarkdown(coordinated.text, coordinated.marks);
+}
+
+function normalizeMarkdown(text: string, existingMarks: TextMark[]): { text: string; marks: TextMark[] } {
+  let output = "";
+  const marks: TextMark[] = [];
+  const boundaries = new Array<number>(text.length + 1).fill(0);
+  let index = 0;
+  while (index < text.length) {
+    boundaries[index] = output.length;
+    const lineStart = index === 0 || text[index - 1] === "\n";
+    if (lineStart) {
+      const heading = /^(#{1,6})\s+/.exec(text.slice(index));
+      if (heading) { for (let offset = 0; offset < heading[0].length; offset += 1) boundaries[index + offset] = output.length; index += heading[0].length; continue; }
+      if ((text.startsWith("- ", index) || text.startsWith("* ", index)) && !text.startsWith("**", index)) {
+        boundaries[index] = output.length; boundaries[index + 1] = output.length + 1;
+        output += "• "; index += 2; continue;
+      }
+    }
+    const formats: Array<{ open: string; close: string; type: string }> = [
+      { open: "**", close: "**", type: "bold" }, { open: "__", close: "__", type: "bold" },
+      { open: "~~", close: "~~", type: "strikethrough" }, { open: "`", close: "`", type: "keyboard" },
+      { open: "*", close: "*", type: "italic" }, { open: "_", close: "_", type: "italic" }
+    ];
+    const format = formats.find(candidate => text.startsWith(candidate.open, index) && text.indexOf(candidate.close, index + candidate.open.length) > index + candidate.open.length);
+    if (format) {
+      const closeAt = text.indexOf(format.close, index + format.open.length);
+      for (let offset = 0; offset < format.open.length; offset += 1) boundaries[index + offset] = output.length;
+      const from = output.length;
+      const content = text.slice(index + format.open.length, closeAt);
+      output += content;
+      for (let offset = 0; offset <= content.length; offset += 1) boundaries[index + format.open.length + offset] = from + offset;
+      marks.push({ type: format.type, from, to: output.length });
+      for (let offset = 0; offset < format.close.length; offset += 1) boundaries[closeAt + offset] = output.length;
+      index = closeAt + format.close.length;
+      continue;
+    }
+    const link = /^\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/.exec(text.slice(index));
+    if (link) {
+      const from = output.length;
+      output += link[1]!;
+      marks.push({ type: "link", from, to: output.length, param: link[2]! });
+      for (let offset = 0; offset < link[0].length; offset += 1) boundaries[index + offset] = offset <= link[1]!.length ? from + Math.max(0, offset - 1) : output.length;
+      index += link[0].length;
+      continue;
+    }
+    output += text[index]!;
+    index += 1;
+  }
+  boundaries[text.length] = output.length;
+  for (const mark of existingMarks) marks.push({ ...mark, ...(mark.from !== undefined ? { from: boundaries[mark.from] ?? mark.from } : {}), ...(mark.to !== undefined ? { to: boundaries[mark.to] ?? mark.to } : {}) });
+  return { text: output, marks };
+}
+
+function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }

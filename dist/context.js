@@ -39,8 +39,9 @@ export async function buildContext(anytype, config, conversation, trigger, optio
             referencedObjects.unshift({ id: conversation.objectId, ...(conversation.objectName ? { name: conversation.objectName } : {}) });
         }
     }
+    const mentionTargets = collectMentionTargets([trigger, ...history, ...replyAncestry]);
     const contextualTrigger = options.newSession ? { ...trigger, content: { ...trigger.content, text: stripNewSessionCommand(trigger.content?.text ?? "") } } : trigger;
-    return { conversation, trigger: contextualTrigger, ...(options.newSession ? { newSession: true } : {}), history, replyAncestry, referencedObjects };
+    return { conversation, trigger: contextualTrigger, ...(options.newSession ? { newSession: true } : {}), history, replyAncestry, referencedObjects, mentionTargets };
 }
 function rootOf(message, byId) {
     let root = message.id;
@@ -61,7 +62,8 @@ export function formatPrompt(bundle, config, managementCommand) {
         currentMessage: bundle.trigger.content?.text ?? "",
         replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
         recentChannelContext: bundle.history.map(renderMessage),
-        referencedObjects: bundle.referencedObjects
+        referencedObjects: bundle.referencedObjects,
+        mentionableParticipants: bundle.mentionTargets ?? []
     };
     return [
         `You are ${config.agent.name}, an Anytype member responding in a shared ${bundle.conversation.kind}.`,
@@ -77,6 +79,8 @@ export function formatPrompt(bundle, config, managementCommand) {
         JSON.stringify(payload),
         boundary,
         "Respond for the shared Anytype conversation using the supplied context.",
+        "Anytype messages are native rich-text blocks, not Markdown documents. You may use simple Markdown while composing; AAG converts bold, italic, inline code, links, headings, and bullet lines to Anytype-safe rich text. Prefer short paragraphs and one list item per line; avoid Markdown tables and fenced code blocks.",
+        "To mention a participant listed in mentionableParticipants, write [[AAG_MENTION:Their Name]]. AAG also recognizes an exact @Name for those listed participants. Never invent participant IDs.",
         ...(config.coordination.peers.length ? [
             `Configured peer agents: ${config.coordination.peers.map(peer => peer.name).join(", ")}.`,
             "To intentionally tag a peer, write [[AAG_MENTION:Peer Name]] in your response. The gateway converts only configured peers to real Anytype mention marks and enforces the fan-out limit."
@@ -89,4 +93,20 @@ export function isNewSessionCommand(text) { return /(?:^|\s)\/new(?=\s|$)/i.test
 function stripNewSessionCommand(text) { return text.replace(/(^|\s)\/new(?=\s|$)/i, "$1").replace(/\s{2,}/g, " ").trim(); }
 function renderMessage(message) {
     return { id: message.id, ...(message.creator ? { creator: message.creator } : {}), ...(message.creator_name ? { creatorName: message.creator_name } : {}), text: message.content?.text ?? "", ...(message.reply_to_message_id ? { replyTo: message.reply_to_message_id } : {}) };
+}
+function collectMentionTargets(messages) {
+    const targets = new Map();
+    for (const message of messages) {
+        if (message.creator && message.creator_name)
+            targets.set(message.creator, { name: message.creator_name, participantId: message.creator });
+        const text = message.content?.text ?? "";
+        for (const mark of message.content?.marks ?? []) {
+            if (mark.type !== "mention" || !mark.param || mark.from === undefined || mark.to === undefined)
+                continue;
+            const name = text.slice(mark.from, mark.to).replace(/^@/, "").trim();
+            if (name)
+                targets.set(mark.param, { name, participantId: mark.param });
+        }
+    }
+    return [...targets.values()];
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseSseBlock } from "../src/anytype-client.js";
 import { configSchema } from "../src/config.js";
-import { renderCoordination, RunProjection } from "../src/projection.js";
+import { renderCoordination, renderForAnytype, RunProjection } from "../src/projection.js";
 import { parseSilence } from "../src/runtime/openclaw.js";
 import type { ConversationRef } from "../src/types.js";
 import { FakeAnytype } from "./fakes.js";
@@ -39,6 +39,16 @@ describe("protocol boundaries", () => {
     const rendered = renderCoordination("Ask [[AAG_MENTION:Builder]] then [[AAG_MENTION:Reviewer]].", value);
     expect(rendered.text).toBe("Ask @Builder then [[AAG_MENTION:Reviewer]].");
     expect(rendered.marks).toEqual([{ type: "mention", from: 4, to: 12, param: "peer-1" }]);
+  });
+
+  it("normalizes Markdown and creates native mentions for observed participants", () => {
+    const rendered = renderForAnytype("@HELD Hi!\n- **Important** detail with `code`.", config(), [{ name: "HELD", participantId: "person-held" }]);
+    expect(rendered.text).toBe("@HELD Hi!\n• Important detail with code.");
+    expect(rendered.marks).toEqual(expect.arrayContaining([
+      { type: "mention", from: 0, to: 5, param: "person-held" },
+      { type: "bold", from: 12, to: 21 },
+      { type: "keyboard", from: 34, to: 38 }
+    ]));
   });
 });
 

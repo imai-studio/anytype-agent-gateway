@@ -40,6 +40,10 @@ export type ContextBundle = {
         name?: string;
         markdown?: string;
     }>;
+    mentionTargets?: Array<{
+        name: string;
+        participantId: string;
+    }>;
 };
 export type RuntimeEvent = {
     type: "status";

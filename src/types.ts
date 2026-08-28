@@ -30,6 +30,7 @@ export type ContextBundle = {
   history: ChatMessage[];
   replyAncestry: ChatMessage[];
   referencedObjects: Array<{ id: string; name?: string; markdown?: string }>;
+  mentionTargets?: Array<{ name: string; participantId: string }>;
 };
 
 export type RuntimeEvent =

@@ -46,6 +46,36 @@ describe("example workflows", () => {
     await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Done with tests"));
   });
 
+  it("keeps nested discussion responses visible under the flat thread root", async () => {
+    const { anytype, runtime, controller } = setup();
+    const discussion: ConversationRef = { routeId: "discussion:space:discussion", spaceId: "space", chatId: "discussion", kind: "discussion" };
+    const root = incoming({ id: "root" }); anytype.messages.push(root);
+    await controller.process(discussion, wake, root);
+    runtime.finish({ text: "first answer" });
+    await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("first answer"));
+    const followup = incoming({ id: "followup", reply_to_message_id: "root", content: { text: "@AAG follow up", marks: [{ type: "mention", param: "bot", from: 0, to: 4 }] } });
+    anytype.messages.push(followup);
+    await controller.process(discussion, wake, followup);
+    expect(anytype.messages.at(-1)?.reply_to_message_id).toBe("root");
+    expect(anytype.messages.at(-1)?.reply_to_message_id).not.toBe("followup");
+    expect(anytype.reactions.at(-1)).toEqual({ id: "followup", emoji: "👀", present: true });
+    await controller.stop();
+  });
+
+  it("moves a steered discussion response after the follow-up but keeps it attached to the root", async () => {
+    const { anytype, runtime, controller } = setup();
+    const discussion: ConversationRef = { routeId: "discussion:space:discussion", spaceId: "space", chatId: "discussion", kind: "discussion" };
+    const root = incoming({ id: "root" }); anytype.messages.push(root);
+    await controller.process(discussion, wake, root);
+    const followup = incoming({ id: "followup", reply_to_message_id: "root", content: { text: "@AAG add this", marks: [{ type: "mention", param: "bot", from: 0, to: 4 }] } });
+    anytype.messages.push(followup);
+    await controller.process(discussion, wake, followup);
+    expect(runtime.steers).toHaveLength(1);
+    expect(anytype.messages.at(-1)?.reply_to_message_id).toBe("root");
+    expect(anytype.reactions).toContainEqual({ id: "followup", emoji: "👀", present: true });
+    await controller.stop();
+  });
+
   it("replaces an active harness session when a tagged /new command arrives", async () => {
     const { anytype, runtime, store, controller } = setup();
     const first = incoming(); anytype.messages.push(first);

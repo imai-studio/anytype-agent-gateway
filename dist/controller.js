@@ -49,7 +49,9 @@ export class AgentController {
             this.log("message_ignored", { routeId: conversation.routeId, messageId: message.id, reason: decision.reason });
             return;
         }
-        const threadKey = await this.threadKey(conversation, message);
+        const thread = await this.thread(conversation, message);
+        const threadKey = thread.key;
+        const replyTargetId = conversation.kind === "discussion" ? thread.rootId : message.id;
         const newSession = isNewSessionCommand(message.content?.text ?? "");
         const hop = decision.isAgent ? await this.agentHop(conversation, message) : 0;
         if (hop > this.config.coordination.maxHops) {
@@ -61,16 +63,17 @@ export class AgentController {
             if (newSession) {
                 await this.replaceActiveSession(active);
                 const generation = this.store.resetSession(threadKey);
-                await this.start(conversation, message, threadKey, hop, true);
+                await this.start(conversation, message, threadKey, replyTargetId, hop, true);
                 this.log("session_reset", { routeId: conversation.routeId, messageId: message.id, generation });
                 return;
             }
             try {
-                const responseId = await active.projection.move(message.id);
+                active.projection.addMentionTargets(mentionTargetsFrom(message));
+                const responseId = await active.projection.move(message.id, replyTargetId);
                 this.store.updateRunResponse(active.id, responseId, message.id);
                 if (this.active.get(threadKey)?.id !== active.id) {
                     await active.completion.catch(() => undefined);
-                    await this.start(conversation, message, threadKey, hop);
+                    await this.start(conversation, message, threadKey, replyTargetId, hop);
                     this.log("run_restarted_after_completion", { routeId: conversation.routeId, messageId: message.id, previousRunId: active.id });
                     return;
                 }
@@ -80,7 +83,7 @@ export class AgentController {
             catch (error) {
                 if (this.active.get(threadKey)?.id !== active.id) {
                     await active.completion.catch(() => undefined);
-                    await this.start(conversation, message, threadKey, hop);
+                    await this.start(conversation, message, threadKey, replyTargetId, hop);
                     this.log("run_restarted_after_completion", { routeId: conversation.routeId, messageId: message.id, previousRunId: active.id });
                     return;
                 }
@@ -99,7 +102,7 @@ export class AgentController {
             return;
         }
         const generation = newSession ? this.store.resetSession(threadKey) : this.store.sessionGeneration(threadKey);
-        await this.start(conversation, message, threadKey, hop, newSession);
+        await this.start(conversation, message, threadKey, replyTargetId, hop, newSession);
         if (newSession)
             this.log("session_reset", { routeId: conversation.routeId, messageId: message.id, generation });
     }
@@ -118,15 +121,15 @@ export class AgentController {
         this.active.clear();
         await this.runtime.close?.();
     }
-    async start(conversation, message, threadKey, hop, newSession = false) {
+    async start(conversation, message, threadKey, replyTargetId, hop, newSession = false) {
         const anytype = this.port(conversation);
         const runId = crypto.randomUUID();
         const recentMessages = await anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
-        const orphan = recentMessages.find(candidate => candidate.reply_to_message_id === message.id && candidate.creator === (conversation.selfParticipantId ?? this.config.agent.participantId));
+        const orphan = replyTargetId === message.id ? recentMessages.find(candidate => candidate.reply_to_message_id === message.id && candidate.creator === (conversation.selfParticipantId ?? this.config.agent.participantId)) : undefined;
         const context = await buildContext(anytype, this.config, conversation, message, { newSession });
         const projection = orphan
-            ? await RunProjection.resume(anytype, this.config, conversation, orphan.id, message.id, orphan.content?.text)
-            : await RunProjection.create(anytype, this.config, conversation, message.id);
+            ? await RunProjection.resume(anytype, this.config, conversation, orphan.id, message.id, orphan.content?.text, context.mentionTargets ?? [])
+            : await RunProjection.create(anytype, this.config, conversation, message.id, replyTargetId, context.mentionTargets ?? []);
         this.store.createRun({ id: runId, routeId: conversation.routeId, threadKey, triggerId: message.id, responseId: projection.messageId, hop });
         try {
             const generation = this.store.sessionGeneration(threadKey);
@@ -167,9 +170,9 @@ export class AgentController {
         this.store.finishRun(active.id, "cancelled");
     }
     steerPrompt(message) { return `A follow-up arrived from ${message.creator_name ?? message.creator ?? "unknown"}. Incorporate it into the active run and continue:\n\n${message.content?.text ?? ""}`; }
-    async threadKey(conversation, message) {
+    async thread(conversation, message) {
         if (conversation.kind === "chat")
-            return conversation.routeId;
+            return { key: conversation.routeId, rootId: message.id };
         let rootId = message.id;
         let parentId = message.reply_to_message_id;
         for (let depth = 0; parentId && depth < this.config.context.replyDepth; depth += 1) {
@@ -182,7 +185,7 @@ export class AgentController {
                 break;
             }
         }
-        return `${conversation.routeId}:root:${rootId}`;
+        return { key: `${conversation.routeId}:root:${rootId}`, rootId };
     }
     async agentHop(conversation, message) {
         let hop = 1;
@@ -222,4 +225,18 @@ function withTimeout(handle, timeoutMs) {
     });
     return Promise.race([handle.result, timeout]).finally(() => { if (timer)
         clearTimeout(timer); });
+}
+function mentionTargetsFrom(message) {
+    const targets = [];
+    if (message.creator && message.creator_name)
+        targets.push({ name: message.creator_name, participantId: message.creator });
+    const text = message.content?.text ?? "";
+    for (const mark of message.content?.marks ?? []) {
+        if (mark.type !== "mention" || !mark.param || mark.from === undefined || mark.to === undefined)
+            continue;
+        const name = text.slice(mark.from, mark.to).replace(/^@/, "").trim();
+        if (name)
+            targets.push({ name, participantId: mark.param });
+    }
+    return targets;
 }
