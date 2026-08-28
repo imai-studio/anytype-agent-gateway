@@ -99,6 +99,55 @@ describe("failure containment", () => {
     store.close();
   });
 
+  it("discovers a newly created discussion and catches the tag that created it", async () => {
+    class DiscussingAnytype extends FakeAnytype {
+      sentTo: Array<{ chatId: string; replyTo?: string }> = [];
+      override async searchObjects(): Promise<Array<{ id: string; name?: string; type?: string }>> {
+        return [{ id: "todo", name: "Payments testing", type: "issue" }];
+      }
+      override async listMessages(_spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]> {
+        if (chatId !== "discussion") return [];
+        const values = afterOrderId ? this.messages.filter(message => message.order_id && message.order_id > afterOrderId) : this.messages;
+        return values.slice(-limit);
+      }
+      override async sendMessage(spaceId: string, chatId: string, input: { text: string; replyTo?: string }): Promise<string> {
+        this.sentTo.push({ chatId, ...(input.replyTo ? { replyTo: input.replyTo } : {}) });
+        return super.sendMessage(spaceId, chatId, input);
+      }
+      override async *stream(_spaceId: string, _chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent> {
+        await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+        if (!signal.aborted) yield { type: "unreachable" };
+      }
+    }
+    class AppearingDiscussionAdapter {
+      calls = 0;
+      async resolve(): Promise<Array<{ objectId: string; discussionId?: string }>> {
+        this.calls += 1;
+        return this.calls === 1 ? [{ objectId: "todo" }] : [{ objectId: "todo", discussionId: "discussion" }];
+      }
+    }
+    const anytype = new DiscussingAnytype();
+    anytype.messages.push(incoming({ id: "first-discussion-tag", order_id: "001" }));
+    const runtime = new FakeRuntime();
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test", comments: { mode: "all", discoveryIntervalSeconds: 10, createMissing: false, wake: { humans: "mention-or-reply", agents: "direct-mention", allowedUsers: ["*"] } } }],
+      runtime: { kind: "openclaw" }
+    });
+    config.spaces[0]!.comments.discoveryIntervalSeconds = 0.01;
+    const store = new Store(":memory:");
+    const gateway = new Gateway(anytype, runtime, config, store, new AppearingDiscussionAdapter() as unknown as HeartDiscussionAdapter, () => undefined);
+    const running = gateway.start();
+    await eventually(() => expect(runtime.starts).toHaveLength(1));
+    expect(runtime.starts[0]?.sessionKey).toBe("aag:discussion:space:discussion:root:first-discussion-tag");
+    expect(anytype.sentTo).toContainEqual({ chatId: "discussion", replyTo: "first-discussion-tag" });
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
   it("contains a Codex ACP spawn failure without an unhandled rejection", async () => {
     const driver = new CodexAcpDriver({ kind: "codex", command: "/definitely/missing/codex-acp", args: [], allowedProjects: [], environment: {}, timeoutSeconds: 2, permissions: "deny" });
     const unhandled: unknown[] = [];

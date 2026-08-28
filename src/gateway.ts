@@ -172,7 +172,11 @@ export class Gateway {
           }
         }
         for (const item of this.store.listDiscussions(spaceId)) {
-          this.addRoute({ conversation: { routeId: `discussion:${spaceId}:${item.discussionId}`, spaceId, chatId: item.discussionId, kind: "discussion", objectId: item.objectId, selfParticipantId, ...(item.objectName ? { objectName: item.objectName } : {}) }, wake: comments.wake });
+          this.addRoute({
+            conversation: { routeId: `discussion:${spaceId}:${item.discussionId}`, spaceId, chatId: item.discussionId, kind: "discussion", objectId: item.objectId, selfParticipantId, ...(item.objectName ? { objectName: item.objectName } : {}) },
+            wake: comments.wake,
+            baselineExisting: firstPass
+          });
         }
         this.log("discussion_discovery_complete", { spaceId, objects: objects.length, discussions: this.store.listDiscussions(spaceId).length });
       } catch (error) {

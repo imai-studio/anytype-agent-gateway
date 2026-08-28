@@ -232,7 +232,7 @@ Anytype's public API currently exposes chat messages but not the mapping from an
 
 1. The public API searches objects in the configured space.
 2. `aag-heart-adapter` calls the local/private Heart gRPC API and reads the object's `discussionId`.
-3. AAG caches the mapping in SQLite and subscribes to the discussion using the normal chat message API. Each root comment thread receives its own runtime session and active-run lane; its context is filtered to that root thread while still including the owning object.
+3. AAG caches the mapping in SQLite and subscribes to the discussion using the normal chat message API. Each root comment thread receives its own runtime session and active-run lane; its context is filtered to that root thread while still including the owning object. Discussions present when AAG starts are baselined. When a discussion appears while AAG is running, AAG checks a bounded recent tail so the tag that created the discussion is handled and the response is posted as a reply in that same discussion.
 
 The adapter authenticates with the `sessionToken` in the official CLI config (normally `~/.anytype/config.json`) and defaults to Heart gRPC at `127.0.0.1:31010`. Keyring-only CLI sessions are not supported by this adapter. `comments.createMissing: true` asks Heart to add a discussion to objects that do not have one and is therefore a workspace mutation; it defaults to `false`.
 
