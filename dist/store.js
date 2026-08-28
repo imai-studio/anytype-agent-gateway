@@ -64,13 +64,16 @@ export class Store {
             throw error;
         }
     }
-    updateRunResponse(id, responseId) {
-        this.db.prepare("UPDATE runs SET response_message_id=? WHERE run_id=?").run(responseId, id);
+    updateRunResponse(id, responseId, triggerId) {
+        if (triggerId)
+            this.db.prepare("UPDATE runs SET response_message_id=?,trigger_message_id=? WHERE run_id=?").run(responseId, triggerId, id);
+        else
+            this.db.prepare("UPDATE runs SET response_message_id=? WHERE run_id=?").run(responseId, id);
         this.db.prepare("INSERT OR IGNORE INTO run_messages(run_id,message_id,created_at) VALUES(?,?,?)").run(id, responseId, Date.now());
     }
     isResponse(messageId) { return Boolean(this.db.prepare("SELECT 1 FROM run_messages WHERE message_id=?").get(messageId) ?? this.db.prepare("SELECT 1 FROM runs WHERE response_message_id=?").get(messageId)); }
     runningRuns(routeId) {
-        return this.db.prepare("SELECT run_id,response_message_id FROM runs WHERE route_id=? AND status='running'").all(routeId).map(row => ({ id: row.run_id, responseId: row.response_message_id }));
+        return this.db.prepare("SELECT run_id,trigger_message_id,response_message_id FROM runs WHERE route_id=? AND status='running'").all(routeId).map(row => ({ id: row.run_id, triggerId: row.trigger_message_id, responseId: row.response_message_id }));
     }
     finishRun(id, status) { this.db.prepare("UPDATE runs SET status=?, finished_at=? WHERE run_id=?").run(status, Date.now(), id); }
     recentActivations(routeId, threadKey, since) { const row = this.db.prepare("SELECT COUNT(*) AS count FROM runs WHERE route_id=? AND thread_key=? AND started_at>=?").get(routeId, threadKey, since); return Number(row.count); }

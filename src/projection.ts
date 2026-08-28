@@ -3,26 +3,28 @@ import type { AnytypePort, ConversationRef, RuntimeEvent, RuntimeResult, TextMar
 
 export class RunProjection {
   private responseId: string;
+  private reactionTargetId: string;
   private text = "";
   private timer: NodeJS.Timeout | undefined;
   private closed = false;
   private writes: Promise<unknown> = Promise.resolve();
 
-  private constructor(private readonly anytype: AnytypePort, private readonly config: AgentConfig, private readonly conversation: ConversationRef, responseId: string) {
+  private constructor(private readonly anytype: AnytypePort, private readonly config: AgentConfig, private readonly conversation: ConversationRef, responseId: string, reactionTargetId: string) {
     this.responseId = responseId;
+    this.reactionTargetId = reactionTargetId;
   }
 
   static async create(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, triggerId: string): Promise<RunProjection> {
     const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, { text: config.responses.workingText, replyTo: triggerId });
-    const projection = new RunProjection(anytype, config, conversation, responseId);
-    await anytype.ensureReaction(conversation.spaceId, conversation.chatId, responseId, config.responses.workingReaction, true);
+    const projection = new RunProjection(anytype, config, conversation, responseId, triggerId);
+    await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
     return projection;
   }
 
-  static async resume(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, responseId: string, text = ""): Promise<RunProjection> {
-    const projection = new RunProjection(anytype, config, conversation, responseId);
+  static async resume(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, responseId: string, triggerId: string, text = ""): Promise<RunProjection> {
+    const projection = new RunProjection(anytype, config, conversation, responseId, triggerId);
     projection.text = text === config.responses.workingText ? "" : text;
-    await anytype.ensureReaction(conversation.spaceId, conversation.chatId, responseId, config.responses.workingReaction, true);
+    await anytype.ensureReaction(conversation.spaceId, conversation.chatId, triggerId, config.responses.workingReaction, true);
     return projection;
   }
 
@@ -33,9 +35,10 @@ export class RunProjection {
     return this.enqueue(async () => {
       const previousId = this.responseId;
       await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, previousId, this.currentDisplay());
-      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, previousId, this.config.responses.workingReaction, false);
+      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false);
       this.responseId = await this.anytype.sendMessage(this.conversation.spaceId, this.conversation.chatId, { text: this.currentDisplay(), replyTo: triggerId });
-      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.responseId, this.config.responses.workingReaction, true);
+      this.reactionTargetId = triggerId;
+      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, true);
       return this.responseId;
     });
   }
@@ -58,7 +61,7 @@ export class RunProjection {
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
     return this.enqueue(async () => {
-      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.responseId, this.config.responses.workingReaction, false);
+      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false);
       if (result.silent) {
         if (this.config.responses.silentPlaceholder === "delete") await this.anytype.deleteMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId);
         else if (this.config.responses.silentPlaceholder === "replace") await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, this.config.responses.silentText);
@@ -76,7 +79,7 @@ export class RunProjection {
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
     await this.enqueue(async () => {
-      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.responseId, this.config.responses.workingReaction, false).catch(() => undefined);
+      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false).catch(() => undefined);
       const message = error instanceof Error ? error.message : String(error);
       await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, `Agent run failed: ${message.slice(0, 1000)}`);
     });
@@ -86,7 +89,7 @@ export class RunProjection {
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
     await this.enqueue(async () => {
-      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.responseId, this.config.responses.workingReaction, false).catch(() => undefined);
+      await this.anytype.ensureReaction(this.conversation.spaceId, this.conversation.chatId, this.reactionTargetId, this.config.responses.workingReaction, false).catch(() => undefined);
       await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, this.responseId, "Agent run interrupted before completion.");
     });
   }

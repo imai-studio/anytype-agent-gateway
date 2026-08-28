@@ -53,7 +53,7 @@ export class AgentController {
         if (active) {
             try {
                 const responseId = await active.projection.move(message.id);
-                this.store.updateRunResponse(active.id, responseId);
+                this.store.updateRunResponse(active.id, responseId, message.id);
                 if (this.active.get(threadKey)?.id !== active.id) {
                     await active.completion.catch(() => undefined);
                     await this.start(conversation, message, threadKey, hop);
@@ -106,7 +106,7 @@ export class AgentController {
         const recentMessages = await this.anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
         const orphan = recentMessages.find(candidate => candidate.reply_to_message_id === message.id && candidate.creator === (conversation.selfParticipantId ?? this.config.agent.participantId));
         const projection = orphan
-            ? await RunProjection.resume(this.anytype, this.config, conversation, orphan.id, orphan.content?.text)
+            ? await RunProjection.resume(this.anytype, this.config, conversation, orphan.id, message.id, orphan.content?.text)
             : await RunProjection.create(this.anytype, this.config, conversation, message.id);
         const context = await buildContext(this.anytype, this.config, conversation, message);
         this.store.createRun({ id: runId, routeId: conversation.routeId, threadKey, triggerId: message.id, responseId: projection.messageId, hop });

@@ -55,13 +55,14 @@ export class Store {
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
-  updateRunResponse(id: string, responseId: string): void {
-    this.db.prepare("UPDATE runs SET response_message_id=? WHERE run_id=?").run(responseId, id);
+  updateRunResponse(id: string, responseId: string, triggerId?: string): void {
+    if (triggerId) this.db.prepare("UPDATE runs SET response_message_id=?,trigger_message_id=? WHERE run_id=?").run(responseId, triggerId, id);
+    else this.db.prepare("UPDATE runs SET response_message_id=? WHERE run_id=?").run(responseId, id);
     this.db.prepare("INSERT OR IGNORE INTO run_messages(run_id,message_id,created_at) VALUES(?,?,?)").run(id, responseId, Date.now());
   }
   isResponse(messageId: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM run_messages WHERE message_id=?").get(messageId) ?? this.db.prepare("SELECT 1 FROM runs WHERE response_message_id=?").get(messageId)); }
-  runningRuns(routeId: string): Array<{ id: string; responseId: string }> {
-    return (this.db.prepare("SELECT run_id,response_message_id FROM runs WHERE route_id=? AND status='running'").all(routeId) as Array<{ run_id: string; response_message_id: string }>).map(row => ({ id: row.run_id, responseId: row.response_message_id }));
+  runningRuns(routeId: string): Array<{ id: string; triggerId: string; responseId: string }> {
+    return (this.db.prepare("SELECT run_id,trigger_message_id,response_message_id FROM runs WHERE route_id=? AND status='running'").all(routeId) as Array<{ run_id: string; trigger_message_id: string; response_message_id: string }>).map(row => ({ id: row.run_id, triggerId: row.trigger_message_id, responseId: row.response_message_id }));
   }
   finishRun(id: string, status: "done" | "failed" | "silent" | "cancelled"): void { this.db.prepare("UPDATE runs SET status=?, finished_at=? WHERE run_id=?").run(status, Date.now(), id); }
   recentActivations(routeId: string, threadKey: string, since: number): number { const row = this.db.prepare("SELECT COUNT(*) AS count FROM runs WHERE route_id=? AND thread_key=? AND started_at>=?").get(routeId, threadKey, since) as { count: number }; return Number(row.count); }

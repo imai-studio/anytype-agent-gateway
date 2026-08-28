@@ -25,7 +25,7 @@ Anytype SSE message event
   → sender authorization and wake decision
   → bounded channel/reply/object context
   → runtime session prompt
-  → immediate Anytype reply + working reaction
+  → working reaction on trigger + immediate Anytype reply
   → coalesced progress edits
   → final edit, silence action, or failure edit
 ```
@@ -75,7 +75,7 @@ A runtime is not given the Anytype API key or OpenClaw Gateway token in the prom
 
 ## Run projection and steering
 
-Before the runtime starts, `RunProjection` sends `responses.workingText` as a reply to the trigger and applies `responses.workingReaction`. This gives the user an immediate durable acknowledgement.
+Before the runtime starts, `RunProjection` sends `responses.workingText` as a reply and applies `responses.workingReaction` to the triggering user message. This gives the user an immediate durable acknowledgement without making the agent react to itself.
 
 Runtime events are projected according to `responses.mode`:
 
@@ -83,9 +83,9 @@ Runtime events are projected according to `responses.mode`:
 - `milestones`: include tool lifecycle/status milestones;
 - `verbose`: include text deltas and status output as well.
 
-A short timer combines nearby edits. A per-reply promise chain writes them in order, so a progress flush cannot overwrite a move or final edit. AAG truncates final output to `responses.maxCharacters`, writes it to the same message, and removes the working reaction.
+A short timer combines nearby edits. A per-reply promise chain writes them in order, so a progress flush cannot overwrite a move or final edit. AAG truncates final output to `responses.maxCharacters`, writes it to the same message, and removes the working reaction from the trigger.
 
-If a qualifying message arrives while the same chat or root discussion thread has an active run, AAG treats it as steering. AAG flushes the old response and removes its working reaction. It replies to the follow-up, adds the reaction there, and sends later progress and final output to the new reply. `run_messages` keeps every response ID, so a reply to an earlier frozen response still counts as a follow-up. AAG does not queue a second run for that thread.
+If a qualifying message arrives while the same chat or root discussion thread has an active run, AAG treats it as steering. AAG flushes the old response, removes the reaction from the previous trigger, reacts to the follow-up, and sends later progress and final output to a new reply beneath it. `run_messages` keeps every response ID, so a reply to an earlier frozen response still counts as a follow-up. AAG does not queue a second run for that thread.
 
 The configured runtime timeout races the result and cancels an overlong run. Shutdown aborts route streams, cancels all active handles, clears their working reactions, marks the visible replies interrupted, waits for their completion paths to settle, and only then closes SQLite and releases the process lock. On startup, each route also reconciles any run still recorded as `running`, clears its reaction, marks the reply interrupted, and closes the run as failed.
 

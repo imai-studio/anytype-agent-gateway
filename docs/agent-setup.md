@@ -4,7 +4,7 @@ This runbook tells a coding agent how to connect its Codex or OpenClaw runtime t
 
 ## Outcome
 
-One long-lived AAG process appears in Anytype as one dedicated, taggable member. A mention, reply, prefix, or configured every-message route wakes one Codex or OpenClaw runtime. AAG posts an immediate reply, edits it while work progresses, handles same-thread follow-ups as steering, and removes its working reaction when the run finishes.
+One long-lived AAG process appears in Anytype as one dedicated, taggable member. A mention, reply, prefix, or configured every-message route wakes one Codex or OpenClaw runtime. AAG reacts to the triggering user message, posts an immediate reply, edits it while work progresses, handles same-thread follow-ups as steering, and removes the reaction when the run finishes.
 
 ## 1. Verify prerequisites
 
@@ -126,8 +126,8 @@ aag run --config ~/.config/aag/agent.yaml
 In a configured Anytype chat, verify this sequence:
 
 1. Mention the dedicated member from an allowed human account.
-2. Confirm AAG creates a reply promptly and adds its working reaction.
-3. Confirm progress edits the same reply and the final answer removes the reaction.
+2. Confirm AAG reacts to the user message and creates a reply promptly.
+3. Confirm progress edits the same reply and the final answer removes the reaction from the user message.
 4. During a run, send a same-chat follow-up. Confirm it steers the active runtime and produces a new response beneath the follow-up.
 5. Confirm an unmentioned message stays silent when the route uses `mention`.
 6. If object discussions are enabled, verify the prompt receives the owning object and comment-thread context.

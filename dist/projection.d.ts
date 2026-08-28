@@ -5,13 +5,14 @@ export declare class RunProjection {
     private readonly config;
     private readonly conversation;
     private responseId;
+    private reactionTargetId;
     private text;
     private timer;
     private closed;
     private writes;
     private constructor();
     static create(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, triggerId: string): Promise<RunProjection>;
-    static resume(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, responseId: string, text?: string): Promise<RunProjection>;
+    static resume(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, responseId: string, triggerId: string, text?: string): Promise<RunProjection>;
     get messageId(): string;
     move(triggerId: string): Promise<string>;
     onEvent(event: RuntimeEvent): void;

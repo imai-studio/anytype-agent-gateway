@@ -17,10 +17,11 @@ export declare class Store {
         responseId: string;
         hop: number;
     }): void;
-    updateRunResponse(id: string, responseId: string): void;
+    updateRunResponse(id: string, responseId: string, triggerId?: string): void;
     isResponse(messageId: string): boolean;
     runningRuns(routeId: string): Array<{
         id: string;
+        triggerId: string;
         responseId: string;
     }>;
     finishRun(id: string, status: "done" | "failed" | "silent" | "cancelled"): void;

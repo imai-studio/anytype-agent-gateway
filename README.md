@@ -15,7 +15,7 @@ The current deployment model is deliberately simple: **one AAG process, one Anyt
 - Baselines existing history on first start, catches up through the REST API before every stream connection, then consumes Anytype's server-sent chat events without replaying handled requests.
 - Supports human wake modes `mention`, `mention-or-reply`, `every-message`, `prefix`, and `disabled`, independently for each configured chat or a space's object discussions.
 - Supports peer-agent wake modes `never`, `direct-mention`, and `every-message`, with allowed-sender lists, hop limits, and an activation circuit breaker.
-- Posts a reply immediately, adds a configurable working reaction, edits that reply with progress, and removes the reaction when the run finishes.
+- Adds a configurable working reaction to the triggering user message, posts a reply immediately, edits that reply with progress, and removes the reaction when the run finishes.
 - Treats a qualifying follow-up during an active run as steering. The gateway freezes the previous progress reply, creates a new reply beneath the follow-up, and continues there.
 - Preserves every reply created by a steered run so a later reply to any of them is still recognized as a follow-up.
 - Allows a runtime to stay silent by returning exactly `[[AAG_STAY_SILENT]]` or `[[AAG_STAY_SILENT: reason]]`. The placeholder can be deleted, retained, or replaced according to configuration.

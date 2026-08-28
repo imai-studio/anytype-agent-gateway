@@ -117,7 +117,7 @@ export class Gateway {
     async reconcileInterruptedRuns(conversation) {
         for (const run of this.store.runningRuns(conversation.routeId)) {
             try {
-                await this.anytype.ensureReaction(conversation.spaceId, conversation.chatId, run.responseId, this.config.responses.workingReaction, false).catch(() => undefined);
+                await this.anytype.ensureReaction(conversation.spaceId, conversation.chatId, run.triggerId, this.config.responses.workingReaction, false).catch(() => undefined);
                 await this.anytype.editMessage(conversation.spaceId, conversation.chatId, run.responseId, "Agent run interrupted before completion.").catch(error => {
                     this.log("run_reconcile_projection_failed", { routeId: conversation.routeId, runId: run.id, error: error instanceof Error ? error.message : String(error) });
                 });

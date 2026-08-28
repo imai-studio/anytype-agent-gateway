@@ -23,10 +23,10 @@ describe("example workflows", () => {
     const message = incoming(); anytype.messages.push(message);
     await controller.process(conversation, wake, message);
     expect(anytype.messages.at(-1)?.content?.text).toBe("Working…");
-    expect(anytype.reactions.at(-1)).toMatchObject({ present: true });
+    expect(anytype.reactions.at(-1)).toEqual({ id: message.id, emoji: "👀", present: true });
     runtime.finish({ text: "Finished cleanly" });
     await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Finished cleanly"));
-    expect(anytype.reactions.at(-1)).toMatchObject({ present: false });
+    expect(anytype.reactions.at(-1)).toEqual({ id: message.id, emoji: "👀", present: false });
   });
 
   it("steers an active run and moves progress to a reply after the follow-up", async () => {
@@ -38,7 +38,10 @@ describe("example workflows", () => {
     await controller.process(conversation, wake, followup);
     expect(runtime.steers[0]).toContain("also cover tests");
     expect(anytype.messages.at(-1)?.reply_to_message_id).toBe("message-2");
-    expect(anytype.reactions).toEqual(expect.arrayContaining([{ id: oldReply, emoji: "👀", present: false }]));
+    expect(anytype.reactions).toEqual(expect.arrayContaining([
+      { id: first.id, emoji: "👀", present: false },
+      { id: followup.id, emoji: "👀", present: true }
+    ]));
     runtime.finish({ text: "Done with tests" });
     await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Done with tests"));
   });
@@ -70,7 +73,7 @@ describe("example workflows", () => {
     await controller.process(conversation, wake, message);
     const responseId = anytype.messages.at(-1)!.id;
     await controller.stop();
-    expect(anytype.reactions).toContainEqual({ id: responseId, emoji: "👀", present: false });
+    expect(anytype.reactions).toContainEqual({ id: message.id, emoji: "👀", present: false });
     expect(anytype.edits.at(-1)).toEqual({ id: responseId, text: "Agent run interrupted before completion." });
   });
 

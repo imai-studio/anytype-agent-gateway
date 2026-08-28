@@ -81,7 +81,7 @@ The runtime owns context compaction beyond these transport-level bounds.
 
 ## Immediate editable replies and native steering
 
-Acknowledge a trigger immediately with one reply and a working reaction. Edit that reply as the run progresses.
+Acknowledge a trigger immediately with a working reaction on the user's message and one reply. Edit that reply as the run progresses.
 
 The default response mode keeps one message stable and replaces its text with the latest/final answer. Milestone and verbose modes can expose more progress. The working reaction is removed on completion, silence, interruption, or failure.
 
