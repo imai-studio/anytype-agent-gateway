@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -514,17 +517,56 @@ func readToken(path string) (string, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return "", fmt.Errorf("parse Anytype config: %w", err)
 	}
-	if cfg.SessionToken == "" {
-		return "", errors.New("Anytype config has no sessionToken (headless keyring-backed configs are not supported by this adapter)")
+	if cfg.SessionToken != "" {
+		return normalizeCredential(cfg.SessionToken)
 	}
-	return cfg.SessionToken, nil
+	return readKeychainToken()
 }
 
 func sessionToken(path string) (string, error) {
 	if token := strings.TrimSpace(os.Getenv("ANYTYPE_SESSION_TOKEN")); token != "" {
-		return token, nil
+		return normalizeCredential(token)
 	}
 	return readToken(path)
+}
+
+func normalizeCredential(value string) (string, error) {
+	const keyringPrefix = "go-keyring-base64:"
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, keyringPrefix) {
+		if value == "" {
+			return "", errors.New("Anytype session token is empty")
+		}
+		return value, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(value, keyringPrefix))
+	if err != nil {
+		return "", fmt.Errorf("decode Anytype keyring credential: %w", err)
+	}
+	token := strings.TrimSpace(string(decoded))
+	if token == "" {
+		return "", errors.New("Anytype keyring session token is empty")
+	}
+	return token, nil
+}
+
+func readKeychainToken() (string, error) {
+	if runtime.GOOS != "darwin" {
+		return "", errors.New("Anytype config has no sessionToken and no supported system keychain is available")
+	}
+	output, err := exec.Command(
+		"security",
+		"find-generic-password",
+		"-s",
+		"anytype-cli",
+		"-a",
+		"session-token",
+		"-w",
+	).Output()
+	if err != nil {
+		return "", errors.New("Anytype config has no sessionToken and the anytype-cli token was not found in Keychain")
+	}
+	return normalizeCredential(string(output))
 }
 
 func defaultConfigPath() string {

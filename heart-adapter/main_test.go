@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,13 +24,30 @@ func TestReadToken(t *testing.T) {
 	}
 }
 
-func TestReadTokenRejectsMissingSession(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+func TestNormalizeCredentialRejectsEmptySession(t *testing.T) {
+	if _, err := normalizeCredential(" \n"); err == nil {
+		t.Fatal("expected an empty sessionToken to fail")
+	}
+}
+
+func TestNormalizeCredentialDecodesGoKeyringValue(t *testing.T) {
+	wrapper := "go-keyring-base64:" + base64.StdEncoding.EncodeToString([]byte("header.payload.signature"))
+	token, err := normalizeCredential(wrapper)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readToken(path); err == nil {
-		t.Fatal("expected missing sessionToken to fail")
+	if token != "header.payload.signature" {
+		t.Fatalf("unexpected token %q", token)
+	}
+}
+
+func TestNormalizeCredentialKeepsPlainToken(t *testing.T) {
+	token, err := normalizeCredential(" plain-session-token \n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "plain-session-token" {
+		t.Fatalf("unexpected token %q", token)
 	}
 }
 
