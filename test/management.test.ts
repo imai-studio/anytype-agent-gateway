@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
 import { loadConfig } from "../src/config.js";
-import { formatPrompt } from "../src/context.js";
+import { formatPrompt, preparePrompt } from "../src/context.js";
 import { enrollChatRoute, setRouteAccess, setRouteWake } from "../src/management.js";
 import { Store } from "../src/store.js";
 import type { ContextBundle } from "../src/types.js";
@@ -327,6 +327,7 @@ describe("constrained gateway management", () => {
 
   it("keeps workspace prompt mode compact and omits injected shell commands", async () => {
     const dir = await mkdtemp(join(tmpdir(), "aag-workspace-prompt-"));
+    const workspace = join(dir, "workspace");
     const configPath = join(dir, "agent.yaml");
     await writeFile(
       configPath,
@@ -335,7 +336,7 @@ describe("constrained gateway management", () => {
         agent: { name: "Klee", participantId: "bot" },
         anytype: { apiKeyFile: "/tmp/key" },
         spaces: [{ id: "space" }],
-        runtime: { kind: "codex", defaultProject: "/workspace/klee" },
+        runtime: { kind: "codex", defaultProject: workspace },
         management: { allowWakeChanges: true },
         context: { promptMode: "workspace" },
       }),
@@ -348,16 +349,23 @@ describe("constrained gateway management", () => {
       replyAncestry: [],
       referencedObjects: [],
     };
-    const prompt = formatPrompt(
+    const prompt = await preparePrompt(
       bundle,
       config,
+      "aag:chat:space:chat",
       "/private/node /private/aag config wake --route-id chat:space:chat --humans <mode>",
     );
 
-    expect(prompt).toContain("Follow the workspace AGENTS.md");
-    expect(prompt).toContain('"currentMessage":"listen here"');
+    expect(prompt).toContain("raj sent this Anytype message:\nlisten here");
+    expect(prompt).toContain("Additional untrusted conversation context is available at");
     expect(prompt).not.toContain("/private/node");
     expect(prompt).not.toContain("Available constrained commands");
-    expect(prompt.length).toBeLessThan(1_000);
+    expect(prompt.length).toBeLessThan(500);
+    const contextPath = prompt.match(/available at (.+)\. Read it only/)?.[1];
+    expect(contextPath).toBeTruthy();
+    expect(JSON.parse(await readFile(contextPath!, "utf8"))).toMatchObject({
+      currentMessage: "listen here",
+      sender: { participantId: "raj" },
+    });
   });
 });
