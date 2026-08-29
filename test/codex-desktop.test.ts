@@ -1,9 +1,15 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { associateCodexDesktopThread, refreshCodexDesktopThread } from "../src/codex-desktop.js";
+import {
+  associateCodexDesktopThread,
+  createCodexDesktopThread,
+  hydrateCodexDesktopTask,
+  refreshCodexDesktopThread,
+} from "../src/codex-desktop.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -14,49 +20,215 @@ afterEach(async () => {
 });
 
 describe("Codex Desktop project association", () => {
-  it("notifies a running Codex app so its project sidebar refreshes", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aag-codex-desktop-mcp-"));
+  it("creates a native project task through the authenticated Codex app tools", async () => {
+    const root = await mkdtemp(join(tmpdir(), "aag-codex-native-thread-"));
     temporaryDirectories.push(root);
-    const serverPath = join(root, "server.mjs");
-    const capturePath = join(root, "request.json");
+    const codexHome = join(root, ".codex");
+    const workspace = join(root, "workspace");
+    const pipePath = join(root, "app-tools.sock");
+    await mkdir(codexHome);
+    await mkdir(workspace);
     await writeFile(
-      serverPath,
-      `import { appendFileSync } from "node:fs";
-import { createInterface } from "node:readline";
-const capturePath = ${JSON.stringify(capturePath)};
-createInterface({ input: process.stdin }).on("line", (line) => {
-  const message = JSON.parse(line);
-  if (message.id === 1) {
-    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }) + "\\n");
-  }
-  if (message.id === 9) {
-    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 9, result: { tools: [] } }) + "\\n");
-  }
-  if (message.id === 2) {
-    appendFileSync(capturePath, line);
-    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [], isError: false } }) + "\\n");
-  }
-});
-`,
-    );
-
-    await expect(
-      refreshCodexDesktopThread({
-        threadId: "new-thread",
-        title: "Klee — Anytype chat",
-        appToolsServerPath: serverPath,
-        pipePath: "/tmp/test-codex-app.sock",
-        nodePath: process.execPath,
-        timeoutMs: 2_000,
+      join(codexHome, ".codex-global-state.json"),
+      JSON.stringify({
+        "local-projects": {
+          "project-klee": { name: "klee", rootPaths: [workspace] },
+        },
       }),
-    ).resolves.toBe(true);
-
-    const request = JSON.parse(await readFile(capturePath, "utf8"));
-    expect(request.params).toMatchObject({
-      name: "set_thread_title",
-      arguments: { threadId: "new-thread", title: "Klee — Anytype chat" },
-      _meta: { threadId: "new-thread" },
+    );
+    createCodexDatabase(codexHome);
+    const calls: Array<{ method: string; params: any }> = [];
+    const server = createServer((socket) => {
+      let buffer = Buffer.alloc(0);
+      socket.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        while (buffer.length >= 4) {
+          const length = buffer.readUInt32LE(0);
+          if (buffer.length < length + 4) return;
+          const message = JSON.parse(buffer.subarray(4, length + 4).toString("utf8"));
+          buffer = buffer.subarray(length + 4);
+          calls.push(message);
+          writeFrame(socket, {
+            id: message.id,
+            jsonrpc: "2.0",
+            result:
+              message.method === "tools/list"
+                ? {
+                    tools: [
+                      { name: "create_thread", namespace: "codex_app" },
+                      { name: "wait_threads", namespace: "codex_app" },
+                      { name: "read_thread", namespace: "codex_app" },
+                    ],
+                  }
+                : message.params.tool === "create_thread"
+                  ? {
+                      success: true,
+                      contentItems: [
+                        {
+                          type: "inputText",
+                          text: '{"threadId":"01a04e2f-d594-7e62-8c6b-26a67985b9df"}',
+                        },
+                      ],
+                    }
+                  : { success: true, contentItems: [{ type: "inputText", text: "ok" }] },
+          });
+        }
+      });
     });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(pipePath, resolve);
+    });
+
+    try {
+      await expect(
+        createCodexDesktopThread({
+          sourceThreadId: "bootstrap-thread",
+          workspace,
+          title: "Klee — Anytype chat",
+          codexHome,
+          pipePath,
+          timeoutMs: 2_000,
+          codexNodePath: process.execPath,
+          helperPath: join(process.cwd(), "dist", "codex-app-tools-helper.js"),
+        }),
+      ).resolves.toBe("01a04e2f-d594-7e62-8c6b-26a67985b9df");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    expect(calls.map((call) => call.method)).toEqual([
+      "tools/list",
+      "tools/call",
+      "tools/call",
+      "tools/call",
+    ]);
+    expect(calls[1]?.params).toMatchObject({
+      threadId: "bootstrap-thread",
+      tool: "create_thread",
+      arguments: {
+        target: {
+          type: "project",
+          projectId: "project-klee",
+          environment: { type: "local" },
+        },
+      },
+    });
+    expect(calls[3]?.params).toMatchObject({
+      tool: "read_thread",
+      arguments: {
+        threadId: "01a04e2f-d594-7e62-8c6b-26a67985b9df",
+        turnLimit: 1,
+      },
+    });
+  });
+
+  it("notifies a running Codex app so its project sidebar refreshes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "aag-codex-desktop-ipc-"));
+    temporaryDirectories.push(root);
+    const socketPath = join(root, "ipc.sock");
+    let captured: unknown;
+    const server = createServer((socket) => {
+      let buffer = Buffer.alloc(0);
+      socket.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        while (buffer.length >= 4) {
+          const length = buffer.readUInt32LE(0);
+          if (buffer.length < length + 4) return;
+          const message = JSON.parse(buffer.subarray(4, length + 4).toString("utf8"));
+          buffer = buffer.subarray(length + 4);
+          if (message.method === "initialize") {
+            writeFrame(socket, {
+              type: "response",
+              requestId: message.requestId,
+              resultType: "success",
+              method: "initialize",
+              handledByClientId: "desktop-client",
+              result: { clientId: "aag-client" },
+            });
+          } else if (message.method === "query-cache-invalidate") {
+            captured = message;
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+
+    try {
+      await expect(refreshCodexDesktopThread({ socketPath, timeoutMs: 2_000 })).resolves.toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    expect(captured).toMatchObject({
+      type: "broadcast",
+      method: "query-cache-invalidate",
+      sourceClientId: "aag-client",
+      params: { queryKey: ["tasks"] },
+      version: 0,
+    });
+  });
+
+  it("hydrates a task through the Codex app and restores the controller task", async () => {
+    const root = await mkdtemp(join(tmpdir(), "aag-codex-hydrate-"));
+    temporaryDirectories.push(root);
+    const codexHome = join(root, ".codex");
+    const pipePath = join(root, "app-tools.sock");
+    await mkdir(codexHome);
+    const database = createCodexDatabase(codexHome);
+    database
+      .prepare(
+        `INSERT INTO threads
+         (id, project_id, title, updated_at, updated_at_ms, source, thread_source, recency_at_ms)
+         VALUES (?, ?, ?, ?, ?, 'vscode', 'desktop', ?)`,
+      )
+      .run("controller-thread", null, "Controller", 1, 1, 1);
+    database.close();
+    const calls: Array<{ method: string; params: any }> = [];
+    const server = createServer((socket) => {
+      let buffer = Buffer.alloc(0);
+      socket.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        while (buffer.length >= 4) {
+          const length = buffer.readUInt32LE(0);
+          if (buffer.length < length + 4) return;
+          const message = JSON.parse(buffer.subarray(4, length + 4).toString("utf8"));
+          buffer = buffer.subarray(length + 4);
+          calls.push(message);
+          writeFrame(socket, {
+            id: message.id,
+            jsonrpc: "2.0",
+            result:
+              message.method === "tools/list"
+                ? { tools: [{ name: "navigate_to_codex_page", namespace: "codex_app" }] }
+                : { success: true },
+          });
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(pipePath, resolve);
+    });
+
+    try {
+      await hydrateCodexDesktopTask({
+        threadId: "new-thread",
+        codexHome,
+        pipePath,
+        timeoutMs: 2_000,
+        codexNodePath: process.execPath,
+        helperPath: join(process.cwd(), "dist", "codex-app-tools-helper.js"),
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    expect(
+      calls.filter((call) => call.method === "tools/call").map((call) => call.params.arguments),
+    ).toEqual([{ threadId: "new-thread" }, { threadId: "controller-thread" }]);
   });
 
   it("associates an ACP thread with the saved project matching its workspace", async () => {
@@ -84,18 +256,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         "projectless-thread-ids": ["new-thread", "other-thread"],
       }),
     );
-    const database = new DatabaseSync(join(codexHome, "state_5.sqlite"));
-    database.exec(`CREATE TABLE projects (
-      id TEXT PRIMARY KEY
-    )`);
-    database.exec(`CREATE TABLE threads (
-      id TEXT PRIMARY KEY,
-      project_id TEXT,
-      title TEXT NOT NULL,
-      updated_at INTEGER NOT NULL,
-      updated_at_ms INTEGER NOT NULL,
-      FOREIGN KEY(project_id) REFERENCES projects(id)
-    )`);
+    const database = createCodexDatabase(codexHome);
     database
       .prepare(
         "INSERT INTO threads (id, project_id, title, updated_at, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
@@ -134,11 +295,19 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       updated_at: number;
       updated_at_ms: number;
     };
-    updatedDatabase.close();
     expect(thread.project_id).toBe("project-klee");
     expect(thread.title).toBe("Klee — Anytype chat");
     expect(thread.updated_at).toBeGreaterThan(1);
     expect(thread.updated_at_ms).toBeGreaterThan(1);
+    const project = updatedDatabase
+      .prepare(
+        `SELECT projects.name, project_roots.path
+         FROM projects JOIN project_roots ON project_roots.project_id = projects.id
+         WHERE projects.id = ?`,
+      )
+      .get("project-klee") as { name: string; path: string };
+    expect(project).toEqual({ name: "klee", path: workspace });
+    updatedDatabase.close();
   });
 
   it("leaves state unchanged when no saved project matches", async () => {
@@ -158,3 +327,42 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     ).resolves.toBeUndefined();
   });
 });
+
+function createCodexDatabase(codexHome: string): DatabaseSync {
+  const database = new DatabaseSync(join(codexHome, "state_5.sqlite"));
+  database.exec(`CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      position INTEGER NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`);
+  database.exec(`CREATE TABLE project_roots (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      path TEXT NOT NULL,
+      PRIMARY KEY (project_id, position)
+    )`);
+  database.exec(`CREATE TABLE threads (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      title TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      archived INTEGER NOT NULL DEFAULT 0,
+      source TEXT,
+      thread_source TEXT,
+      recency_at_ms INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY(project_id) REFERENCES projects(id)
+    )`);
+  return database;
+}
+
+function writeFrame(socket: NodeJS.WritableStream, message: unknown): void {
+  const body = Buffer.from(JSON.stringify(message), "utf8");
+  const frame = Buffer.allocUnsafe(body.length + 4);
+  frame.writeUInt32LE(body.length, 0);
+  body.copy(frame, 4);
+  socket.write(frame);
+}

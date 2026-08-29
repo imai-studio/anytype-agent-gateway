@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
-import { associateCodexDesktopThread } from "../codex-desktop.js";
+import { associateCodexDesktopThread, createCodexDesktopThread, hydrateCodexDesktopTask, } from "../codex-desktop.js";
 import { commandExists } from "../process.js";
 import { parseSilence } from "./openclaw.js";
 const SKILL_WARNING_PREFIXES = [
@@ -30,6 +30,7 @@ export class CodexAcpDriver {
         nativeScheduling: false,
     };
     repeatedInternalLoadFailures = new Map();
+    hydratedDesktopSessions = new Set();
     constructor(config, store, mcpServer, agentName) {
         this.config = config;
         this.store = store;
@@ -194,7 +195,25 @@ export class CodexAcpDriver {
                         ? { additionalDirectories: this.config.allowedProjects }
                         : {}),
                 };
-                const savedSessionId = this.store?.codexAcpSession(input.sessionKey);
+                let savedSessionId = this.store?.codexAcpSession(input.sessionKey);
+                if (!savedSessionId &&
+                    this.config.desktopProject === "auto" &&
+                    this.config.defaultProject &&
+                    initialized.agentCapabilities?.loadSession) {
+                    const nativeSessionId = await createCodexDesktopThread({
+                        workspace: this.config.defaultProject,
+                        title: `${this.agentName ?? "Agent"} — Anytype ${input.turn?.conversation.kind === "discussion" ? "discussion" : "chat"}`,
+                        ...(this.config.environment.CODEX_HOME
+                            ? { codexHome: this.config.environment.CODEX_HOME }
+                            : process.env.CODEX_HOME
+                                ? { codexHome: process.env.CODEX_HOME }
+                                : {}),
+                    });
+                    if (nativeSessionId) {
+                        savedSessionId = nativeSessionId;
+                        this.store?.saveCodexAcpSession(input.sessionKey, nativeSessionId);
+                    }
+                }
                 if (savedSessionId && initialized.agentCapabilities?.loadSession) {
                     replayingHistory = true;
                     try {
@@ -254,6 +273,7 @@ export class CodexAcpDriver {
                     filteredText.finish();
                 }
                 await this.associateDesktopProject(sessionId, input.turn);
+                await this.hydrateDesktopProject(sessionId);
                 this.retryDesktopProjectAssociation(sessionId, input.turn);
                 const terminalText = messageTexts.get(finalMessageId ?? latestMessageId ?? "") ?? output;
                 return parseSilence(stripLeadingSkillWarning(terminalText));
@@ -304,6 +324,19 @@ export class CodexAcpDriver {
                     title: `${this.agentName} — Anytype ${turn?.conversation.kind === "discussion" ? "discussion" : "chat"}`,
                 }
                 : {}),
+            ...(this.config.environment.CODEX_HOME
+                ? { codexHome: this.config.environment.CODEX_HOME }
+                : process.env.CODEX_HOME
+                    ? { codexHome: process.env.CODEX_HOME }
+                    : {}),
+        }).catch(() => undefined);
+    }
+    async hydrateDesktopProject(sessionId) {
+        if (this.config.desktopProject !== "auto" || this.hydratedDesktopSessions.has(sessionId))
+            return;
+        this.hydratedDesktopSessions.add(sessionId);
+        await hydrateCodexDesktopTask({
+            threadId: sessionId,
             ...(this.config.environment.CODEX_HOME
                 ? { codexHome: this.config.environment.CODEX_HOME }
                 : process.env.CODEX_HOME

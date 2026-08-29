@@ -30,6 +30,7 @@ export declare class CodexAcpDriver implements RuntimeDriver {
         readonly nativeScheduling: false;
     };
     private readonly repeatedInternalLoadFailures;
+    private readonly hydratedDesktopSessions;
     constructor(config: CodexDriverConfig, store?: CodexSessionStore | undefined, mcpServer?: McpServerCommand | undefined, agentName?: string | undefined);
     doctor(): Promise<string[]>;
     start(input: {
@@ -38,6 +39,7 @@ export declare class CodexAcpDriver implements RuntimeDriver {
         turn?: RuntimeTurn;
     }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;
     private associateDesktopProject;
+    private hydrateDesktopProject;
     private retryDesktopProjectAssociation;
 }
 export {};

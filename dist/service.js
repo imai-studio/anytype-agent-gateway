@@ -59,7 +59,7 @@ async function installLaunchdService(configPath) {
     const config = await loadConfig(configPath);
     const absoluteConfigPath = resolve(configPath);
     const cliPath = resolve(dirname(fileURLToPath(import.meta.url)), "cli.js");
-    const nodePath = resolve(process.execPath);
+    const nodePath = await resolveLaunchdNodePath(config.runtime);
     await Promise.all([
         access(absoluteConfigPath, constants.R_OK),
         access(cliPath, constants.R_OK),
@@ -84,9 +84,6 @@ async function installLaunchdService(configPath) {
         stdoutPath,
         stderrPath,
         pathEnvironment: launchdPathEnvironment(nodePath),
-        ...(process.env.CODEX_APP_TOOLS_PIPE_PATH
-            ? { codexAppToolsPipePath: process.env.CODEX_APP_TOOLS_PIPE_PATH }
-            : {}),
         ...(process.env.CODEX_MCP_NODE_PATH
             ? { codexMcpNodePath: process.env.CODEX_MCP_NODE_PATH }
             : {}),
@@ -104,6 +101,22 @@ async function installLaunchdService(configPath) {
     }
     await runProcess("/bin/launchctl", ["enable", serviceTarget]);
     await bootstrapLaunchd(domain, target, serviceTarget);
+}
+async function resolveLaunchdNodePath(runtime) {
+    if (runtime.kind === "codex" && runtime.desktopProject === "auto") {
+        const candidates = [
+            process.env.CODEX_MCP_NODE_PATH,
+            "/Applications/Codex.app/Contents/Resources/cua_node/bin/node",
+        ].filter((candidate) => Boolean(candidate));
+        for (const candidate of candidates) {
+            const path = resolve(candidate);
+            if (await access(path, constants.X_OK)
+                .then(() => true)
+                .catch(() => false))
+                return path;
+        }
+    }
+    return resolve(process.execPath);
 }
 async function launchdCommand(command) {
     const home = homedir();
