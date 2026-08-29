@@ -86,6 +86,7 @@ export declare const configSchema: z.ZodObject<{
         }, z.core.$strip>>>;
         chatDiscovery: z.ZodDefault<z.ZodPipe<z.ZodObject<{
             enabled: z.ZodDefault<z.ZodBoolean>;
+            autoEnroll: z.ZodDefault<z.ZodBoolean>;
             discoveryIntervalSeconds: z.ZodDefault<z.ZodNumber>;
             wake: z.ZodOptional<z.ZodObject<{
                 humans: z.ZodDefault<z.ZodEnum<{
@@ -115,9 +116,11 @@ export declare const configSchema: z.ZodObject<{
                 allowedUsers: string[];
             };
             enabled: boolean;
+            autoEnroll: boolean;
             discoveryIntervalSeconds: number;
         }, {
             enabled: boolean;
+            autoEnroll: boolean;
             discoveryIntervalSeconds: number;
             wake?: {
                 humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";

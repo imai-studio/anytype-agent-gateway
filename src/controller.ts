@@ -13,7 +13,7 @@ import type {
   RuntimeSessionObserver,
   RuntimeSessionOutput,
 } from "./types.js";
-import { decideWake } from "./wake.js";
+import { decideWake, mergeWakeOverride } from "./wake.js";
 
 type ActiveRun = {
   id: string;
@@ -70,6 +70,7 @@ export class AgentController {
     conversation: ConversationRef,
     wake: WakeConfig,
     message: ChatMessage,
+    options: { wakeIsEffective?: boolean } = {},
   ): Promise<void> {
     if (conversation.selfParticipantId)
       this.selfParticipantIds.set(conversation.spaceId, conversation.selfParticipantId);
@@ -81,7 +82,7 @@ export class AgentController {
     if (this.processing.has(claim)) return;
     this.processing.add(claim);
     try {
-      await this.processClaimed(conversation, wake, message);
+      await this.processClaimed(conversation, wake, message, options.wakeIsEffective ?? false);
       this.store.markHandled(conversation.routeId, message.id, version, fingerprint);
     } finally {
       this.processing.delete(claim);
@@ -92,17 +93,12 @@ export class AgentController {
     conversation: ConversationRef,
     wake: WakeConfig,
     message: ChatMessage,
+    wakeIsEffective: boolean,
   ): Promise<void> {
     if (this.store.isResponse(message.id)) return;
-    const wakeOverride = this.store.wakeOverride(conversation.routeId);
-    const effectiveWake = wakeOverride
-      ? {
-          ...wake,
-          humans: wakeOverride.humans as WakeConfig["humans"],
-          ...(wakeOverride.prefix ? { prefix: wakeOverride.prefix } : {}),
-          ...(wakeOverride.allowedUsers ? { allowedUsers: wakeOverride.allowedUsers } : {}),
-        }
-      : wake;
+    const effectiveWake = wakeIsEffective
+      ? wake
+      : mergeWakeOverride(wake, this.store.wakeOverride(conversation.routeId));
     const replyToAgent = Boolean(
       message.reply_to_message_id && this.store.isResponse(message.reply_to_message_id),
     );

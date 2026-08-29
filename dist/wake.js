@@ -1,3 +1,13 @@
+export function mergeWakeOverride(wake, override) {
+    if (!override)
+        return wake;
+    return {
+        ...wake,
+        humans: override.humans,
+        ...(override.prefix ? { prefix: override.prefix } : {}),
+        ...(override.allowedUsers ? { allowedUsers: override.allowedUsers } : {}),
+    };
+}
 export function isDirectMention(message, config, participantId = config.agent.participantId) {
     return isStructuredMention(message, participantId) || isTextMention(message, config);
 }

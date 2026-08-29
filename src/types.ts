@@ -18,6 +18,7 @@ export type ChatMessage = {
 export type ConversationRef = {
   routeId: string;
   spaceId: string;
+  spaceName?: string;
   chatId: string;
   kind: "chat" | "discussion";
   objectId?: string;

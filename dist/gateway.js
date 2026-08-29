@@ -1,5 +1,6 @@
 import { AgentController, messageFingerprint } from "./controller.js";
 import { DiscussionAnytypePort } from "./discussions.js";
+import { decideWake, mergeWakeOverride } from "./wake.js";
 const INTERRUPTED_RUN_RECOVERY_GRACE_MS = 60 * 60 * 1000;
 export class Gateway {
     anytype;
@@ -8,6 +9,7 @@ export class Gateway {
     store;
     discussions;
     log;
+    enrollChat;
     abort = new AbortController();
     routeIds = new Set();
     tasks = new Set();
@@ -17,13 +19,14 @@ export class Gateway {
     pruneTimer;
     resolveTerminal;
     rejectTerminal;
-    constructor(anytype, runtime, config, store, discussions, log, managementCommand) {
+    constructor(anytype, runtime, config, store, discussions, log, managementCommand, enrollChat) {
         this.anytype = anytype;
         this.runtime = runtime;
         this.config = config;
         this.store = store;
         this.discussions = discussions;
         this.log = log;
+        this.enrollChat = enrollChat;
         this.discussionAnytype = new DiscussionAnytypePort(anytype, discussions);
         this.controller = new AgentController(anytype, runtime, config, store, log, this.discussionAnytype, managementCommand);
         this.terminal = new Promise((resolve, reject) => {
@@ -71,7 +74,7 @@ export class Gateway {
                     });
                 }
                 if (configuredSpace.chatDiscovery.enabled)
-                    this.track(this.discoverChats(space.id, configuredSpace.chatDiscovery, configuredSpace.participantId ?? this.config.agent.participantId, configuredSpace.wakeOverrides));
+                    this.track(this.discoverChats(space.id, space.name, configuredSpace.chatDiscovery, configuredSpace.participantId ?? this.config.agent.participantId, configuredSpace.wakeOverrides));
                 if (configuredSpace.comments.mode !== "disabled")
                     this.track(this.discoverDiscussions(space.id, configuredSpace.comments, configuredSpace.participantId ?? this.config.agent.participantId, configuredSpace.wakeOverrides));
             }
@@ -130,7 +133,7 @@ export class Gateway {
             const attemptStarted = Date.now();
             try {
                 await this.controller.restoreObserversForRoute(conversation);
-                let cursor = await this.catchUp(anytype, conversation, route.wake, this.store.cursor(conversation.routeId));
+                let cursor = await this.catchUp(anytype, route, this.store.cursor(conversation.routeId));
                 this.log("route_connecting", { routeId: conversation.routeId });
                 const eventStream = anytype.stream(conversation.spaceId, conversation.chatId, this.abort.signal);
                 const stream = eventStream[Symbol.asyncIterator]();
@@ -139,7 +142,7 @@ export class Gateway {
                     while (!this.abort.signal.aborted) {
                         const outcome = await raceWithReconciliation(next, 10_000, this.abort.signal);
                         if (outcome.kind === "reconcile") {
-                            cursor = await this.catchUp(anytype, conversation, route.wake, cursor);
+                            cursor = await this.catchUp(anytype, route, cursor);
                             continue;
                         }
                         if (outcome.result.done)
@@ -151,7 +154,7 @@ export class Gateway {
                             // Anytype order IDs are opaque fractional indexes, not strings with a
                             // meaningful lexical ordering. Exact message-version dedupe belongs
                             // in the controller; the periodic API reconciliation owns the cursor.
-                            await this.controller.process(conversation, route.wake, message);
+                            await this.processMessage(route, message);
                         }
                     }
                 }
@@ -176,13 +179,14 @@ export class Gateway {
             }
         }
     }
-    async catchUp(anytype, conversation, wake, initialCursor) {
+    async catchUp(anytype, route, initialCursor) {
+        const { conversation } = route;
         let cursor = initialCursor;
         for (;;) {
             const previousCursor = cursor;
             const messages = await anytype.listMessages(conversation.spaceId, conversation.chatId, 100, cursor);
             for (const message of messages) {
-                await this.controller.process(conversation, wake, message);
+                await this.processMessage(route, message);
                 if (message.order_id) {
                     cursor = message.order_id;
                     this.store.updateCursor(conversation.routeId, message.order_id);
@@ -192,7 +196,62 @@ export class Gateway {
                 return cursor;
         }
     }
-    async discoverChats(spaceId, discovery, selfParticipantId, overrides) {
+    async processMessage(route, message) {
+        const effectiveWake = mergeWakeOverride(route.wake, this.store.wakeOverride(route.conversation.routeId));
+        if (route.autoEnrollment && !route.autoEnrollment.complete) {
+            const enrollment = this.maybeAutoEnroll(route, effectiveWake, message);
+            await Promise.race([enrollment, wait(1_000, this.abort.signal).catch(() => undefined)]);
+        }
+        await this.controller.process(route.conversation, effectiveWake, message, {
+            wakeIsEffective: true,
+        });
+    }
+    async maybeAutoEnroll(route, wake, message) {
+        const enrollment = route.autoEnrollment;
+        if (!enrollment || enrollment.complete || !this.enrollChat)
+            return;
+        if (enrollment.pending)
+            return enrollment.pending;
+        if (Date.now() < enrollment.nextAttemptAt)
+            return;
+        const decision = decideWake(message, wake, this.config, {
+            replyToAgent: false,
+            ...(route.conversation.selfParticipantId
+                ? { selfParticipantId: route.conversation.selfParticipantId }
+                : {}),
+        });
+        if (decision.isAgent ||
+            !decision.directMention ||
+            !decision.wake ||
+            wake.allowedUsers.includes("*"))
+            return;
+        enrollment.pending = (async () => {
+            try {
+                const result = await this.enrollChat(route.conversation.spaceId, route.conversation.spaceName ?? "", route.conversation.chatId, enrollment.chatName, wake);
+                enrollment.complete = true;
+                this.log(result === "enrolled" ? "chat_auto_enrolled" : "chat_auto_enrollment_complete", {
+                    routeId: route.conversation.routeId,
+                    actorId: message.creator,
+                    result,
+                });
+            }
+            catch (error) {
+                enrollment.failures += 1;
+                enrollment.nextAttemptAt = Date.now() + Math.min(2 ** enrollment.failures * 1_000, 60_000);
+                this.log("chat_auto_enrollment_failed", {
+                    routeId: route.conversation.routeId,
+                    actorId: message.creator,
+                    retryAt: enrollment.nextAttemptAt,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+            finally {
+                delete enrollment.pending;
+            }
+        })();
+        return enrollment.pending;
+    }
+    async discoverChats(spaceId, spaceName, discovery, selfParticipantId, overrides) {
         let firstPass = true;
         while (!this.abort.signal.aborted) {
             try {
@@ -204,11 +263,22 @@ export class Gateway {
                             spaceId,
                             chatId: chat.id,
                             kind: "chat",
+                            spaceName,
                             selfParticipantId,
                         },
                         wake: overrides.find((item) => item.kind === "chat" && item.id === chat.id)?.wake ??
                             discovery.wake,
                         baselineExisting: firstPass,
+                        ...(discovery.autoEnroll
+                            ? {
+                                autoEnrollment: {
+                                    chatName: chat.name,
+                                    complete: false,
+                                    failures: 0,
+                                    nextAttemptAt: 0,
+                                },
+                            }
+                            : {}),
                     });
                 }
                 this.log("chat_discovery_complete", { spaceId, chats: chats.length });

@@ -17,7 +17,7 @@ import { CodexAcpDriver } from "./runtime/codex-acp.js";
 import { OpenClawDriver } from "./runtime/openclaw.js";
 import { installService, serviceCommand } from "./service.js";
 import { Store } from "./store.js";
-import { setRouteAccess, setRouteWake } from "./management.js";
+import { enrollChatRoute, setRouteAccess, setRouteWake } from "./management.js";
 import { runMcpServer } from "./mcp.js";
 import { VERSION } from "./version.js";
 const program = new Command().name("aag").description("Anytype Agent Gateway").version(VERSION);
@@ -35,6 +35,8 @@ program
         const spaceId = (await prompt.question("Anytype space ID: ")).trim();
         const chatId = (await prompt.question("Initial Anytype chat/channel ID (optional with discovery): ")).trim();
         const discoverChats = /^y(?:es)?$/i.test((await prompt.question("Discover new chats in this space [y/N]: ")).trim());
+        const autoEnrollChats = discoverChats &&
+            /^y(?:es)?$/i.test((await prompt.question("Persist a discovered chat when an authorized user tags the agent [y/N]: ")).trim());
         const allowedUsers = (await prompt.question("Authorized participant IDs (comma-separated): "))
             .split(",")
             .map((value) => value.trim())
@@ -64,7 +66,14 @@ program
                     id: spaceId,
                     chats: chatId ? [{ id: chatId, wake }] : [],
                     ...(discoverChats
-                        ? { chatDiscovery: { enabled: true, discoveryIntervalSeconds: 30, wake } }
+                        ? {
+                            chatDiscovery: {
+                                enabled: true,
+                                autoEnroll: autoEnrollChats,
+                                discoveryIntervalSeconds: 30,
+                                wake,
+                            },
+                        }
                         : {}),
                     comments: { mode: "disabled" },
                 },
@@ -150,7 +159,7 @@ program
     try {
         store = new Store(config.state.path);
         const configPath = resolve(options.config);
-        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId, actorId) => managementCommand(config, configPath, routeId, actorId));
+        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId, actorId) => managementCommand(config, configPath, routeId, actorId), (spaceId, spaceName, chatId, chatName, wake) => enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }));
         const stop = () => gateway.stop();
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);

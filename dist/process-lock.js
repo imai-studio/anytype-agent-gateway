@@ -7,6 +7,9 @@ export async function acquireProcessLock(path, options = {}) {
     const probe = options.probe ?? process.kill.bind(process);
     const owner = `${pid} ${crypto.randomUUID()}\n`;
     const attempts = options.attempts ?? 20;
+    const waitMilliseconds = options.waitMilliseconds ?? 0;
+    const contentionMessage = options.contentionMessage ??
+        ((ownerPid) => `Another AAG process is already running (pid ${ownerPid})`);
     for (let attempt = 0; attempt < attempts; attempt += 1) {
         try {
             const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
@@ -36,8 +39,13 @@ export async function acquireProcessLock(path, options = {}) {
                 await new Promise((resolve) => setTimeout(resolve, 10));
                 continue;
             }
-            if (ownerPid > 0 && processIsLive(ownerPid, probe))
-                throw new Error(`Another AAG process is already running (pid ${ownerPid})`);
+            if (ownerPid > 0 && processIsLive(ownerPid, probe)) {
+                if (waitMilliseconds > 0 && attempt + 1 < attempts) {
+                    await new Promise((resolve) => setTimeout(resolve, waitMilliseconds));
+                    continue;
+                }
+                throw new Error(contentionMessage(ownerPid));
+            }
             const stalePath = `${path}.stale.${pid}.${crypto.randomUUID()}`;
             try {
                 await rename(path, stalePath);

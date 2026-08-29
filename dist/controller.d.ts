@@ -19,7 +19,9 @@ export declare class AgentController {
     private readonly outboxTimer;
     private readonly observerTimer;
     constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, log: (event: string, fields?: Record<string, unknown>) => void, discussionAnytype?: AnytypePort, managementCommand?: ((routeId: string, actorId: string) => string) | undefined);
-    process(conversation: ConversationRef, wake: WakeConfig, message: ChatMessage): Promise<void>;
+    process(conversation: ConversationRef, wake: WakeConfig, message: ChatMessage, options?: {
+        wakeIsEffective?: boolean;
+    }): Promise<void>;
     private processClaimed;
     stop(): Promise<void>;
     private start;

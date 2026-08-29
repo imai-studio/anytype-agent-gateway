@@ -32,6 +32,7 @@ describe("loadConfig", () => {
     expect(config.tools.anytype.enabled).toBe(false);
     expect(config.tools.anytype.allowWrite).toBe(false);
     expect(config.spaces[0]?.chatDiscovery.enabled).toBe(false);
+    expect(config.spaces[0]?.chatDiscovery.autoEnroll).toBe(false);
   });
 
   it("rejects prefix wake without a prefix", async () => {
@@ -72,6 +73,67 @@ describe("loadConfig", () => {
         .replace("    chats:", "    chatDiscovery: { enabled: true }\n    chats:"),
     );
     await expect(loadConfig(path)).rejects.toThrow("chatDiscovery.wake");
+  });
+
+  it("requires a narrow mention policy for chat auto-enrollment", () => {
+    const base = {
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      runtime: { kind: "openclaw" },
+    };
+    expect(() =>
+      configSchema.parse({
+        ...base,
+        spaces: [
+          {
+            id: "space",
+            chatDiscovery: {
+              enabled: true,
+              autoEnroll: true,
+              wake: { humans: "every-message", agents: "never", allowedUsers: ["admin"] },
+            },
+          },
+        ],
+      }),
+    ).toThrow("mention-based");
+    expect(() =>
+      configSchema.parse({
+        ...base,
+        spaces: [
+          {
+            id: "space",
+            chatDiscovery: {
+              enabled: true,
+              autoEnroll: true,
+              wake: { humans: "mention", agents: "never", allowedUsers: ["*"] },
+            },
+          },
+        ],
+      }),
+    ).toThrow("explicit sender allowlist");
+    expect(() =>
+      configSchema.parse({
+        ...base,
+        spaces: [
+          {
+            id: "space",
+            chatDiscovery: {
+              enabled: true,
+              autoEnroll: true,
+              wake: { humans: "mention", agents: "never", allowedUsers: ["admin"] },
+            },
+            wakeOverrides: [
+              {
+                kind: "chat",
+                id: "chat",
+                wake: { humans: "mention", agents: "never", allowedUsers: ["*"] },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow("wildcard route overrides");
   });
 
   it("requires access admins when runtime access changes are enabled", () => {

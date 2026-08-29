@@ -140,6 +140,7 @@ spaces:
   - name: IMAI Studio Inc.
     chatDiscovery:
       enabled: true
+      autoEnroll: true
       discoveryIntervalSeconds: 30
       wake:
         humans: mention-or-reply
@@ -207,6 +208,8 @@ state:
 ```
 
 Set `agent.participantId` to the bot member's stable Anytype participant ID. AAG uses it to match structured mentions, ignore its own messages, reconcile reactions, and recover orphan replies. `agent.aliases` accepts textual forms such as `@claw`, but structured Anytype mention marks take priority.
+
+When `chatDiscovery.autoEnroll` is enabled, a direct mention from someone in the discovery wake allowlist persists that chat as an explicit route in the agent configuration before processing the message. Unauthorized mentions never enroll a chat. Discovery remains active so the same trusted user can introduce the agent to channels created later. Because managed updates serialize the YAML document, keep explanatory notes in source-controlled example files rather than comments inside the live agent configuration.
 
 Anytype participant IDs can be space-scoped. When one identity joins multiple spaces, set `spaces[].participantId` for each space; it overrides `agent.participantId` for self-filtering and mention matching on that space's routes.
 

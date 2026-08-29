@@ -8,6 +8,22 @@ export type WakeDecision = {
   directMention: boolean;
 };
 
+export type WakeOverride = {
+  humans: string;
+  prefix?: string;
+  allowedUsers?: string[];
+};
+
+export function mergeWakeOverride(wake: WakeConfig, override?: WakeOverride): WakeConfig {
+  if (!override) return wake;
+  return {
+    ...wake,
+    humans: override.humans as WakeConfig["humans"],
+    ...(override.prefix ? { prefix: override.prefix } : {}),
+    ...(override.allowedUsers ? { allowedUsers: override.allowedUsers } : {}),
+  };
+}
+
 export function isDirectMention(
   message: ChatMessage,
   config: AgentConfig,

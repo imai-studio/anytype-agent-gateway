@@ -6,6 +6,12 @@ export type WakeDecision = {
     isAgent: boolean;
     directMention: boolean;
 };
+export type WakeOverride = {
+    humans: string;
+    prefix?: string;
+    allowedUsers?: string[];
+};
+export declare function mergeWakeOverride(wake: WakeConfig, override?: WakeOverride): WakeConfig;
 export declare function isDirectMention(message: ChatMessage, config: AgentConfig, participantId?: string): boolean;
 export declare function decideWake(message: ChatMessage, wake: WakeConfig, config: AgentConfig, options: {
     replyToAgent: boolean;

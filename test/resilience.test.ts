@@ -82,7 +82,7 @@ describe("failure containment", () => {
     store.close();
   });
 
-  it("discovers a new chat and catches its first tagged message", async () => {
+  it("discovers a new chat, enrolls it for an authorized tag, and catches that message", async () => {
     class DiscoveringAnytype extends FakeAnytype {
       listCalls = 0;
       override async listChats(): Promise<Array<{ id: string; name: string }>> {
@@ -118,7 +118,121 @@ describe("failure containment", () => {
       }
     }
     const anytype = new DiscoveringAnytype();
-    anytype.messages.push(incoming({ id: "first-tag", order_id: "001" }));
+    anytype.messages.push(
+      incoming({ id: "agent-tag", order_id: "000", creator: "peer" }),
+      incoming({ id: "unauthorized-tag", order_id: "001", creator: "outsider" }),
+      incoming({ id: "first-tag", order_id: "002" }),
+    );
+    const runtime = new FakeRuntime();
+    const enrollments: Array<{
+      spaceId: string;
+      spaceName: string;
+      chatId: string;
+      chatName: string;
+      allowedUsers: string[];
+    }> = [];
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [
+        {
+          name: "Test",
+          chatDiscovery: {
+            enabled: true,
+            autoEnroll: true,
+            discoveryIntervalSeconds: 10,
+            wake: {
+              humans: "mention-or-reply",
+              agents: "never",
+              allowedUsers: ["peer"],
+            },
+          },
+        },
+      ],
+      runtime: { kind: "openclaw" },
+      coordination: { agentParticipants: ["peer"] },
+    });
+    config.spaces[0]!.chatDiscovery.discoveryIntervalSeconds = 0.01;
+    const store = new Store(":memory:");
+    store.setWakeOverride("chat:space:new-chat", "mention-or-reply", undefined, [
+      "human-1",
+      "peer",
+    ]);
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      () => undefined,
+      undefined,
+      async (spaceId, spaceName, chatId, chatName, discoveredWake) => {
+        enrollments.push({
+          spaceId,
+          spaceName,
+          chatId,
+          chatName,
+          allowedUsers: discoveredWake.allowedUsers,
+        });
+        return "enrolled";
+      },
+    );
+    const running = gateway.start();
+    await eventually(() => expect(enrollments).toHaveLength(1));
+    expect(runtime.starts).toHaveLength(1);
+    expect(runtime.starts[0]?.sessionKey).toBe("aag:chat:space:new-chat");
+    expect(enrollments).toEqual([
+      {
+        spaceId: "space",
+        spaceName: "Space",
+        chatId: "new-chat",
+        chatName: "New chat",
+        allowedUsers: ["human-1", "peer"],
+      },
+    ]);
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("does not auto-enroll a chat for a sender revoked by a live access override", async () => {
+    class DiscoveringAnytype extends FakeAnytype {
+      listCalls = 0;
+      override async listChats(): Promise<Array<{ id: string; name: string }>> {
+        this.listCalls += 1;
+        return this.listCalls === 1
+          ? [{ id: "existing", name: "Existing" }]
+          : [
+              { id: "existing", name: "Existing" },
+              { id: "new-chat", name: "New chat" },
+            ];
+      }
+      override async listMessages(
+        _spaceId: string,
+        chatId: string,
+        limit: number,
+        afterOrderId?: string,
+      ): Promise<ChatMessage[]> {
+        if (chatId !== "new-chat") return [];
+        const values = afterOrderId
+          ? this.messages.filter((message) => message.order_id && message.order_id > afterOrderId)
+          : this.messages;
+        return values.slice(-limit);
+      }
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        if (!signal.aborted) yield { type: "unreachable" };
+      }
+    }
+    const anytype = new DiscoveringAnytype();
+    anytype.messages.push(incoming({ id: "revoked-tag", order_id: "001" }));
     const runtime = new FakeRuntime();
     const config = configSchema.parse({
       version: 1,
@@ -129,10 +243,11 @@ describe("failure containment", () => {
           name: "Test",
           chatDiscovery: {
             enabled: true,
+            autoEnroll: true,
             discoveryIntervalSeconds: 10,
             wake: {
-              humans: "mention-or-reply",
-              agents: "direct-mention",
+              humans: "mention",
+              agents: "never",
               allowedUsers: ["human-1"],
             },
           },
@@ -142,17 +257,32 @@ describe("failure containment", () => {
     });
     config.spaces[0]!.chatDiscovery.discoveryIntervalSeconds = 0.01;
     const store = new Store(":memory:");
+    store.setWakeOverride("chat:space:new-chat", "mention", undefined, ["someone-else"]);
+    let enrollments = 0;
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
     const gateway = new Gateway(
       anytype,
       runtime,
       config,
       store,
       {} as HeartDiscussionAdapter,
-      () => undefined,
+      (event, fields) => logs.push({ event, ...(fields ? { fields } : {}) }),
+      undefined,
+      async () => {
+        enrollments += 1;
+        return "enrolled";
+      },
     );
+
     const running = gateway.start();
-    await eventually(() => expect(runtime.starts).toHaveLength(1));
-    expect(runtime.starts[0]?.sessionKey).toBe("aag:chat:space:new-chat");
+    await eventually(() =>
+      expect(logs).toContainEqual({
+        event: "message_ignored",
+        fields: expect.objectContaining({ messageId: "revoked-tag", reason: "unauthorized" }),
+      }),
+    );
+    expect(enrollments).toBe(0);
+    expect(runtime.starts).toHaveLength(0);
     gateway.stop();
     await running;
     store.close();

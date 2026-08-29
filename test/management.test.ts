@@ -5,11 +5,103 @@ import { describe, expect, it } from "vitest";
 import YAML from "yaml";
 import { loadConfig } from "../src/config.js";
 import { formatPrompt } from "../src/context.js";
-import { setRouteAccess, setRouteWake } from "../src/management.js";
+import { enrollChatRoute, setRouteAccess, setRouteWake } from "../src/management.js";
 import { Store } from "../src/store.js";
 import type { ContextBundle } from "../src/types.js";
 
 describe("constrained gateway management", () => {
+  it("persists an auto-enrolled chat with the discovery wake policy", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aag-management-enroll-"));
+    const configPath = join(dir, "agent.yaml");
+    const wake = { humans: "mention" as const, agents: "never" as const, allowedUsers: ["raj"] };
+    await writeFile(
+      configPath,
+      YAML.stringify({
+        version: 1,
+        agent: { name: "Klee", participantId: "bot" },
+        anytype: { apiKeyFile: "/tmp/key" },
+        spaces: [
+          {
+            id: "space",
+            chatDiscovery: { enabled: true, autoEnroll: true, wake },
+            chats: [{ id: "existing", name: "Existing", wake }],
+          },
+        ],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    await expect(
+      enrollChatRoute({
+        configPath,
+        spaceId: "space",
+        spaceName: "Space",
+        chatId: "new-chat",
+        chatName: "New chat",
+        wake,
+      }),
+    ).resolves.toBe("enrolled");
+    await expect(
+      enrollChatRoute({
+        configPath,
+        spaceId: "space",
+        spaceName: "Space",
+        chatId: "new-chat",
+        chatName: "New chat",
+        wake,
+      }),
+    ).resolves.toBe("existing");
+
+    const config = await loadConfig(configPath);
+    expect(config.spaces[0]?.chats).toEqual([
+      { id: "existing", name: "Existing", wake },
+      { id: "new-chat", name: "New chat", wake },
+    ]);
+  });
+
+  it("serializes concurrent chat enrollments without losing either route", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aag-management-enroll-race-"));
+    const configPath = join(dir, "agent.yaml");
+    const wake = { humans: "mention" as const, agents: "never" as const, allowedUsers: ["raj"] };
+    await writeFile(
+      configPath,
+      YAML.stringify({
+        version: 1,
+        agent: { name: "Klee", participantId: "bot" },
+        anytype: { apiKeyFile: "/tmp/key" },
+        spaces: [
+          {
+            id: "space",
+            chatDiscovery: { enabled: true, autoEnroll: true, wake },
+          },
+        ],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    await Promise.all([
+      enrollChatRoute({
+        configPath,
+        spaceId: "space",
+        spaceName: "Space",
+        chatId: "chat-a",
+        chatName: "Chat A",
+        wake,
+      }),
+      enrollChatRoute({
+        configPath,
+        spaceId: "space",
+        spaceName: "Space",
+        chatId: "chat-b",
+        chatName: "Chat B",
+        wake,
+      }),
+    ]);
+
+    const config = await loadConfig(configPath);
+    expect(config.spaces[0]?.chats.map((chat) => chat.id).sort()).toEqual(["chat-a", "chat-b"]);
+  });
+
   it("persists a route-specific wake policy and applies a live override", async () => {
     const dir = await mkdtemp(join(tmpdir(), "aag-management-"));
     const configPath = join(dir, "agent.yaml");

@@ -87,6 +87,7 @@ spaces:
   - name: SPACE_NAME
     chatDiscovery:
       enabled: true
+      autoEnroll: true
       discoveryIntervalSeconds: 30
       wake:
         humans: mention-or-reply
@@ -126,7 +127,7 @@ Generate one random token of at least 24 characters. Prefer a mode-`0600` file s
 
 For object work, tell the agent to call `aag_context`, discover the space's types and properties, read the target object, and then mutate it. Select and multi-select values can be resolved through the property-tag tool, templates through the type-template tool, and collection membership through the view tools. Every found, created, or updated object returns an `object_ref` token for a compact clickable reference and an `object_card` token for a full native card attachment. The accompanying `anytype://` link is a fallback.
 
-One configuration should describe one identity and one runtime agent. Use explicit routes or an explicit `chatDiscovery` policy; space membership alone must not turn on every conversation. When discovery is enabled, keep its wake policy mention-based and its sender allowlist narrow.
+One configuration should describe one identity and one runtime agent. Use explicit routes or an explicit `chatDiscovery` policy; space membership alone must not turn on every conversation. When discovery is enabled, keep its wake policy mention-based and its sender allowlist narrow. Set `chatDiscovery.autoEnroll: true` when a trusted sender's first direct mention should persist that chat as an explicit route; other senders cannot enroll it. Managed updates serialize the live YAML file, so keep long-form annotations in a separate operator document rather than YAML comments.
 
 ## 5. Validate before connecting
 

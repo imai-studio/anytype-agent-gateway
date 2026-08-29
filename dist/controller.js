@@ -2,7 +2,7 @@ import { inactivityTimeoutSeconds } from "./config.js";
 import { createHash } from "node:crypto";
 import { buildContext, formatPrompt, isNewSessionCommand } from "./context.js";
 import { renderForAnytype, RunProjection } from "./projection.js";
-import { decideWake } from "./wake.js";
+import { decideWake, mergeWakeOverride } from "./wake.js";
 export class AgentController {
     anytype;
     runtime;
@@ -48,7 +48,7 @@ export class AgentController {
         }, 5_000);
         this.observerTimer.unref?.();
     }
-    async process(conversation, wake, message) {
+    async process(conversation, wake, message, options = {}) {
         if (conversation.selfParticipantId)
             this.selfParticipantIds.set(conversation.spaceId, conversation.selfParticipantId);
         const version = message.modified_at ?? message.created_at;
@@ -60,25 +60,19 @@ export class AgentController {
             return;
         this.processing.add(claim);
         try {
-            await this.processClaimed(conversation, wake, message);
+            await this.processClaimed(conversation, wake, message, options.wakeIsEffective ?? false);
             this.store.markHandled(conversation.routeId, message.id, version, fingerprint);
         }
         finally {
             this.processing.delete(claim);
         }
     }
-    async processClaimed(conversation, wake, message) {
+    async processClaimed(conversation, wake, message, wakeIsEffective) {
         if (this.store.isResponse(message.id))
             return;
-        const wakeOverride = this.store.wakeOverride(conversation.routeId);
-        const effectiveWake = wakeOverride
-            ? {
-                ...wake,
-                humans: wakeOverride.humans,
-                ...(wakeOverride.prefix ? { prefix: wakeOverride.prefix } : {}),
-                ...(wakeOverride.allowedUsers ? { allowedUsers: wakeOverride.allowedUsers } : {}),
-            }
-            : wake;
+        const effectiveWake = wakeIsEffective
+            ? wake
+            : mergeWakeOverride(wake, this.store.wakeOverride(conversation.routeId));
         const replyToAgent = Boolean(message.reply_to_message_id && this.store.isResponse(message.reply_to_message_id));
         const decision = decideWake(message, effectiveWake, this.config, {
             replyToAgent,

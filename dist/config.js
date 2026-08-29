@@ -55,6 +55,7 @@ const commentsSchema = z
 const chatDiscoverySchema = z
     .object({
     enabled: z.boolean().default(false),
+    autoEnroll: z.boolean().default(false),
     discoveryIntervalSeconds: z.number().int().min(10).default(30),
     wake: wakeSchema.optional(),
 })
@@ -64,6 +65,27 @@ const chatDiscoverySchema = z
             code: "custom",
             path: ["wake"],
             message: "chatDiscovery.wake is required when chat discovery is enabled",
+        });
+    if (value.autoEnroll && !value.enabled)
+        context.addIssue({
+            code: "custom",
+            path: ["enabled"],
+            message: "chatDiscovery.enabled is required when auto enrollment is enabled",
+        });
+    if (value.autoEnroll &&
+        value.wake &&
+        value.wake.humans !== "mention" &&
+        value.wake.humans !== "mention-or-reply")
+        context.addIssue({
+            code: "custom",
+            path: ["wake", "humans"],
+            message: "chatDiscovery.autoEnroll requires a mention-based human wake policy",
+        });
+    if (value.autoEnroll && value.wake?.allowedUsers.includes("*"))
+        context.addIssue({
+            code: "custom",
+            path: ["wake", "allowedUsers"],
+            message: "chatDiscovery.autoEnroll requires an explicit sender allowlist",
         });
 })
     .transform((value) => ({ ...value, wake: value.wake ?? disabledWake }));
@@ -82,6 +104,7 @@ const spaceSchema = z
     wakeOverrides: z.array(routeWakeOverrideSchema).default([]),
     chatDiscovery: chatDiscoverySchema.default({
         enabled: false,
+        autoEnroll: false,
         discoveryIntervalSeconds: 30,
         wake: disabledWake,
     }),
@@ -93,6 +116,15 @@ const spaceSchema = z
         createMissing: false,
         wake: disabledWake,
     }),
+})
+    .superRefine((value, context) => {
+    if (value.chatDiscovery.autoEnroll &&
+        value.wakeOverrides.some((override) => override.kind === "chat" && override.wake.allowedUsers.includes("*")))
+        context.addIssue({
+            code: "custom",
+            path: ["wakeOverrides"],
+            message: "Chat auto-enrollment does not allow wildcard route overrides",
+        });
 })
     .refine((value) => value.id || value.name || value.invite, "space id, name, or invite is required");
 const baseRuntime = {
@@ -296,6 +328,8 @@ export async function loadConfig(path) {
     const ext = extname(absolute).toLowerCase();
     const raw = ext === ".toml" ? parseToml(text) : ext === ".json" ? JSON.parse(text) : YAML.parse(text);
     const config = configSchema.parse(raw);
+    if (ext === ".toml" && config.spaces.some((space) => space.chatDiscovery.autoEnroll))
+        throw new Error("chatDiscovery.autoEnroll supports YAML and JSON configuration files only");
     config.anytype.apiKeyFile = expandHome(config.anytype.apiKeyFile);
     config.state.path = expandHome(config.state.path);
     if (config.anytype.cli.configPath)

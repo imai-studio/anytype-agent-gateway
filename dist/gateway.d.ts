@@ -1,4 +1,4 @@
-import type { AgentConfig } from "./config.js";
+import type { AgentConfig, WakeConfig } from "./config.js";
 import { HeartDiscussionAdapter } from "./discussions.js";
 import { Store } from "./store.js";
 import type { AnytypePort, RuntimeDriver } from "./types.js";
@@ -9,6 +9,7 @@ export declare class Gateway {
     private readonly store;
     private readonly discussions;
     private readonly log;
+    private readonly enrollChat?;
     private readonly abort;
     private readonly routeIds;
     private readonly tasks;
@@ -18,13 +19,15 @@ export declare class Gateway {
     private pruneTimer;
     private resolveTerminal;
     private rejectTerminal;
-    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string, actorId: string) => string);
+    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string, actorId: string) => string, enrollChat?: ((spaceId: string, spaceName: string, chatId: string, chatName: string, wake: WakeConfig) => Promise<"enrolled" | "existing" | "disabled">) | undefined);
     start(): Promise<void>;
     stop(): void;
     private addRoute;
     private track;
     private runRoute;
     private catchUp;
+    private processMessage;
+    private maybeAutoEnroll;
     private discoverChats;
     private reconcileInterruptedRuns;
     private discoverDiscussions;
