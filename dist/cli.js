@@ -237,7 +237,7 @@ function makeRuntime(config, store, configPath) {
     const mcpServer = config.tools.anytype.enabled && configPath
         ? { command: resolve(process.execPath), args: [executable, "mcp", "--config", configPath] }
         : undefined;
-    return new CodexAcpDriver(config.runtime, store, mcpServer);
+    return new CodexAcpDriver(config.runtime, store, mcpServer, config.agent.name);
 }
 function log(event, fields = {}) {
     console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));

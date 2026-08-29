@@ -274,7 +274,7 @@ function makeRuntime(
     config.tools.anytype.enabled && configPath
       ? { command: resolve(process.execPath), args: [executable, "mcp", "--config", configPath] }
       : undefined;
-  return new CodexAcpDriver(config.runtime, store, mcpServer);
+  return new CodexAcpDriver(config.runtime, store, mcpServer, config.agent.name);
 }
 
 function log(event: string, fields: Record<string, unknown> = {}): void {

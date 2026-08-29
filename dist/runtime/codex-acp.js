@@ -19,6 +19,7 @@ export class CodexAcpDriver {
     config;
     store;
     mcpServer;
+    agentName;
     name = "codex-acp";
     projectEnforcement = "advisory";
     capabilities = {
@@ -29,10 +30,11 @@ export class CodexAcpDriver {
         nativeScheduling: false,
     };
     repeatedInternalLoadFailures = new Map();
-    constructor(config, store, mcpServer) {
+    constructor(config, store, mcpServer, agentName) {
         this.config = config;
         this.store = store;
         this.mcpServer = mcpServer;
+        this.agentName = agentName;
     }
     async doctor() {
         if (!(await commandExists(this.config.command)))
@@ -239,7 +241,7 @@ export class CodexAcpDriver {
                     this.repeatedInternalLoadFailures.delete(input.sessionKey);
                 }
                 this.store?.saveCodexAcpSession(input.sessionKey, sessionId);
-                await this.associateDesktopProject(sessionId);
+                await this.associateDesktopProject(sessionId, input.turn);
                 markReady();
                 try {
                     await ctx.request(acp.methods.agent.session.prompt, {
@@ -251,8 +253,8 @@ export class CodexAcpDriver {
                     acceptingSteers = false;
                     filteredText.finish();
                 }
-                await this.associateDesktopProject(sessionId);
-                this.retryDesktopProjectAssociation(sessionId);
+                await this.associateDesktopProject(sessionId, input.turn);
+                this.retryDesktopProjectAssociation(sessionId, input.turn);
                 const terminalText = messageTexts.get(finalMessageId ?? latestMessageId ?? "") ?? output;
                 return parseSilence(stripLeadingSkillWarning(terminalText));
             }
@@ -291,12 +293,17 @@ export class CodexAcpDriver {
             },
         };
     }
-    async associateDesktopProject(sessionId) {
+    async associateDesktopProject(sessionId, turn) {
         if (this.config.desktopProject !== "auto" || !this.config.defaultProject)
             return;
         await associateCodexDesktopThread({
             threadId: sessionId,
             workspace: this.config.defaultProject,
+            ...(this.agentName
+                ? {
+                    title: `${this.agentName} — Anytype ${turn?.conversation.kind === "discussion" ? "discussion" : "chat"}`,
+                }
+                : {}),
             ...(this.config.environment.CODEX_HOME
                 ? { codexHome: this.config.environment.CODEX_HOME }
                 : process.env.CODEX_HOME
@@ -304,11 +311,11 @@ export class CodexAcpDriver {
                     : {}),
         }).catch(() => undefined);
     }
-    retryDesktopProjectAssociation(sessionId) {
+    retryDesktopProjectAssociation(sessionId, turn) {
         if (this.config.desktopProject !== "auto" || !this.config.defaultProject)
             return;
-        for (const delayMs of [1_000, 5_000]) {
-            const timer = setTimeout(() => void this.associateDesktopProject(sessionId), delayMs);
+        for (const delayMs of [1_000, 5_000, 30_000, 60_000]) {
+            const timer = setTimeout(() => void this.associateDesktopProject(sessionId, turn), delayMs);
             timer.unref?.();
         }
     }

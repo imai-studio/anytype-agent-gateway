@@ -19,6 +19,7 @@ export declare class CodexAcpDriver implements RuntimeDriver {
     private readonly config;
     private readonly store?;
     private readonly mcpServer?;
+    private readonly agentName?;
     readonly name = "codex-acp";
     readonly projectEnforcement: "advisory";
     readonly capabilities: {
@@ -29,7 +30,7 @@ export declare class CodexAcpDriver implements RuntimeDriver {
         readonly nativeScheduling: false;
     };
     private readonly repeatedInternalLoadFailures;
-    constructor(config: CodexDriverConfig, store?: CodexSessionStore | undefined, mcpServer?: McpServerCommand | undefined);
+    constructor(config: CodexDriverConfig, store?: CodexSessionStore | undefined, mcpServer?: McpServerCommand | undefined, agentName?: string | undefined);
     doctor(): Promise<string[]>;
     start(input: {
         sessionKey: string;

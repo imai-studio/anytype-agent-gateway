@@ -19,6 +19,8 @@ interface LaunchdPlistOptions {
   stdoutPath: string;
   stderrPath: string;
   pathEnvironment: string;
+  codexAppToolsPipePath?: string;
+  codexMcpNodePath?: string;
   dependencyLabel?: string;
 }
 
@@ -109,6 +111,12 @@ async function installLaunchdService(configPath: string): Promise<void> {
     stdoutPath,
     stderrPath,
     pathEnvironment: launchdPathEnvironment(nodePath),
+    ...(process.env.CODEX_APP_TOOLS_PIPE_PATH
+      ? { codexAppToolsPipePath: process.env.CODEX_APP_TOOLS_PIPE_PATH }
+      : {}),
+    ...(process.env.CODEX_MCP_NODE_PATH
+      ? { codexMcpNodePath: process.env.CODEX_MCP_NODE_PATH }
+      : {}),
     ...(dependency ? { dependencyLabel: dependency.label } : {}),
   });
   await writePrivateFileAtomic(target, plist);
@@ -183,6 +191,14 @@ export function buildLaunchdPlist(options: LaunchdPlistOptions): string {
   const dependency = options.dependencyLabel
     ? `\n    <key>OtherJobEnabled</key>\n    <dict>\n      <key>${xmlEscape(options.dependencyLabel)}</key>\n      <true/>\n    </dict>`
     : "";
+  const codexEnvironment = [
+    options.codexAppToolsPipePath
+      ? `\n    <key>CODEX_APP_TOOLS_PIPE_PATH</key>\n    <string>${xmlEscape(options.codexAppToolsPipePath)}</string>`
+      : "",
+    options.codexMcpNodePath
+      ? `\n    <key>CODEX_MCP_NODE_PATH</key>\n    <string>${xmlEscape(options.codexMcpNodePath)}</string>`
+      : "",
+  ].join("");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -200,7 +216,7 @@ export function buildLaunchdPlist(options: LaunchdPlistOptions): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${xmlEscape(options.pathEnvironment)}</string>
+    <string>${xmlEscape(options.pathEnvironment)}</string>${codexEnvironment}
   </dict>
   <key>RunAtLoad</key>
   <true/>

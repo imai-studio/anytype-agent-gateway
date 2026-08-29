@@ -10,6 +10,8 @@ describe("buildLaunchdPlist", () => {
       stdoutPath: "/Users/test/Library/Logs/AnytypeAgentGateway/gateway.log",
       stderrPath: "/Users/test/Library/Logs/AnytypeAgentGateway/gateway.error.log",
       pathEnvironment: "/opt/node/bin:/usr/bin:/bin",
+      codexAppToolsPipePath: "/tmp/codex-app.sock",
+      codexMcpNodePath: "/Applications/Codex.app/node",
       dependencyLabel: "anytype",
     });
 
@@ -20,6 +22,9 @@ describe("buildLaunchdPlist", () => {
     expect(plist).toContain("<key>anytype</key>");
     expect(plist).toContain("<key>SuccessfulExit</key>");
     expect(plist).toContain("<key>StandardOutPath</key>");
+    expect(plist).toContain("<key>CODEX_APP_TOOLS_PIPE_PATH</key>");
+    expect(plist).toContain("<string>/tmp/codex-app.sock</string>");
+    expect(plist).toContain("<key>CODEX_MCP_NODE_PATH</key>");
     expect(plist).not.toContain("/bin/sh");
   });
 

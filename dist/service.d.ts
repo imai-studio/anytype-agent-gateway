@@ -5,6 +5,8 @@ interface LaunchdPlistOptions {
     stdoutPath: string;
     stderrPath: string;
     pathEnvironment: string;
+    codexAppToolsPipePath?: string;
+    codexMcpNodePath?: string;
     dependencyLabel?: string;
 }
 export declare function installService(configPath: string): Promise<void>;

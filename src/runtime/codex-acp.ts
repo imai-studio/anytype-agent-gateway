@@ -63,6 +63,7 @@ export class CodexAcpDriver implements RuntimeDriver {
     private readonly config: CodexDriverConfig,
     private readonly store?: CodexSessionStore,
     private readonly mcpServer?: McpServerCommand,
+    private readonly agentName?: string,
   ) {}
 
   async doctor(): Promise<string[]> {
@@ -270,7 +271,7 @@ export class CodexAcpDriver implements RuntimeDriver {
             this.repeatedInternalLoadFailures.delete(input.sessionKey);
           }
           this.store?.saveCodexAcpSession(input.sessionKey, sessionId);
-          await this.associateDesktopProject(sessionId);
+          await this.associateDesktopProject(sessionId, input.turn);
           markReady();
           try {
             await ctx.request(acp.methods.agent.session.prompt, {
@@ -281,8 +282,8 @@ export class CodexAcpDriver implements RuntimeDriver {
             acceptingSteers = false;
             filteredText.finish();
           }
-          await this.associateDesktopProject(sessionId);
-          this.retryDesktopProjectAssociation(sessionId);
+          await this.associateDesktopProject(sessionId, input.turn);
+          this.retryDesktopProjectAssociation(sessionId, input.turn);
           const terminalText = messageTexts.get(finalMessageId ?? latestMessageId ?? "") ?? output;
           return parseSilence(stripLeadingSkillWarning(terminalText));
         } catch (error) {
@@ -321,11 +322,16 @@ export class CodexAcpDriver implements RuntimeDriver {
     };
   }
 
-  private async associateDesktopProject(sessionId: string): Promise<void> {
+  private async associateDesktopProject(sessionId: string, turn?: RuntimeTurn): Promise<void> {
     if (this.config.desktopProject !== "auto" || !this.config.defaultProject) return;
     await associateCodexDesktopThread({
       threadId: sessionId,
       workspace: this.config.defaultProject,
+      ...(this.agentName
+        ? {
+            title: `${this.agentName} — Anytype ${turn?.conversation.kind === "discussion" ? "discussion" : "chat"}`,
+          }
+        : {}),
       ...(this.config.environment.CODEX_HOME
         ? { codexHome: this.config.environment.CODEX_HOME }
         : process.env.CODEX_HOME
@@ -334,10 +340,10 @@ export class CodexAcpDriver implements RuntimeDriver {
     }).catch(() => undefined);
   }
 
-  private retryDesktopProjectAssociation(sessionId: string): void {
+  private retryDesktopProjectAssociation(sessionId: string, turn?: RuntimeTurn): void {
     if (this.config.desktopProject !== "auto" || !this.config.defaultProject) return;
-    for (const delayMs of [1_000, 5_000]) {
-      const timer = setTimeout(() => void this.associateDesktopProject(sessionId), delayMs);
+    for (const delayMs of [1_000, 5_000, 30_000, 60_000]) {
+      const timer = setTimeout(() => void this.associateDesktopProject(sessionId, turn), delayMs);
       timer.unref?.();
     }
   }
