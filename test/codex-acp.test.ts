@@ -74,7 +74,7 @@ describe("Codex ACP continuity", () => {
     store.close();
   });
 
-  it("preserves a saved session when loading repeatedly fails with a transient ACP internal error", async () => {
+  it("preserves one transient load failure then replaces a persistently broken session", async () => {
     const directory = await temporaryDirectory();
     const logPath = join(directory, "calls.jsonl");
     const store = new Store(join(directory, "state.sqlite"));
@@ -91,6 +91,17 @@ describe("Codex ACP continuity", () => {
         .filter((call) => call.method === "session/load" || call.method === "session/new")
         .map((call) => call.method),
     ).toEqual(["session/load", "session/load"]);
+
+    const result = await (
+      await runtime.start({ sessionKey: "aag:thread", prompt: "retry" }, () => undefined)
+    ).result;
+    expect(result).toMatchObject({ text: "fresh reply" });
+    expect(store.codexAcpSession("aag:thread")).toBe("new-session");
+    expect(
+      (await log(logPath))
+        .filter((call) => call.method === "session/load" || call.method === "session/new")
+        .map((call) => call.method),
+    ).toEqual(["session/load", "session/load", "session/load", "session/load", "session/new"]);
     store.close();
   });
 

@@ -28,6 +28,7 @@ export declare class CodexAcpDriver implements RuntimeDriver {
         readonly sessionObservation: false;
         readonly nativeScheduling: false;
     };
+    private readonly repeatedInternalLoadFailures;
     constructor(config: CodexDriverConfig, store?: CodexSessionStore | undefined, mcpServer?: McpServerCommand | undefined);
     doctor(): Promise<string[]>;
     start(input: {

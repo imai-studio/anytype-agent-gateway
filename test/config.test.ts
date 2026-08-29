@@ -27,12 +27,25 @@ describe("loadConfig", () => {
     expect(config.spaces[0]?.chats[0]?.wake.agents).toBe("never");
     expect(config.responses.silentPlaceholder).toBe("delete");
     expect(config.responses.streaming).toBe(true);
+    expect(config.context.promptMode).toBe("full");
     expect(config.runtime.timeoutSeconds).toBe(0);
     expect(config.runtime.maxRunSeconds).toBe(0);
     expect(config.tools.anytype.enabled).toBe(false);
     expect(config.tools.anytype.allowWrite).toBe(false);
     expect(config.spaces[0]?.chatDiscovery.enabled).toBe(false);
     expect(config.spaces[0]?.chatDiscovery.autoEnroll).toBe(false);
+  });
+
+  it("accepts workspace-owned stable prompt instructions", () => {
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "Klee", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "codex" },
+      context: { promptMode: "workspace" },
+    });
+    expect(config.context.promptMode).toBe("workspace");
   });
 
   it("rejects prefix wake without a prefix", async () => {

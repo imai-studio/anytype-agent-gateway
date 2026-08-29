@@ -49,6 +49,7 @@ export class CodexAcpDriver implements RuntimeDriver {
     sessionObservation: false,
     nativeScheduling: false,
   } as const;
+  private readonly repeatedInternalLoadFailures = new Map<string, number>();
   constructor(
     private readonly config: CodexDriverConfig,
     private readonly store?: CodexSessionStore,
@@ -233,9 +234,18 @@ export class CodexAcpDriver implements RuntimeDriver {
                 });
               }
               sessionId = savedSessionId;
+              this.repeatedInternalLoadFailures.delete(input.sessionKey);
             } catch (error) {
-              if (!savedSessionUnavailable(error)) throw error;
-              this.store?.deleteCodexAcpSession(input.sessionKey);
+              if (savedSessionInternallyBroken(error)) {
+                const failures = (this.repeatedInternalLoadFailures.get(input.sessionKey) ?? 0) + 1;
+                this.repeatedInternalLoadFailures.set(input.sessionKey, failures);
+                if (failures < 2) throw error;
+                this.store?.deleteCodexAcpSession(input.sessionKey);
+              } else if (savedSessionUnavailable(error)) {
+                this.store?.deleteCodexAcpSession(input.sessionKey);
+              } else {
+                throw error;
+              }
             } finally {
               replayingHistory = false;
             }
@@ -245,6 +255,7 @@ export class CodexAcpDriver implements RuntimeDriver {
               sessionId: string;
             };
             sessionId = session.sessionId;
+            this.repeatedInternalLoadFailures.delete(input.sessionKey);
           }
           this.store?.saveCodexAcpSession(input.sessionKey, sessionId);
           markReady();

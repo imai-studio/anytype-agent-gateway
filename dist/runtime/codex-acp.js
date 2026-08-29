@@ -27,6 +27,7 @@ export class CodexAcpDriver {
         sessionObservation: false,
         nativeScheduling: false,
     };
+    repeatedInternalLoadFailures = new Map();
     constructor(config, store, mcpServer) {
         this.config = config;
         this.store = store;
@@ -207,11 +208,22 @@ export class CodexAcpDriver {
                             });
                         }
                         sessionId = savedSessionId;
+                        this.repeatedInternalLoadFailures.delete(input.sessionKey);
                     }
                     catch (error) {
-                        if (!savedSessionUnavailable(error))
+                        if (savedSessionInternallyBroken(error)) {
+                            const failures = (this.repeatedInternalLoadFailures.get(input.sessionKey) ?? 0) + 1;
+                            this.repeatedInternalLoadFailures.set(input.sessionKey, failures);
+                            if (failures < 2)
+                                throw error;
+                            this.store?.deleteCodexAcpSession(input.sessionKey);
+                        }
+                        else if (savedSessionUnavailable(error)) {
+                            this.store?.deleteCodexAcpSession(input.sessionKey);
+                        }
+                        else {
                             throw error;
-                        this.store?.deleteCodexAcpSession(input.sessionKey);
+                        }
                     }
                     finally {
                         replayingHistory = false;
@@ -220,6 +232,7 @@ export class CodexAcpDriver {
                 if (!sessionId) {
                     const session = (await ctx.request(acp.methods.agent.session.new, sessionSetup));
                     sessionId = session.sessionId;
+                    this.repeatedInternalLoadFailures.delete(input.sessionKey);
                 }
                 this.store?.saveCodexAcpSession(input.sessionKey, sessionId);
                 markReady();

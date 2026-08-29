@@ -269,6 +269,10 @@ export declare const configSchema: z.ZodObject<{
         silentText: z.ZodDefault<z.ZodString>;
     }, z.core.$strip>>;
     context: z.ZodDefault<z.ZodObject<{
+        promptMode: z.ZodDefault<z.ZodEnum<{
+            full: "full";
+            workspace: "workspace";
+        }>>;
         historyMessages: z.ZodDefault<z.ZodNumber>;
         replyDepth: z.ZodDefault<z.ZodNumber>;
         referencedObjects: z.ZodDefault<z.ZodNumber>;

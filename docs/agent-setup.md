@@ -111,9 +111,14 @@ runtime:
 responses:
   mode: milestones
   streaming: true
+context:
+  promptMode: workspace
+  historyMessages: 10
 ```
 
 The installed package resolves its bundled `codex-acp` executable automatically. For OpenClaw, use `examples/openclaw-agent.yaml`, provide the absolute Gateway client-module path, and keep the Gateway token in the configured environment variable or protected OpenClaw config file.
+
+For a Codex agent with a dedicated workspace, `context.promptMode: workspace` keeps each AAG turn compact. Put the stable identity, gateway protocol, tool rules, and response conventions in `AGENTS.md` at `runtime.defaultProject`; AAG then sends only a short gateway preamble and the current untrusted conversation envelope. The default `full` mode remains self-contained for runtimes without workspace instructions. `responses.mode: milestones` edits the live Anytype status message with concise ACP tool titles, while `workingReaction` marks the triggering user message as busy until the run finishes.
 
 Object writes are off unless the configuration explicitly sets `tools.anytype.allowWrite: true`. Keep `allowedSpaceIds` and `allowedFileRoots` narrow. Uploads require an explicit root, resolve symlinks, accept regular files only, and are capped at 50 MiB. Archive is a separate permission.
 

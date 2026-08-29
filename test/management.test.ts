@@ -324,4 +324,40 @@ describe("constrained gateway management", () => {
     expect(prompt).toContain("aag config wake");
     expect(prompt).toContain("explicit wake-behavior request");
   });
+
+  it("keeps workspace prompt mode compact and omits injected shell commands", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aag-workspace-prompt-"));
+    const configPath = join(dir, "agent.yaml");
+    await writeFile(
+      configPath,
+      YAML.stringify({
+        version: 1,
+        agent: { name: "Klee", participantId: "bot" },
+        anytype: { apiKeyFile: "/tmp/key" },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex", defaultProject: "/workspace/klee" },
+        management: { allowWakeChanges: true },
+        context: { promptMode: "workspace" },
+      }),
+    );
+    const config = await loadConfig(configPath);
+    const bundle: ContextBundle = {
+      conversation: { routeId: "chat:space:chat", spaceId: "space", chatId: "chat", kind: "chat" },
+      trigger: { id: "m1", creator: "raj", content: { text: "listen here" } },
+      history: [],
+      replyAncestry: [],
+      referencedObjects: [],
+    };
+    const prompt = formatPrompt(
+      bundle,
+      config,
+      "/private/node /private/aag config wake --route-id chat:space:chat --humans <mode>",
+    );
+
+    expect(prompt).toContain("Follow the workspace AGENTS.md");
+    expect(prompt).toContain('"currentMessage":"listen here"');
+    expect(prompt).not.toContain("/private/node");
+    expect(prompt).not.toContain("Available constrained commands");
+    expect(prompt.length).toBeLessThan(1_000);
+  });
 });

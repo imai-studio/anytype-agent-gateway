@@ -301,11 +301,17 @@ export const configSchema = z.object({
     }),
   context: z
     .object({
+      promptMode: z.enum(["full", "workspace"]).default("full"),
       historyMessages: z.number().int().min(0).max(200).default(30),
       replyDepth: z.number().int().min(0).max(50).default(12),
       referencedObjects: z.number().int().min(0).max(20).default(8),
     })
-    .default({ historyMessages: 30, replyDepth: 12, referencedObjects: 8 }),
+    .default({
+      promptMode: "full",
+      historyMessages: 30,
+      replyDepth: 12,
+      referencedObjects: 8,
+    }),
   coordination: z
     .object({
       peers: z
