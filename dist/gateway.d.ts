@@ -18,7 +18,7 @@ export declare class Gateway {
     private pruneTimer;
     private resolveTerminal;
     private rejectTerminal;
-    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string) => string);
+    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string, actorId: string) => string);
     start(): Promise<void>;
     stop(): void;
     private addRoute;

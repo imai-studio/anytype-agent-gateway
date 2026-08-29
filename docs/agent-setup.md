@@ -175,6 +175,7 @@ This installs a user-level launchd service on macOS or systemd user service on L
 - Anytype shows a separate, taggable member in only the intended spaces.
 - API keys and tokens live outside the repository with restrictive permissions.
 - Chat/discussion routes and participant allowlists are explicit.
+- Runtime access changes are disabled unless `management.allowAccessChanges` is enabled with explicit `accessAdmins`; only those admins can change a route allowlist.
 - Codex, OpenClaw, or the operating-system sandbox enforces the declared project limits.
 - The foreground test covers mentions, silence, progress edits, final replies, and steering.
 - Thinking is replaced by the following text in one message; later distinct text parts appear as new streamed messages.

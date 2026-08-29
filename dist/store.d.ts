@@ -62,8 +62,9 @@ export declare class Store {
     wakeOverride(routeId: string): {
         humans: string;
         prefix?: string;
+        allowedUsers?: string[];
     } | undefined;
-    setWakeOverride(routeId: string, humans: string, prefix?: string): void;
+    setWakeOverride(routeId: string, humans: string, prefix?: string, allowedUsers?: string[]): void;
     sessionBinding(threadKey: string): SessionBinding | undefined;
     bindingForNativeSession(runtime: AgentRuntime, nativeSession: {
         key?: string;

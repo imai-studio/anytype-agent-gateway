@@ -340,14 +340,22 @@ export class Store {
             return {
                 humans: parsed.humans,
                 ...(typeof parsed.prefix === "string" && parsed.prefix ? { prefix: parsed.prefix } : {}),
+                ...(Array.isArray(parsed.allowedUsers) &&
+                    parsed.allowedUsers.every((participant) => typeof participant === "string")
+                    ? { allowedUsers: parsed.allowedUsers }
+                    : {}),
             };
         }
         catch {
             return { humans: stored };
         }
     }
-    setWakeOverride(routeId, humans, prefix) {
-        const value = JSON.stringify({ humans, ...(prefix ? { prefix } : {}) });
+    setWakeOverride(routeId, humans, prefix, allowedUsers) {
+        const value = JSON.stringify({
+            humans,
+            ...(prefix ? { prefix } : {}),
+            ...(allowedUsers ? { allowedUsers } : {}),
+        });
         this.db
             .prepare("INSERT INTO route_wake_overrides(route_id,humans,updated_at) VALUES(?,?,?) ON CONFLICT(route_id) DO UPDATE SET humans=excluded.humans,updated_at=excluded.updated_at")
             .run(routeId, value, Date.now());

@@ -231,6 +231,8 @@ export declare const configSchema: z.ZodObject<{
     }, z.core.$strip>], "kind">;
     management: z.ZodDefault<z.ZodObject<{
         allowWakeChanges: z.ZodDefault<z.ZodBoolean>;
+        allowAccessChanges: z.ZodDefault<z.ZodBoolean>;
+        accessAdmins: z.ZodDefault<z.ZodArray<z.ZodString>>;
     }, z.core.$strip>>;
     tools: z.ZodDefault<z.ZodObject<{
         anytype: z.ZodDefault<z.ZodObject<{

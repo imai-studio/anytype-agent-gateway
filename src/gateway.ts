@@ -25,7 +25,7 @@ export class Gateway {
     private readonly store: Store,
     private readonly discussions: HeartDiscussionAdapter,
     private readonly log: (event: string, fields?: Record<string, unknown>) => void,
-    managementCommand?: (routeId: string) => string,
+    managementCommand?: (routeId: string, actorId: string) => string,
   ) {
     this.discussionAnytype = new DiscussionAnytypePort(anytype, discussions);
     this.controller = new AgentController(

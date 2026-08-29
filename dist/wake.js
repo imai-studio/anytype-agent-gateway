@@ -49,7 +49,7 @@ export function decideWake(message, wake, config, options) {
 function escapeRegex(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function sameIdentity(left, right) {
+export function sameIdentity(left, right) {
     if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`))
         return true;
     return left.split("_").at(-1) === right.split("_").at(-1);

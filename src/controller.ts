@@ -42,7 +42,7 @@ export class AgentController {
     private readonly store: Store,
     private readonly log: (event: string, fields?: Record<string, unknown>) => void,
     private readonly discussionAnytype: AnytypePort = anytype,
-    private readonly managementCommand?: (routeId: string) => string,
+    private readonly managementCommand?: (routeId: string, actorId: string) => string,
   ) {
     this.store.saveRuntimeCapabilities(this.runtimeName(), this.runtime.capabilities);
     const outbox = this.store.outboundStatusCounts();
@@ -100,6 +100,7 @@ export class AgentController {
           ...wake,
           humans: wakeOverride.humans as WakeConfig["humans"],
           ...(wakeOverride.prefix ? { prefix: wakeOverride.prefix } : {}),
+          ...(wakeOverride.allowedUsers ? { allowedUsers: wakeOverride.allowedUsers } : {}),
         }
       : wake;
     const replyToAgent = Boolean(
@@ -363,7 +364,7 @@ export class AgentController {
           prompt: formatPrompt(
             context,
             this.config,
-            this.managementCommand?.(conversation.routeId),
+            this.managementCommand?.(conversation.routeId, message.creator ?? ""),
           ),
           turn: {
             conversation,

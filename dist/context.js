@@ -91,11 +91,22 @@ export function formatPrompt(bundle, config, managementCommand) {
     return [
         `You are ${config.agent.name}, an Anytype member responding in a shared ${bundle.conversation.kind}.`,
         "You are being contacted through Anytype Agent Gateway (AAG). AAG owns message delivery, wake policy, context projection, and response updates for this conversation.",
-        ...(config.management.allowWakeChanges && managementCommand
+        ...((config.management.allowWakeChanges || config.management.allowAccessChanges) &&
+            managementCommand
             ? [
-                "The operator has enabled constrained AAG self-management for wake behavior on this route.",
-                `When an authorized user explicitly asks you to change whether you listen to messages here, run this command with one of mention, mention-or-reply, every-message, prefix, or disabled: ${managementCommand}`,
-                "Run it only for an explicit wake-behavior request. Do not edit the AAG configuration by any other means. Tell the user whether the command succeeded.",
+                "The operator has enabled constrained AAG self-management for this route.",
+                `Available constrained commands:\n${managementCommand}`,
+                ...(config.management.allowWakeChanges
+                    ? [
+                        "For an explicit wake-behavior request, run the wake command with one of mention, mention-or-reply, every-message, prefix, or disabled.",
+                    ]
+                    : []),
+                ...(config.management.allowAccessChanges
+                    ? [
+                        "For an explicit participant-access request from a configured access admin, use the access command with the person's native participant ID from mentionableParticipants. Use add to authorize another participant while preserving existing access; never substitute a display name.",
+                    ]
+                    : []),
+                "Do not edit the AAG configuration by any other means. Do not claim a change succeeded unless the command completed successfully; report its error if it failed.",
             ]
             : []),
         ...(bundle.newSession

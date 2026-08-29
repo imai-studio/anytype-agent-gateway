@@ -314,9 +314,19 @@ Object discussions are flat threads in Anytype: every visible follow-up is attac
 
 ### Agent-managed wake behavior
 
-Set `management.allowWakeChanges: true` to let the connected harness change only the human wake mode for its current chat or object discussion. AAG identifies itself in the harness prompt and provides a route-bound `aag config wake` command. When an authorized user explicitly says, for example, “listen to every message in this chat,” the agent can apply that setting immediately. AAG writes a route-specific override to the agent configuration and mirrors it into the running SQLite state, so a restart is not required.
+Set `management.allowWakeChanges: true` to let the connected harness change the human wake mode for its current chat or object discussion. AAG identifies itself in the harness prompt and provides a route-bound `aag config wake` command. When an authorized user explicitly says, for example, “listen to every message in this chat,” the agent can apply that setting immediately.
 
-This capability does not grant general configuration access. The command accepts only the current route and a validated human wake mode; normal participant allowlists and agent-to-agent wake rules remain unchanged. It is disabled by default.
+Participant access is a separate permission. Set `management.allowAccessChanges: true` and list stable participant IDs in `management.accessAdmins` to let only those admins ask the agent to add or remove allowed senders on the current route. The constrained `aag config access` command requires the requesting admin's native participant ID, refuses wildcard grants, and prevents an admin from removing an access admin. For example:
+
+```yaml
+management:
+  allowWakeChanges: true
+  allowAccessChanges: true
+  accessAdmins:
+    - _participant_owner_id
+```
+
+Both commands write a route-specific override to the private agent configuration and mirror the complete wake policy into SQLite, so the running gateway applies the change to the next message without a restart. Neither capability grants general configuration access or changes agent-to-agent wake rules. Both are disabled by default, and the agent is told not to report success unless the constrained command succeeds.
 
 The adapter authenticates with the `sessionToken` in the official CLI config (normally `~/.anytype/config.json`) and defaults to Heart gRPC at `127.0.0.1:31010`. Keyring-only CLI sessions are not supported by this adapter. `comments.createMissing: true` asks Heart to add a discussion to objects that do not have one and is therefore a workspace mutation; it defaults to `false`.
 

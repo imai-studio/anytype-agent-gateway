@@ -11,3 +11,4 @@ export declare function decideWake(message: ChatMessage, wake: WakeConfig, confi
     replyToAgent: boolean;
     selfParticipantId?: string;
 }): WakeDecision;
+export declare function sameIdentity(left: string, right: string): boolean;

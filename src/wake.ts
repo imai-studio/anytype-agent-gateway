@@ -81,7 +81,7 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function sameIdentity(left: string, right: string): boolean {
+export function sameIdentity(left: string, right: string): boolean {
   if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`)) return true;
   return left.split("_").at(-1) === right.split("_").at(-1);
 }

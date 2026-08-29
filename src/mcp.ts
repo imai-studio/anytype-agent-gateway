@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { AnytypeClient } from "./anytype-client.js";
 import { loadConfig, type AgentConfig } from "./config.js";
-import { setRouteWake } from "./management.js";
+import { setRouteAccess, setRouteWake } from "./management.js";
 import { Store } from "./store.js";
 import { VERSION } from "./version.js";
 
@@ -41,13 +41,14 @@ const reservedPropertyKeys = new Set([
 
 export async function runMcpServer(
   configPath: string,
-  context: { routeId?: string; spaceId?: string } = {},
+  context: { routeId?: string; spaceId?: string; actorId?: string } = {},
 ): Promise<void> {
   const config = await loadConfig(configPath);
   if (!config.tools.anytype.enabled)
     throw new Error("Anytype tools are disabled in this AAG configuration");
   const anytype = await AnytypeClient.create(config);
   const routeId = context.routeId ?? process.env.AAG_ROUTE_ID;
+  const actorId = context.actorId ?? process.env.AAG_ACTOR_ID;
   const defaultSpaceId =
     context.spaceId ??
     process.env.AAG_SPACE_ID ??
@@ -84,6 +85,7 @@ export async function runMcpServer(
             defaultSpaceId,
             String(request.params?.name ?? ""),
             request.params?.arguments ?? {},
+            actorId,
           );
           result = { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
         } catch (error) {
@@ -198,28 +200,54 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
       ),
     },
   ];
-  const managementTools: Tool[] = config.management.allowWakeChanges
-    ? [
-        {
-          name: "aag_set_wake",
-          description:
-            "Change how this agent wakes in an Anytype chat or discussion. Pass route_id when the MCP process has no bound route.",
-          inputSchema: objectSchema(
-            {
-              route_id: stringSchema(
-                "chat:<space-id>:<chat-id> or discussion:<space-id>:<discussion-id>",
-              ),
-              humans: {
-                type: "string",
-                enum: ["mention", "mention-or-reply", "every-message", "prefix", "disabled"],
+  const managementTools: Tool[] = [
+    ...(config.management.allowWakeChanges
+      ? [
+          {
+            name: "aag_set_wake",
+            description:
+              "Change how this agent wakes in an Anytype chat or discussion. Pass route_id when the MCP process has no bound route.",
+            inputSchema: objectSchema(
+              {
+                route_id: stringSchema(
+                  "chat:<space-id>:<chat-id> or discussion:<space-id>:<discussion-id>",
+                ),
+                humans: {
+                  type: "string",
+                  enum: ["mention", "mention-or-reply", "every-message", "prefix", "disabled"],
+                },
+                prefix: stringSchema(),
               },
-              prefix: stringSchema(),
-            },
-            ["humans"],
-          ),
-        },
-      ]
-    : [];
+              ["humans"],
+            ),
+          },
+        ]
+      : []),
+    ...(config.management.allowAccessChanges
+      ? [
+          {
+            name: "aag_set_access",
+            description:
+              "Add or remove native Anytype participant IDs from this route's sender allowlist. Only a configured access admin can authorize the change.",
+            inputSchema: objectSchema(
+              {
+                route_id: stringSchema(
+                  "chat:<space-id>:<chat-id> or discussion:<space-id>:<discussion-id>",
+                ),
+                actor_id: stringSchema("Native participant ID of the user requesting the change"),
+                operation: { type: "string", enum: ["add", "remove", "replace"] },
+                participant_ids: {
+                  type: "array",
+                  items: { type: "string" },
+                  minItems: 1,
+                },
+              },
+              ["actor_id", "operation", "participant_ids"],
+            ),
+          },
+        ]
+      : []),
+  ];
   if (!config.tools.anytype.allowWrite) return [...readTools, ...managementTools];
   return [
     ...readTools,
@@ -305,6 +333,7 @@ export async function callTool(
   defaultSpaceId: string | undefined,
   name: string,
   input: Record<string, any>,
+  boundActorId?: string,
 ): Promise<unknown> {
   const requestedRouteId =
     typeof input.route_id === "string" && input.route_id ? baseRoute(input.route_id) : undefined;
@@ -326,6 +355,7 @@ export async function callTool(
         write: config.tools.anytype.allowWrite,
         archive: config.tools.anytype.allowArchive,
         wake_changes: config.management.allowWakeChanges,
+        access_changes: config.management.allowAccessChanges,
         file_roots: config.tools.anytype.allowedFileRoots,
       },
       response_format:
@@ -354,6 +384,25 @@ export async function callTool(
       ...(input.prefix ? { prefix: String(input.prefix) } : {}),
     });
     return { route_id: effectiveRouteId, humans: input.humans };
+  }
+  if (name === "aag_set_access") {
+    if (!config.management.allowAccessChanges) throw new Error("Access changes are disabled");
+    if (!effectiveRouteId)
+      throw new Error("route_id is required because this MCP process has no bound Anytype route");
+    const routeSpaceId = spaceFromRoute(effectiveRouteId);
+    if (!routeSpaceId) throw new Error("route_id does not contain a valid Anytype space");
+    assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
+    const requestedActorId = required(input, "actor_id");
+    if (boundActorId && requestedActorId !== boundActorId)
+      throw new Error("actor_id must match the current Anytype sender");
+    const allowedUsers = await setRouteAccess({
+      configPath,
+      routeId: effectiveRouteId,
+      actorId: boundActorId ?? requestedActorId,
+      operation: String(input.operation),
+      participantIds: requiredArray(input, "participant_ids"),
+    });
+    return { route_id: effectiveRouteId, allowed_users: allowedUsers };
   }
   const spaceId = String(input.space_id ?? defaultSpaceId ?? "");
   if (!spaceId) throw new Error("space_id is required outside a bound Anytype conversation");

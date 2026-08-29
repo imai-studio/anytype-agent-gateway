@@ -3,7 +3,7 @@ import { access, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { configSchema, loadConfig } from "../src/config.js";
 
 const yaml = `version: 1
 agent: { name: AAG, participantId: bot }
@@ -72,6 +72,19 @@ describe("loadConfig", () => {
         .replace("    chats:", "    chatDiscovery: { enabled: true }\n    chats:"),
     );
     await expect(loadConfig(path)).rejects.toThrow("chatDiscovery.wake");
+  });
+
+  it("requires access admins when runtime access changes are enabled", () => {
+    expect(() =>
+      configSchema.parse({
+        version: 1,
+        agent: { name: "AAG", participantId: "bot" },
+        anytype: { apiKeyFile: "/tmp/key" },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "openclaw" },
+        management: { allowAccessChanges: true },
+      }),
+    ).toThrow("accessAdmins");
   });
 
   it("resolves the packaged Codex ACP executable", async () => {

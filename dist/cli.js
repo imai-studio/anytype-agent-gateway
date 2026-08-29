@@ -17,7 +17,7 @@ import { CodexAcpDriver } from "./runtime/codex-acp.js";
 import { OpenClawDriver } from "./runtime/openclaw.js";
 import { installService, serviceCommand } from "./service.js";
 import { Store } from "./store.js";
-import { setRouteWake } from "./management.js";
+import { setRouteAccess, setRouteWake } from "./management.js";
 import { runMcpServer } from "./mcp.js";
 import { VERSION } from "./version.js";
 const program = new Command().name("aag").description("Anytype Agent Gateway").version(VERSION);
@@ -150,7 +150,7 @@ program
     try {
         store = new Store(config.state.path);
         const configPath = resolve(options.config);
-        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId) => managementCommand(configPath, routeId));
+        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId, actorId) => managementCommand(config, configPath, routeId, actorId));
         const stop = () => gateway.stop();
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
@@ -178,15 +178,35 @@ config
     });
     console.log(`Updated ${options.routeId} to humans=${options.humans}. The running gateway will apply it to the next message.`);
 });
+config
+    .command("access")
+    .description("Change the participant allowlist for one AAG route")
+    .requiredOption("-c, --config <path>")
+    .requiredOption("--route-id <id>")
+    .requiredOption("--actor-id <id>")
+    .requiredOption("--operation <operation>")
+    .requiredOption("--participant-id <id...>")
+    .action(async (options) => {
+    const allowedUsers = await setRouteAccess({
+        configPath: options.config,
+        routeId: options.routeId,
+        actorId: options.actorId,
+        operation: options.operation,
+        participantIds: options.participantId,
+    });
+    console.log(`Updated ${options.routeId} participant access. ${allowedUsers.length} participant(s) are now allowed. The running gateway will apply it to the next message.`);
+});
 program
     .command("mcp")
     .description("Run the policy-mediated Anytype tool server over stdio")
     .requiredOption("-c, --config <path>")
     .option("--route-id <id>")
     .option("--space-id <id>")
+    .option("--actor-id <id>")
     .action(async (options) => runMcpServer(resolve(options.config), {
     ...(options.routeId ? { routeId: options.routeId } : {}),
     ...(options.spaceId ? { spaceId: options.spaceId } : {}),
+    ...(options.actorId ? { actorId: options.actorId } : {}),
 }));
 const identity = program
     .command("identity")
@@ -269,9 +289,15 @@ function makeRuntime(config, store, configPath) {
 function log(event, fields = {}) {
     console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));
 }
-function managementCommand(configPath, routeId) {
+function managementCommand(config, configPath, routeId, actorId) {
     const executable = resolve(process.argv[1]);
-    return `${shellQuote(process.execPath)} ${shellQuote(executable)} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --humans <mode>`;
+    const command = `${shellQuote(process.execPath)} ${shellQuote(executable)}`;
+    const commands = [];
+    if (config.management.allowWakeChanges)
+        commands.push(`Wake command: ${command} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --humans <mode>`);
+    if (config.management.allowAccessChanges)
+        commands.push(`Access command: ${command} config access --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --actor-id ${shellQuote(actorId)} --operation <add|remove|replace> --participant-id <native-participant-id>`);
+    return commands.join("\n");
 }
 function shellQuote(value) {
     return `'${value.replaceAll("'", `'\\''`)}'`;

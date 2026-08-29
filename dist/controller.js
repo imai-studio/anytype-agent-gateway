@@ -76,6 +76,7 @@ export class AgentController {
                 ...wake,
                 humans: wakeOverride.humans,
                 ...(wakeOverride.prefix ? { prefix: wakeOverride.prefix } : {}),
+                ...(wakeOverride.allowedUsers ? { allowedUsers: wakeOverride.allowedUsers } : {}),
             }
             : wake;
         const replyToAgent = Boolean(message.reply_to_message_id && this.store.isResponse(message.reply_to_message_id));
@@ -287,7 +288,7 @@ export class AgentController {
             let lastActivityAt = Date.now();
             const handle = await this.runtime.start({
                 sessionKey,
-                prompt: formatPrompt(context, this.config, this.managementCommand?.(conversation.routeId)),
+                prompt: formatPrompt(context, this.config, this.managementCommand?.(conversation.routeId, message.creator ?? "")),
                 turn: {
                     conversation,
                     message,

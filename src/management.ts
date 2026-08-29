@@ -3,8 +3,9 @@ import { chmod, open, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import YAML from "yaml";
 import { AnytypeClient } from "./anytype-client.js";
-import { configSchema, loadConfig, type WakeConfig } from "./config.js";
+import { configSchema, loadConfig, type AgentConfig, type WakeConfig } from "./config.js";
 import { Store } from "./store.js";
+import { sameIdentity } from "./wake.js";
 
 const humanModes = ["mention", "mention-or-reply", "every-message", "prefix", "disabled"] as const;
 type HumanMode = (typeof humanModes)[number];
@@ -19,7 +20,75 @@ export async function setRouteWake(input: {
     throw new Error(`Invalid human wake mode: ${input.humans}`);
   if (input.humans === "prefix" && !input.prefix)
     throw new Error("--prefix is required when --humans is prefix");
-  const match = /^(chat|discussion):([^:]+):(.+)$/.exec(input.routeId);
+  const route = await resolveRouteConfig(input.configPath, input.routeId);
+  if (!route.parsed.management.allowWakeChanges)
+    throw new Error("management.allowWakeChanges is disabled");
+  const wake: WakeConfig = { ...route.base, humans: input.humans as HumanMode };
+  if (input.humans === "prefix") wake.prefix = input.prefix;
+  else delete wake.prefix;
+  await persistRouteWake(route, wake);
+}
+
+export async function setRouteAccess(input: {
+  configPath: string;
+  routeId: string;
+  actorId: string;
+  operation: string;
+  participantIds: string[];
+}): Promise<string[]> {
+  if (!(["add", "remove", "replace"] as const).includes(input.operation as never))
+    throw new Error(`Invalid access operation: ${input.operation}`);
+  const participantIds = [
+    ...new Set(input.participantIds.map((participant) => participant.trim()).filter(Boolean)),
+  ];
+  if (!participantIds.length) throw new Error("At least one participant ID is required");
+  if (participantIds.includes("*"))
+    throw new Error(
+      "Self-management cannot grant wildcard access; edit the operator config manually",
+    );
+  const route = await resolveRouteConfig(input.configPath, input.routeId);
+  if (!route.parsed.management.allowAccessChanges)
+    throw new Error("management.allowAccessChanges is disabled");
+  if (
+    !route.parsed.management.accessAdmins.some((participant) =>
+      sameIdentity(input.actorId, participant),
+    )
+  )
+    throw new Error("Only a configured access admin may change the route allowlist");
+  const admins = route.parsed.management.accessAdmins;
+  let allowedUsers: string[];
+  if (input.operation === "add")
+    allowedUsers = [...route.base.allowedUsers, ...participantIds, ...admins];
+  else if (input.operation === "remove") {
+    if (participantIds.some((candidate) => admins.some((admin) => sameIdentity(candidate, admin))))
+      throw new Error("An access admin cannot remove an access admin from the route allowlist");
+    allowedUsers = route.base.allowedUsers.filter(
+      (candidate) => !participantIds.some((participant) => sameIdentity(candidate, participant)),
+    );
+  } else allowedUsers = [...participantIds, ...admins];
+  allowedUsers = allowedUsers.filter(
+    (participant, index, all) =>
+      all.findIndex((candidate) => sameIdentity(candidate, participant)) === index,
+  );
+  if (!allowedUsers.length) throw new Error("A route allowlist cannot be empty");
+  await persistRouteWake(route, { ...route.base, allowedUsers });
+  return allowedUsers;
+}
+
+type RouteConfig = {
+  absolute: string;
+  extension: string;
+  raw: Record<string, unknown>;
+  parsed: AgentConfig;
+  rawSpace: Record<string, unknown>;
+  kind: "chat" | "discussion";
+  id: string;
+  routeId: string;
+  base: WakeConfig;
+};
+
+async function resolveRouteConfig(configPath: string, routeId: string): Promise<RouteConfig> {
+  const match = /^(chat|discussion):([^:]+):(.+)$/.exec(routeId);
   if (!match)
     throw new Error(
       "Route ID must be chat:<space-id>:<chat-id> or discussion:<space-id>:<discussion-id>",
@@ -27,14 +96,12 @@ export async function setRouteWake(input: {
   const kind = match[1] as "chat" | "discussion";
   const spaceId = match[2]!;
   const id = match[3]!;
-  const absolute = resolve(input.configPath);
+  const absolute = resolve(configPath);
   const extension = extname(absolute).toLowerCase();
   if (extension === ".toml")
-    throw new Error("Wake self-management currently supports YAML and JSON configuration files");
+    throw new Error("Route self-management currently supports YAML and JSON configuration files");
   const raw = parseConfig(await readFile(absolute, "utf8"), extension) as Record<string, unknown>;
   const parsed = configSchema.parse(raw);
-  if (!parsed.management.allowWakeChanges)
-    throw new Error("management.allowWakeChanges is disabled");
   const rawSpaces = raw.spaces as Array<Record<string, unknown>>;
   let index = parsed.spaces.findIndex((space) => space.id === spaceId);
   if (index < 0 && parsed.spaces.some((space) => !space.id && space.name)) {
@@ -46,34 +113,46 @@ export async function setRouteWake(input: {
           (space.name ? (await anytype.resolveSpace({ name: space.name })).id : undefined),
       ),
     );
-    index = resolvedSpaces.findIndex((id) => id === spaceId);
+    index = resolvedSpaces.findIndex((resolvedId) => resolvedId === spaceId);
   }
   if (index < 0) throw new Error(`Space ${spaceId} is not configured by ID`);
   const parsedSpace = parsed.spaces[index]!;
-  const rawSpace = rawSpaces[index]!;
   const existing = parsedSpace.wakeOverrides.find((item) => item.kind === kind && item.id === id);
   const base =
     existing?.wake ??
     (kind === "chat"
       ? (parsedSpace.chats.find((chat) => chat.id === id)?.wake ?? parsedSpace.chatDiscovery.wake)
       : parsedSpace.comments.wake);
-  const wake: WakeConfig = { ...base, humans: input.humans as HumanMode };
-  if (input.humans === "prefix") wake.prefix = input.prefix;
-  else delete wake.prefix;
-  const overrides = Array.isArray(rawSpace.wakeOverrides)
-    ? (rawSpace.wakeOverrides as Array<Record<string, unknown>>)
+  return {
+    absolute,
+    extension,
+    raw,
+    parsed,
+    rawSpace: rawSpaces[index]!,
+    kind,
+    id,
+    routeId,
+    base,
+  };
+}
+
+async function persistRouteWake(route: RouteConfig, wake: WakeConfig): Promise<void> {
+  const overrides = Array.isArray(route.rawSpace.wakeOverrides)
+    ? (route.rawSpace.wakeOverrides as Array<Record<string, unknown>>)
     : [];
-  const overrideIndex = overrides.findIndex((item) => item.kind === kind && item.id === id);
-  const next = { kind, id, wake };
+  const overrideIndex = overrides.findIndex(
+    (item) => item.kind === route.kind && item.id === route.id,
+  );
+  const next = { kind: route.kind, id: route.id, wake };
   if (overrideIndex < 0) overrides.push(next);
   else overrides[overrideIndex] = next;
-  rawSpace.wakeOverrides = overrides;
-  configSchema.parse(raw);
-  await writePrivateFileAtomic(absolute, serializeConfig(raw, extension));
-  const config = await loadConfig(absolute);
+  route.rawSpace.wakeOverrides = overrides;
+  configSchema.parse(route.raw);
+  await writePrivateFileAtomic(route.absolute, serializeConfig(route.raw, route.extension));
+  const config = await loadConfig(route.absolute);
   const store = new Store(config.state.path);
   try {
-    store.setWakeOverride(input.routeId, input.humans, input.prefix);
+    store.setWakeOverride(route.routeId, wake.humans, wake.prefix, wake.allowedUsers);
   } finally {
     store.close();
   }

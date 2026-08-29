@@ -8,7 +8,8 @@ type Tool = {
 export declare function runMcpServer(configPath: string, context?: {
     routeId?: string;
     spaceId?: string;
+    actorId?: string;
 }): Promise<void>;
 export declare function toolDefinitions(config: AgentConfig): Tool[];
-export declare function callTool(anytype: AnytypeClient, config: AgentConfig, configPath: string, routeId: string | undefined, defaultSpaceId: string | undefined, name: string, input: Record<string, any>): Promise<unknown>;
+export declare function callTool(anytype: AnytypeClient, config: AgentConfig, configPath: string, routeId: string | undefined, defaultSpaceId: string | undefined, name: string, input: Record<string, any>, boundActorId?: string): Promise<unknown>;
 export {};

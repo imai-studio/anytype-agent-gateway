@@ -461,25 +461,39 @@ export class Store {
       .run(threadKey, Date.now());
     return this.sessionGeneration(threadKey);
   }
-  wakeOverride(routeId: string): { humans: string; prefix?: string } | undefined {
+  wakeOverride(
+    routeId: string,
+  ): { humans: string; prefix?: string; allowedUsers?: string[] } | undefined {
     const stored = (
       this.db.prepare("SELECT humans FROM route_wake_overrides WHERE route_id=?").get(routeId) as
         { humans: string } | undefined
     )?.humans;
     if (!stored) return undefined;
     try {
-      const parsed = JSON.parse(stored) as { humans?: unknown; prefix?: unknown };
+      const parsed = JSON.parse(stored) as {
+        humans?: unknown;
+        prefix?: unknown;
+        allowedUsers?: unknown;
+      };
       if (typeof parsed.humans !== "string") return undefined;
       return {
         humans: parsed.humans,
         ...(typeof parsed.prefix === "string" && parsed.prefix ? { prefix: parsed.prefix } : {}),
+        ...(Array.isArray(parsed.allowedUsers) &&
+        parsed.allowedUsers.every((participant) => typeof participant === "string")
+          ? { allowedUsers: parsed.allowedUsers }
+          : {}),
       };
     } catch {
       return { humans: stored };
     }
   }
-  setWakeOverride(routeId: string, humans: string, prefix?: string): void {
-    const value = JSON.stringify({ humans, ...(prefix ? { prefix } : {}) });
+  setWakeOverride(routeId: string, humans: string, prefix?: string, allowedUsers?: string[]): void {
+    const value = JSON.stringify({
+      humans,
+      ...(prefix ? { prefix } : {}),
+      ...(allowedUsers ? { allowedUsers } : {}),
+    });
     this.db
       .prepare(
         "INSERT INTO route_wake_overrides(route_id,humans,updated_at) VALUES(?,?,?) ON CONFLICT(route_id) DO UPDATE SET humans=excluded.humans,updated_at=excluded.updated_at",

@@ -35,6 +35,30 @@ function setup(silentPlaceholder: "delete" | "keep" | "replace" = "delete") {
 }
 
 describe("example workflows", () => {
+  it("applies a live participant allowlist change to the next message", async () => {
+    const { anytype, runtime, store, controller } = setup();
+    const restrictedWake = {
+      humans: "mention" as const,
+      agents: "never" as const,
+      allowedUsers: ["raj"],
+    };
+    const ignored = incoming({ id: "shyam-ignored", creator: "shyam" });
+    anytype.messages.push(ignored);
+    await controller.process(conversation, restrictedWake, ignored);
+    expect(runtime.starts).toHaveLength(0);
+
+    store.setWakeOverride(conversation.routeId, "mention", undefined, ["raj", "shyam"]);
+    const accepted = incoming({ id: "shyam-accepted", creator: "shyam" });
+    anytype.messages.push(accepted);
+    await controller.process(conversation, restrictedWake, accepted);
+
+    expect(runtime.starts).toHaveLength(1);
+    expect(anytype.messages.at(-1)?.reply_to_message_id).toBe("shyam-accepted");
+    runtime.finish({ text: "Allowed" });
+    await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Allowed"));
+    await controller.stop();
+  });
+
   it("creates one reply, marks it working, and edits it with the result", async () => {
     const { anytype, runtime, controller } = setup();
     const message = incoming();

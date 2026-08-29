@@ -182,8 +182,20 @@ export const configSchema = z.object({
     spaces: z.array(spaceSchema).min(1),
     runtime: runtimeSchema,
     management: z
-        .object({ allowWakeChanges: z.boolean().default(false) })
-        .default({ allowWakeChanges: false }),
+        .object({
+        allowWakeChanges: z.boolean().default(false),
+        allowAccessChanges: z.boolean().default(false),
+        accessAdmins: z.array(z.string()).default([]),
+    })
+        .superRefine((value, context) => {
+        if (value.allowAccessChanges && value.accessAdmins.length === 0)
+            context.addIssue({
+                code: "custom",
+                path: ["accessAdmins"],
+                message: "management.accessAdmins is required when access changes are enabled",
+            });
+    })
+        .default({ allowWakeChanges: false, allowAccessChanges: false, accessAdmins: [] }),
     tools: z
         .object({
         anytype: z

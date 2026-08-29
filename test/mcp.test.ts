@@ -390,6 +390,17 @@ describe("AAG Anytype MCP policy", () => {
     expect(toolDefinitions(managed).map((tool) => tool.name)).toContain("aag_set_wake");
   });
 
+  it("advertises constrained participant access management", () => {
+    const managed = config({
+      management: {
+        allowAccessChanges: true,
+        accessAdmins: ["admin"],
+      },
+      tools: { anytype: { allowWrite: false } },
+    });
+    expect(toolDefinitions(managed).map((tool) => tool.name)).toContain("aag_set_access");
+  });
+
   it("cannot change wake policy outside the bound Anytype conversation", async () => {
     const managed = config({ management: { allowWakeChanges: true } });
     await expect(
@@ -403,6 +414,28 @@ describe("AAG Anytype MCP policy", () => {
         { route_id: "chat:space-1:other-chat", humans: "every-message" },
       ),
     ).rejects.toThrow("must match the current Anytype conversation");
+  });
+
+  it("binds participant access changes to the current sender", async () => {
+    const managed = config({
+      management: { allowAccessChanges: true, accessAdmins: ["admin"] },
+    });
+    await expect(
+      callTool(
+        client(),
+        managed,
+        "/config.yaml",
+        "chat:space-1:current-chat",
+        "space-1",
+        "aag_set_access",
+        {
+          actor_id: "forged-admin",
+          operation: "add",
+          participant_ids: ["member"],
+        },
+        "actual-sender",
+      ),
+    ).rejects.toThrow("must match the current Anytype sender");
   });
 
   it("keeps archive independent from general write permission", async () => {

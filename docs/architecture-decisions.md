@@ -83,6 +83,8 @@ Joining a space does not subscribe the agent to every conversation. Each chat ha
 
 Authorization compares the stable identity suffix across Anytype's space-scoped participant IDs. A bare identity therefore authorizes the same account in each configured space; an operator can use the full participant ID when a rule should apply to only one space membership.
 
+Wake behavior and sender authorization are managed separately. Optional route self-management can change wake mode, while optional access self-management uses a distinct admin allowlist and constrained add/remove/replace operation. Access changes refuse wildcard grants, preserve configured access admins, persist to the private configuration, and mirror the entire effective wake policy into live SQLite state.
+
 ## Wake rules live on each route
 
 Support mention, mention-or-reply, every-message, prefix, and disabled human wake modes. Configure peer-agent wake rules separately.
