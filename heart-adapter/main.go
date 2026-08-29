@@ -45,6 +45,10 @@ type textMark struct {
 	To    int32  `json:"to,omitempty"`
 	Param string `json:"param,omitempty"`
 }
+type chatAttachment struct {
+	Target string `json:"target"`
+	Type   string `json:"type"`
+}
 type messageContent struct {
 	Text  string     `json:"text"`
 	Style string     `json:"style"`
@@ -64,11 +68,12 @@ type hydrateResponse struct {
 	Messages []hydratedMessage `json:"messages"`
 }
 type mutationRequest struct {
-	ChatID    string     `json:"chatId"`
-	MessageID string     `json:"messageId,omitempty"`
-	Text      string     `json:"text,omitempty"`
-	ReplyTo   string     `json:"replyTo,omitempty"`
-	Marks     []textMark `json:"marks,omitempty"`
+	ChatID      string           `json:"chatId"`
+	MessageID   string           `json:"messageId,omitempty"`
+	Text        string           `json:"text,omitempty"`
+	ReplyTo     string           `json:"replyTo,omitempty"`
+	Marks       []textMark       `json:"marks,omitempty"`
+	Attachments []chatAttachment `json:"attachments,omitempty"`
 }
 type mutationResponse struct {
 	MessageID string `json:"messageId,omitempty"`
@@ -259,13 +264,35 @@ func outboundMessage(input mutationRequest) *model.ChatMessage {
 		}
 		marks = append(marks, &model.BlockContentTextMark{Type: kind, Param: mark.Param, Range: &model.Range{From: mark.From, To: mark.To}})
 	}
+	attachments := make([]*model.ChatMessageAttachment, 0, len(input.Attachments))
+	for _, attachment := range input.Attachments {
+		kind, ok := attachmentType(attachment.Type)
+		if !ok || attachment.Target == "" {
+			continue
+		}
+		attachments = append(attachments, &model.ChatMessageAttachment{Target: attachment.Target, Type: kind})
+	}
 	return &model.ChatMessage{
 		ReplyToMessageId: input.ReplyTo,
 		// Heart v0.50.10 serializes this field even when Blocks are present.
 		// Populate both representations to avoid a nil-message panic while still
 		// giving object discussions their block-based content.
-		Message: &model.ChatMessageMessageContent{Text: input.Text, Style: model.BlockContentText_Paragraph, Marks: marks},
-		Blocks:  outboundBlocks(input.Text, marks),
+		Message:     &model.ChatMessageMessageContent{Text: input.Text, Style: model.BlockContentText_Paragraph, Marks: marks},
+		Blocks:      outboundBlocks(input.Text, marks),
+		Attachments: attachments,
+	}
+}
+
+func attachmentType(value string) (model.ChatMessageAttachmentAttachmentType, bool) {
+	switch strings.ToLower(value) {
+	case "file":
+		return model.ChatMessageAttachment_FILE, true
+	case "image":
+		return model.ChatMessageAttachment_IMAGE, true
+	case "link":
+		return model.ChatMessageAttachment_LINK, true
+	default:
+		return model.ChatMessageAttachment_FILE, false
 	}
 }
 

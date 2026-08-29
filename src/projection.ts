@@ -1,6 +1,7 @@
 import type { AgentConfig } from "./config.js";
 import type {
   AnytypePort,
+  ChatAttachment,
   ConversationRef,
   RuntimeEvent,
   RuntimeResult,
@@ -427,7 +428,11 @@ export class RunProjection {
     this.timer = undefined;
   }
 
-  private currentDisplay(cycle = this.activeCycle): { text: string; marks: TextMark[] } {
+  private currentDisplay(cycle = this.activeCycle): {
+    text: string;
+    marks: TextMark[];
+    attachments: ChatAttachment[];
+  } {
     const raw = cycle.text || this.config.responses.workingText;
     const labeled = cycle.state === "thinking" ? `Thinking…\n\n${raw}` : raw;
     const rendered = renderForAnytype(labeled, this.config, [...this.mentionTargets.values()]);
@@ -462,6 +467,7 @@ export class RunProjection {
       cycle.messageId,
       current.text,
       current.marks,
+      current.attachments,
     );
   }
 
@@ -471,7 +477,12 @@ export class RunProjection {
     cycle.messageId = await this.anytype.sendMessage(
       this.conversation.spaceId,
       this.conversation.chatId,
-      { text: current.text, marks: current.marks, replyTo: cycle.replyToMessageId },
+      {
+        text: current.text,
+        marks: current.marks,
+        attachments: current.attachments,
+        replyTo: cycle.replyToMessageId,
+      },
     );
     this.responseId = cycle.messageId;
     this.createdMessageIds.add(cycle.messageId);
@@ -547,15 +558,23 @@ function sameRenderedText(left: string, right: string): boolean {
 }
 
 function truncateRendered(
-  rendered: { text: string; marks: TextMark[] },
+  rendered: { text: string; marks: TextMark[]; attachments: ChatAttachment[] },
   maxCharacters: number,
-): { text: string; marks: TextMark[] } {
+): { text: string; marks: TextMark[]; attachments: ChatAttachment[] } {
   if (rendered.text.length <= maxCharacters)
-    return { text: rendered.text, marks: clampMarks(rendered.marks, rendered.text.length) };
+    return {
+      text: rendered.text,
+      marks: clampMarks(rendered.marks, rendered.text.length),
+      attachments: rendered.attachments,
+    };
   const notice = "\n\n[Response truncated by AAG]";
   let prefix = rendered.text.slice(0, Math.max(0, maxCharacters - notice.length));
   if (prefix && /[\uD800-\uDBFF]/.test(prefix.at(-1)!)) prefix = prefix.slice(0, -1);
-  return { text: `${prefix}${notice}`, marks: clampMarks(rendered.marks, prefix.length) };
+  return {
+    text: `${prefix}${notice}`,
+    marks: clampMarks(rendered.marks, prefix.length),
+    attachments: rendered.attachments,
+  };
 }
 
 function clampMarks(marks: TextMark[], contentLength: number): TextMark[] {
@@ -635,7 +654,7 @@ export function renderForAnytype(
   text: string,
   config: AgentConfig,
   dynamicTargets: Array<{ name: string; participantId: string }> = [],
-): { text: string; marks: TextMark[] } {
+): { text: string; marks: TextMark[]; attachments: ChatAttachment[] } {
   const coordinated = renderCoordination(text, config, dynamicTargets);
   return normalizeMarkdown(coordinated.text, coordinated.marks);
 }
@@ -643,9 +662,11 @@ export function renderForAnytype(
 function normalizeMarkdown(
   text: string,
   existingMarks: TextMark[],
-): { text: string; marks: TextMark[] } {
+): { text: string; marks: TextMark[]; attachments: ChatAttachment[] } {
   let output = "";
   const marks: TextMark[] = [];
+  const attachments: ChatAttachment[] = [];
+  const attachedObjects = new Set<string>();
   const boundaries = new Array<number>(text.length + 1).fill(0);
   let index = 0;
   while (index < text.length) {
@@ -688,6 +709,20 @@ function normalizeMarkdown(
         index = closeAt + 3;
         continue;
       }
+    }
+    const objectCard = /^\[\[AAG_OBJECT_CARD:([^|\]\n]+)\|([^\]\n]+)\]\]/i.exec(text.slice(index));
+    if (objectCard) {
+      const objectId = objectCard[1]!.trim();
+      const label = objectCard[2]!.trim();
+      output += label;
+      if (!attachedObjects.has(objectId)) {
+        attachments.push({ target: objectId, type: "file" });
+        attachedObjects.add(objectId);
+      }
+      for (let offset = 0; offset < objectCard[0].length; offset += 1)
+        boundaries[index + offset] = output.length;
+      index += objectCard[0].length;
+      continue;
     }
     const objectReference = /^\[\[AAG_OBJECT:([^|\]\n]+)\|([^\]\n]+)\]\]/i.exec(text.slice(index));
     if (objectReference) {
@@ -755,7 +790,7 @@ function normalizeMarkdown(
       ...(mark.from !== undefined ? { from: boundaries[mark.from] ?? mark.from } : {}),
       ...(mark.to !== undefined ? { to: boundaries[mark.to] ?? mark.to } : {}),
     });
-  return { text: output, marks };
+  return { text: output, marks, attachments };
 }
 
 function isWordCharacter(value: string | undefined): boolean {

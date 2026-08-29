@@ -641,6 +641,7 @@ export class AgentController {
       payload: {
         text,
         marks,
+        attachments: rendered.attachments,
         runtime: binding.runtime,
         nativeSessionKey: binding.nativeSessionKey,
         nativeEventId: output.id,
@@ -675,6 +676,7 @@ export class AgentController {
         const payload = item.payload as {
           text: string;
           marks?: import("./types.js").TextMark[];
+          attachments?: import("./types.js").ChatAttachment[];
           runtime?: AgentRuntime;
           nativeSessionKey?: string;
           nativeEventId?: string;
@@ -707,6 +709,7 @@ export class AgentController {
             item.targetMessageId,
             payload.text,
             payload.marks,
+            payload.attachments,
           );
           messageId = item.targetMessageId;
         } else {
@@ -716,6 +719,7 @@ export class AgentController {
             (await port.sendMessage(item.spaceId, item.chatId, {
               text: payload.text,
               ...(payload.marks?.length ? { marks: payload.marks } : {}),
+              ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
               ...(item.replyToMessageId ? { replyTo: item.replyToMessageId } : {}),
             }));
         }

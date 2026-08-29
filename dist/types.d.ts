@@ -4,6 +4,10 @@ export type TextMark = {
     to?: number;
     param?: string;
 };
+export type ChatAttachment = {
+    target: string;
+    type: "file" | "image" | "link";
+};
 export type ChatMessage = {
     id: string;
     order_id?: string;
@@ -17,6 +21,7 @@ export type ChatMessage = {
         style?: string;
         marks?: TextMark[];
     };
+    attachments?: ChatAttachment[];
     reactions?: Record<string, string[]>;
     mentioned?: boolean;
 };
@@ -134,8 +139,9 @@ export interface AnytypePort {
         text: string;
         replyTo?: string;
         marks?: TextMark[];
+        attachments?: ChatAttachment[];
     }): Promise<string>;
-    editMessage(spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[]): Promise<void>;
+    editMessage(spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[], attachments?: ChatAttachment[]): Promise<void>;
     deleteMessage(spaceId: string, chatId: string, messageId: string): Promise<void>;
     ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean, participantId?: string): Promise<void>;
     stream(spaceId: string, chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent>;

@@ -2,7 +2,7 @@ import { openAsBlob } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import type { AgentConfig } from "./config.js";
-import type { AnytypeEvent, AnytypePort, ChatMessage, TextMark } from "./types.js";
+import type { AnytypeEvent, AnytypePort, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 
 type JsonRecord = Record<string, any>;
 
@@ -141,11 +141,17 @@ export class AnytypeClient implements AnytypePort {
   async sendMessage(
     spaceId: string,
     chatId: string,
-    input: { text: string; replyTo?: string; marks?: TextMark[] },
+    input: {
+      text: string;
+      replyTo?: string;
+      marks?: TextMark[];
+      attachments?: ChatAttachment[];
+    },
   ): Promise<string> {
     const body: JsonRecord = { text: input.text, style: "paragraph" };
     if (input.replyTo) body.reply_to_message_id = input.replyTo;
     if (input.marks?.length) body.marks = input.marks;
+    if (input.attachments?.length) body.attachments = input.attachments;
     const json = (await (
       await this.request(this.messagesPath(spaceId, chatId), {
         method: "POST",
@@ -162,10 +168,16 @@ export class AnytypeClient implements AnytypePort {
     messageId: string,
     text: string,
     marks?: TextMark[],
+    attachments?: ChatAttachment[],
   ): Promise<void> {
     await this.request(this.messagePath(spaceId, chatId, messageId), {
       method: "PATCH",
-      body: JSON.stringify({ text, style: "paragraph", ...(marks?.length ? { marks } : {}) }),
+      body: JSON.stringify({
+        text,
+        style: "paragraph",
+        marks: marks ?? [],
+        attachments: attachments ?? [],
+      }),
     });
   }
 

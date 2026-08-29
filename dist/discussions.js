@@ -58,13 +58,20 @@ export class HeartDiscussionAdapter {
             text: input.text,
             ...(input.replyTo ? { replyTo: input.replyTo } : {}),
             ...(input.marks?.length ? { marks: input.marks } : {}),
+            ...(input.attachments?.length ? { attachments: input.attachments } : {}),
         });
         if (!result.messageId)
             throw new Error("Heart returned no messageId");
         return result.messageId;
     }
-    async editMessage(chatId, messageId, text, marks) {
-        await this.mutate("edit", { chatId, messageId, text, ...(marks?.length ? { marks } : {}) });
+    async editMessage(chatId, messageId, text, marks, attachments) {
+        await this.mutate("edit", {
+            chatId,
+            messageId,
+            text,
+            marks: marks ?? [],
+            attachments: attachments ?? [],
+        });
     }
     async deleteMessage(chatId, messageId) {
         await this.mutate("delete", { chatId, messageId });
@@ -98,8 +105,8 @@ export class DiscussionAnytypePort {
     async sendMessage(_spaceId, chatId, input) {
         return this.heart.sendMessage(chatId, input);
     }
-    async editMessage(_spaceId, chatId, messageId, text, marks) {
-        await this.heart.editMessage(chatId, messageId, text, marks);
+    async editMessage(_spaceId, chatId, messageId, text, marks, attachments) {
+        await this.heart.editMessage(chatId, messageId, text, marks, attachments);
     }
     async deleteMessage(_spaceId, chatId, messageId) {
         await this.heart.deleteMessage(chatId, messageId);

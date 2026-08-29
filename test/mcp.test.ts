@@ -167,6 +167,7 @@ describe("AAG Anytype MCP policy", () => {
         id: "found",
         link: "anytype://object?objectId=found&spaceId=space-1",
         object_ref: "[[AAG_OBJECT:found|Open in Anytype]]",
+        object_card: "[[AAG_OBJECT_CARD:found|Open in Anytype]]",
       },
     ]);
   });
@@ -186,7 +187,20 @@ describe("AAG Anytype MCP policy", () => {
       id: "created",
       link: "anytype://object?objectId=created&spaceId=space-1",
       object_ref: "[[AAG_OBJECT:created|Created]]",
+      object_card: "[[AAG_OBJECT_CARD:created|Created]]",
     });
+  });
+
+  it("rejects collection bodies with an actionable workflow", async () => {
+    const anytype = client();
+    await expect(
+      callTool(anytype, config(), "/config.yaml", undefined, "space-1", "anytype_create_object", {
+        type_key: "collection",
+        name: "Changelog",
+        body: "Entry",
+      }),
+    ).rejects.toThrow("create the content object separately");
+    expect((anytype as any).createObject).not.toHaveBeenCalled();
   });
 
   it("exposes schema discovery and complete object data without write permission", async () => {
@@ -248,6 +262,7 @@ describe("AAG Anytype MCP policy", () => {
         name: "Task",
         link: "anytype://object?objectId=task-1&spaceId=space-1",
         object_ref: "[[AAG_OBJECT:task-1|Task]]",
+        object_card: "[[AAG_OBJECT_CARD:task-1|Task]]",
       },
     ]);
     await expect(
@@ -345,6 +360,7 @@ describe("AAG Anytype MCP policy", () => {
     ).resolves.toMatchObject({
       link: "anytype://object?objectId=file-object&spaceId=space-1",
       object_ref: "[[AAG_OBJECT:file-object|Asset]]",
+      object_card: "[[AAG_OBJECT_CARD:file-object|Asset]]",
     });
   });
 

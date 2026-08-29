@@ -17,6 +17,53 @@ afterEach(async () => {
 });
 
 describe("Anytype object REST client", () => {
+  it("sends and edits native chat attachments", async () => {
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      calls.push({
+        method: request.method ?? "GET",
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>,
+      });
+      response.setHeader("content-type", "application/json");
+      response.end(request.method === "POST" ? JSON.stringify({ message_id: "reply" }) : "{}");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "aag-anytype-chat-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "AAG", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "openclaw" },
+      }),
+    );
+
+    const attachments = [{ target: "object-id", type: "file" as const }];
+    await expect(
+      client.sendMessage("space", "chat", { text: "Object", attachments }),
+    ).resolves.toBe("reply");
+    await client.editMessage("space", "chat", "reply", "Updated", [], attachments);
+
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        body: { text: "Object", style: "paragraph", attachments },
+      },
+      {
+        method: "PATCH",
+        body: { text: "Updated", style: "paragraph", marks: [], attachments },
+      },
+    ]);
+  });
+
   it("advances pagination by the raw page length even when pages overlap", async () => {
     const offsets: string[] = [];
     const server = createServer((request, response) => {

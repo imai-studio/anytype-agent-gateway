@@ -93,6 +93,17 @@ describe("protocol boundaries", () => {
         { type: "keyboard", from: 22, to: 40 },
       ]),
     );
+    expect(rendered.attachments).toEqual([]);
+  });
+
+  it("renders object-card tokens as deduplicated native attachments", () => {
+    const rendered = renderForAnytype(
+      "[[AAG_OBJECT_CARD:object-1|Roadmap]] and [[AAG_OBJECT_CARD:object-1|Roadmap again]]",
+      config(),
+    );
+    expect(rendered.text).toBe("Roadmap and Roadmap again");
+    expect(rendered.marks).toEqual([]);
+    expect(rendered.attachments).toEqual([{ target: "object-1", type: "file" }]);
   });
 });
 
@@ -110,6 +121,17 @@ describe("projection ordering", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("edits the stable reply into a native object-card message", async () => {
+    const anytype = new FakeAnytype();
+    const projection = await RunProjection.create(anytype, config(), conversation, "trigger");
+    await projection.finish({
+      text: "[[AAG_OBJECT_CARD:object-1|Studio Main Changelog — 29 Aug 2026]]",
+    });
+    const message = anytype.messages.find((item) => item.id === projection.messageId);
+    expect(message?.content?.text).toBe("Studio Main Changelog — 29 Aug 2026");
+    expect(message?.attachments).toEqual([{ target: "object-1", type: "file" }]);
   });
 
   it("can keep the placeholder stable when streaming is disabled", async () => {

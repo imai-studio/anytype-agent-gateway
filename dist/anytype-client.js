@@ -103,6 +103,8 @@ export class AnytypeClient {
             body.reply_to_message_id = input.replyTo;
         if (input.marks?.length)
             body.marks = input.marks;
+        if (input.attachments?.length)
+            body.attachments = input.attachments;
         const json = (await (await this.request(this.messagesPath(spaceId, chatId), {
             method: "POST",
             body: JSON.stringify(body),
@@ -111,10 +113,15 @@ export class AnytypeClient {
             throw new Error("Anytype returned no message_id");
         return json.message_id;
     }
-    async editMessage(spaceId, chatId, messageId, text, marks) {
+    async editMessage(spaceId, chatId, messageId, text, marks, attachments) {
         await this.request(this.messagePath(spaceId, chatId, messageId), {
             method: "PATCH",
-            body: JSON.stringify({ text, style: "paragraph", ...(marks?.length ? { marks } : {}) }),
+            body: JSON.stringify({
+                text,
+                style: "paragraph",
+                marks: marks ?? [],
+                attachments: attachments ?? [],
+            }),
         });
     }
     async deleteMessage(spaceId, chatId, messageId) {

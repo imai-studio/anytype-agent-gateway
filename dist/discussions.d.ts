@@ -1,5 +1,5 @@
 import type { AgentConfig } from "./config.js";
-import type { AnytypeEvent, AnytypePort, ChatMessage, TextMark } from "./types.js";
+import type { AnytypeEvent, AnytypePort, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 export type DiscussionResolution = {
     objectId: string;
     discussionId?: string;
@@ -16,8 +16,9 @@ export declare class HeartDiscussionAdapter {
         text: string;
         replyTo?: string;
         marks?: TextMark[];
+        attachments?: ChatAttachment[];
     }): Promise<string>;
-    editMessage(chatId: string, messageId: string, text: string, marks?: TextMark[]): Promise<void>;
+    editMessage(chatId: string, messageId: string, text: string, marks?: TextMark[], attachments?: ChatAttachment[]): Promise<void>;
     deleteMessage(chatId: string, messageId: string): Promise<void>;
     private mutate;
 }
@@ -31,8 +32,9 @@ export declare class DiscussionAnytypePort implements AnytypePort {
         text: string;
         replyTo?: string;
         marks?: TextMark[];
+        attachments?: ChatAttachment[];
     }): Promise<string>;
-    editMessage(_spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[]): Promise<void>;
+    editMessage(_spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[], attachments?: ChatAttachment[]): Promise<void>;
     deleteMessage(_spaceId: string, chatId: string, messageId: string): Promise<void>;
     ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean, participantId?: string): Promise<void>;
     stream(spaceId: string, chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent>;

@@ -527,6 +527,7 @@ export class AgentController {
             payload: {
                 text,
                 marks,
+                attachments: rendered.attachments,
                 runtime: binding.runtime,
                 nativeSessionKey: binding.nativeSessionKey,
                 nativeEventId: output.id,
@@ -572,7 +573,7 @@ export class AgentController {
                 if (item.operation === "edit") {
                     if (!item.targetMessageId)
                         throw new Error("Queued edit has no target message");
-                    await port.editMessage(item.spaceId, item.chatId, item.targetMessageId, payload.text, payload.marks);
+                    await port.editMessage(item.spaceId, item.chatId, item.targetMessageId, payload.text, payload.marks, payload.attachments);
                     messageId = item.targetMessageId;
                 }
                 else {
@@ -582,6 +583,7 @@ export class AgentController {
                             (await port.sendMessage(item.spaceId, item.chatId, {
                                 text: payload.text,
                                 ...(payload.marks?.length ? { marks: payload.marks } : {}),
+                                ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
                                 ...(item.replyToMessageId ? { replyTo: item.replyToMessageId } : {}),
                             }));
                 }

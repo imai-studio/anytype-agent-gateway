@@ -78,6 +78,20 @@ func TestOutboundMessageUsesBlockContent(t *testing.T) {
 	}
 }
 
+func TestOutboundMessageIncludesObjectCardAttachment(t *testing.T) {
+	message := outboundMessage(mutationRequest{
+		Text:        "Studio Main Changelog",
+		Attachments: []chatAttachment{{Target: "object-id", Type: "file"}},
+	})
+	if len(message.GetAttachments()) != 1 {
+		t.Fatalf("expected one attachment, got %d", len(message.GetAttachments()))
+	}
+	attachment := message.GetAttachments()[0]
+	if attachment.GetTarget() != "object-id" || attachment.GetType() != model.ChatMessageAttachment_FILE {
+		t.Fatalf("unexpected attachment %#v", attachment)
+	}
+}
+
 func TestOutboundMessageCreatesParagraphBlocksAndRebasesMarks(t *testing.T) {
 	message := outboundMessage(mutationRequest{
 		Text:  "First line\n• Bold item",

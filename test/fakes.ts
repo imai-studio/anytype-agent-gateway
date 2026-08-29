@@ -2,6 +2,7 @@ import type {
   ActiveRuntime,
   AnytypeEvent,
   AnytypePort,
+  ChatAttachment,
   ChatMessage,
   RuntimeDriver,
   RuntimeEvent,
@@ -37,7 +38,12 @@ export class FakeAnytype implements AnytypePort {
   async sendMessage(
     _spaceId: string,
     _chatId: string,
-    input: { text: string; replyTo?: string; marks?: TextMark[] },
+    input: {
+      text: string;
+      replyTo?: string;
+      marks?: TextMark[];
+      attachments?: ChatAttachment[];
+    },
   ): Promise<string> {
     const id = `reply-${this.nextId++}`;
     this.messages.push({
@@ -45,6 +51,7 @@ export class FakeAnytype implements AnytypePort {
       creator: "bot",
       ...(input.replyTo ? { reply_to_message_id: input.replyTo } : {}),
       content: { text: input.text, ...(input.marks ? { marks: input.marks } : {}) },
+      ...(input.attachments ? { attachments: input.attachments } : {}),
     });
     return id;
   }
@@ -53,10 +60,13 @@ export class FakeAnytype implements AnytypePort {
     _chatId: string,
     messageId: string,
     text: string,
+    _marks?: TextMark[],
+    attachments?: ChatAttachment[],
   ): Promise<void> {
     this.edits.push({ id: messageId, text });
     const found = this.messages.find((item) => item.id === messageId);
     if (found?.content) found.content.text = text;
+    if (found) found.attachments = attachments ?? [];
   }
   async deleteMessage(_spaceId: string, _chatId: string, messageId: string): Promise<void> {
     this.deleted.push(messageId);

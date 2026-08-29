@@ -348,13 +348,18 @@ export class RunProjection {
             return;
         }
         const current = this.currentDisplay(cycle);
-        await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, cycle.messageId, current.text, current.marks);
+        await this.anytype.editMessage(this.conversation.spaceId, this.conversation.chatId, cycle.messageId, current.text, current.marks, current.attachments);
     }
     async createCycleMessageNow(cycle) {
         if (cycle.messageId || cycle.deleted)
             return;
         const current = this.currentDisplay(cycle);
-        cycle.messageId = await this.anytype.sendMessage(this.conversation.spaceId, this.conversation.chatId, { text: current.text, marks: current.marks, replyTo: cycle.replyToMessageId });
+        cycle.messageId = await this.anytype.sendMessage(this.conversation.spaceId, this.conversation.chatId, {
+            text: current.text,
+            marks: current.marks,
+            attachments: current.attachments,
+            replyTo: cycle.replyToMessageId,
+        });
         this.responseId = cycle.messageId;
         this.createdMessageIds.add(cycle.messageId);
         this.onMessage?.(cycle.messageId);
@@ -422,12 +427,20 @@ function sameRenderedText(left, right) {
 }
 function truncateRendered(rendered, maxCharacters) {
     if (rendered.text.length <= maxCharacters)
-        return { text: rendered.text, marks: clampMarks(rendered.marks, rendered.text.length) };
+        return {
+            text: rendered.text,
+            marks: clampMarks(rendered.marks, rendered.text.length),
+            attachments: rendered.attachments,
+        };
     const notice = "\n\n[Response truncated by AAG]";
     let prefix = rendered.text.slice(0, Math.max(0, maxCharacters - notice.length));
     if (prefix && /[\uD800-\uDBFF]/.test(prefix.at(-1)))
         prefix = prefix.slice(0, -1);
-    return { text: `${prefix}${notice}`, marks: clampMarks(rendered.marks, prefix.length) };
+    return {
+        text: `${prefix}${notice}`,
+        marks: clampMarks(rendered.marks, prefix.length),
+        attachments: rendered.attachments,
+    };
 }
 function clampMarks(marks, contentLength) {
     return marks.flatMap((mark) => {
@@ -501,6 +514,8 @@ export function renderForAnytype(text, config, dynamicTargets = []) {
 function normalizeMarkdown(text, existingMarks) {
     let output = "";
     const marks = [];
+    const attachments = [];
+    const attachedObjects = new Set();
     const boundaries = new Array(text.length + 1).fill(0);
     let index = 0;
     while (index < text.length) {
@@ -543,6 +558,20 @@ function normalizeMarkdown(text, existingMarks) {
                 index = closeAt + 3;
                 continue;
             }
+        }
+        const objectCard = /^\[\[AAG_OBJECT_CARD:([^|\]\n]+)\|([^\]\n]+)\]\]/i.exec(text.slice(index));
+        if (objectCard) {
+            const objectId = objectCard[1].trim();
+            const label = objectCard[2].trim();
+            output += label;
+            if (!attachedObjects.has(objectId)) {
+                attachments.push({ target: objectId, type: "file" });
+                attachedObjects.add(objectId);
+            }
+            for (let offset = 0; offset < objectCard[0].length; offset += 1)
+                boundaries[index + offset] = output.length;
+            index += objectCard[0].length;
+            continue;
         }
         const objectReference = /^\[\[AAG_OBJECT:([^|\]\n]+)\|([^\]\n]+)\]\]/i.exec(text.slice(index));
         if (objectReference) {
@@ -611,7 +640,7 @@ function normalizeMarkdown(text, existingMarks) {
             ...(mark.from !== undefined ? { from: boundaries[mark.from] ?? mark.from } : {}),
             ...(mark.to !== undefined ? { to: boundaries[mark.to] ?? mark.to } : {}),
         });
-    return { text: output, marks };
+    return { text: output, marks, attachments };
 }
 function isWordCharacter(value) {
     return value !== undefined && /[\p{L}\p{N}]/u.test(value);

@@ -1,6 +1,6 @@
 import type { AgentConfig } from "./config.js";
 import { runProcess } from "./process.js";
-import type { AnytypeEvent, AnytypePort, ChatMessage, TextMark } from "./types.js";
+import type { AnytypeEvent, AnytypePort, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 
 export type DiscussionResolution = { objectId: string; discussionId?: string; error?: string };
 
@@ -61,13 +61,19 @@ export class HeartDiscussionAdapter {
 
   async sendMessage(
     chatId: string,
-    input: { text: string; replyTo?: string; marks?: TextMark[] },
+    input: {
+      text: string;
+      replyTo?: string;
+      marks?: TextMark[];
+      attachments?: ChatAttachment[];
+    },
   ): Promise<string> {
     const result = await this.mutate("send", {
       chatId,
       text: input.text,
       ...(input.replyTo ? { replyTo: input.replyTo } : {}),
       ...(input.marks?.length ? { marks: input.marks } : {}),
+      ...(input.attachments?.length ? { attachments: input.attachments } : {}),
     });
     if (!result.messageId) throw new Error("Heart returned no messageId");
     return result.messageId;
@@ -78,8 +84,15 @@ export class HeartDiscussionAdapter {
     messageId: string,
     text: string,
     marks?: TextMark[],
+    attachments?: ChatAttachment[],
   ): Promise<void> {
-    await this.mutate("edit", { chatId, messageId, text, ...(marks?.length ? { marks } : {}) });
+    await this.mutate("edit", {
+      chatId,
+      messageId,
+      text,
+      marks: marks ?? [],
+      attachments: attachments ?? [],
+    });
   }
 
   async deleteMessage(chatId: string, messageId: string): Promise<void> {
@@ -126,7 +139,12 @@ export class DiscussionAnytypePort implements AnytypePort {
   async sendMessage(
     _spaceId: string,
     chatId: string,
-    input: { text: string; replyTo?: string; marks?: TextMark[] },
+    input: {
+      text: string;
+      replyTo?: string;
+      marks?: TextMark[];
+      attachments?: ChatAttachment[];
+    },
   ): Promise<string> {
     return this.heart.sendMessage(chatId, input);
   }
@@ -136,8 +154,9 @@ export class DiscussionAnytypePort implements AnytypePort {
     messageId: string,
     text: string,
     marks?: TextMark[],
+    attachments?: ChatAttachment[],
   ): Promise<void> {
-    await this.heart.editMessage(chatId, messageId, text, marks);
+    await this.heart.editMessage(chatId, messageId, text, marks, attachments);
   }
   async deleteMessage(_spaceId: string, chatId: string, messageId: string): Promise<void> {
     await this.heart.deleteMessage(chatId, messageId);

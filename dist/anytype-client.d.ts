@@ -1,5 +1,5 @@
 import type { AgentConfig } from "./config.js";
-import type { AnytypeEvent, AnytypePort, ChatMessage, TextMark } from "./types.js";
+import type { AnytypeEvent, AnytypePort, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 type JsonRecord = Record<string, any>;
 export declare class AnytypeClient implements AnytypePort {
     private readonly base;
@@ -36,8 +36,9 @@ export declare class AnytypeClient implements AnytypePort {
         text: string;
         replyTo?: string;
         marks?: TextMark[];
+        attachments?: ChatAttachment[];
     }): Promise<string>;
-    editMessage(spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[]): Promise<void>;
+    editMessage(spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[], attachments?: ChatAttachment[]): Promise<void>;
     deleteMessage(spaceId: string, chatId: string, messageId: string): Promise<void>;
     ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean, participantId?: string | undefined): Promise<void>;
     private ensureReactionNow;

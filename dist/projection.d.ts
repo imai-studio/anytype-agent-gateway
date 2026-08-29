@@ -1,5 +1,5 @@
 import type { AgentConfig } from "./config.js";
-import type { AnytypePort, ConversationRef, RuntimeEvent, RuntimeResult, TextMark } from "./types.js";
+import type { AnytypePort, ChatAttachment, ConversationRef, RuntimeEvent, RuntimeResult, TextMark } from "./types.js";
 export type ProjectionCycleSnapshot = {
     id: string;
     messageId: string;
@@ -73,4 +73,5 @@ export declare function renderForAnytype(text: string, config: AgentConfig, dyna
 }>): {
     text: string;
     marks: TextMark[];
+    attachments: ChatAttachment[];
 };

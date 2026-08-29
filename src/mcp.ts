@@ -226,7 +226,7 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
     {
       name: "anytype_create_object",
       description:
-        "Create an object in an allowed Anytype space. Returns a native Anytype link and an AAG object reference suitable for chat output.",
+        "Create an object in an allowed Anytype space. Collections must be created without a body; create their content separately and add it with anytype_add_to_list. Returns compact-reference and native-card tokens for chat output.",
       inputSchema: objectSchema(
         {
           space_id: stringSchema(),
@@ -331,7 +331,7 @@ export async function callTool(
       response_format:
         "Anytype rich text; use short paragraphs and simple lists, avoid Markdown tables and fenced code blocks",
       object_links:
-        "Use the returned object_ref token for a clickable Anytype object mention in chat; link is the native deep link fallback",
+        "Use object_ref for a compact clickable mention. Use object_card when the user asks to send, attach, or show the object itself; AAG renders it as a native Anytype card. link is the deep-link fallback",
       object_workflow:
         "Discover types and properties first, read the target before updating it, preserve unrelated properties, then use the returned native link in the Anytype reply",
       scheduling: schedulingContext(
@@ -400,6 +400,10 @@ export async function callTool(
       ["type_key", "name", "body", "template_id", "properties"],
       ["type_key"],
     );
+    if (payload.type_key === "collection" && payload.body !== undefined)
+      throw new Error(
+        "Anytype collections cannot have a body. Create the collection without body, create the content object separately, then add it with anytype_add_to_list.",
+      );
     if (payload.properties !== undefined)
       payload.properties = validatedProperties(payload.properties);
     return withLink(await anytype.createObject(spaceId, payload), spaceId);
@@ -424,6 +428,7 @@ export async function callTool(
       added: input.object_ids.length,
       list: anytypeLink(spaceId, listId),
       list_ref: `[[AAG_OBJECT:${listId}|Open collection]]`,
+      list_card: `[[AAG_OBJECT_CARD:${listId}|Open collection]]`,
     };
   }
   if (name === "anytype_remove_from_list") {
@@ -434,6 +439,7 @@ export async function callTool(
       removed: objectId,
       list: anytypeLink(spaceId, listId),
       list_ref: `[[AAG_OBJECT:${listId}|Open collection]]`,
+      list_card: `[[AAG_OBJECT_CARD:${listId}|Open collection]]`,
     };
   }
   if (name === "anytype_upload_file") {
@@ -486,7 +492,7 @@ async function allowedFile(config: AgentConfig, value: string): Promise<string> 
 function withLink<T extends Record<string, any>>(
   object: T,
   spaceId: string,
-): T & { link: string; object_ref: string } {
+): T & { link: string; object_ref: string; object_card: string } {
   const objectId = String(object.id ?? object.object_id ?? object.object?.id ?? "");
   if (!objectId) throw new Error("Anytype returned an object without an ID");
   const label =
@@ -497,6 +503,7 @@ function withLink<T extends Record<string, any>>(
     ...object,
     link: anytypeLink(spaceId, objectId),
     object_ref: `[[AAG_OBJECT:${objectId}|${label}]]`,
+    object_card: `[[AAG_OBJECT_CARD:${objectId}|${label}]]`,
   };
 }
 function anytypeLink(spaceId: string, objectId: string): string {
