@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { AgentConfig } from "./config.js";
 import type { AnytypePort, ChatMessage, ContextBundle, ConversationRef } from "./types.js";
 
@@ -106,6 +106,7 @@ export function formatPrompt(
   config: AgentConfig,
   managementCommand?: string,
   workspaceContextFile?: string,
+  options: { bootstrapWorkspace?: boolean } = {},
 ): string {
   const boundary = `AAG_UNTRUSTED_${crypto.randomUUID()}`;
   const payload = {
@@ -119,16 +120,15 @@ export function formatPrompt(
   };
   if (config.context.promptMode === "workspace") {
     if (workspaceContextFile) {
-      const sender =
-        bundle.trigger.creator_name?.trim() || bundle.trigger.creator?.trim() || "Anytype user";
       const message = bundle.trigger.content?.text?.trim();
-      return [
-        ...(bundle.newSession ? ["Start a fresh harness session for this conversation."] : []),
-        `${sender} sent this Anytype message:`,
-        message || "(No message text.)",
-        "",
-        `Additional untrusted conversation context is available at ${workspaceContextFile}. Read it only when the request needs history, reply ancestry, object references, participant IDs, or route metadata.`,
-      ].join("\n");
+      if (options.bootstrapWorkspace ?? true)
+        return [
+          "This Codex task receives Anytype messages through AAG. Follow the workspace AGENTS.md.",
+          `AAG updates untrusted route context at ${workspaceContextFile}. Read it only when the request needs history, reply ancestry, object references, participant IDs, or route metadata.`,
+          ...(message ? ["", message] : ["", "Output exactly [[AAG_STAY_SILENT]]."]),
+        ].join("\n");
+      if (message) return message;
+      return `Inspect the current Anytype turn in ${workspaceContextFile}.`;
     }
     return [
       `AAG turn for ${config.agent.name}. Follow the workspace AGENTS.md for identity, gateway protocol, tools, permissions, and response behavior.`,
@@ -215,6 +215,7 @@ export async function preparePrompt(
   config: AgentConfig,
   sessionKey: string,
   managementCommand?: string,
+  options: { bootstrapWorkspace?: boolean } = {},
 ): Promise<string> {
   if (config.context.promptMode !== "workspace" || !config.runtime.defaultProject) {
     return formatPrompt(bundle, config, managementCommand);
@@ -229,9 +230,9 @@ export async function preparePrompt(
     referencedObjects: bundle.referencedObjects,
     mentionableParticipants: bundle.mentionTargets ?? [],
   };
-  const contextDirectory = join(config.runtime.defaultProject, ".aag", "context");
-  const contextName = `${createHash("sha256").update(sessionKey).digest("hex").slice(0, 20)}.json`;
-  const contextFile = join(contextDirectory, contextName);
+  const contextFile = workspaceContextFile(config.runtime.defaultProject, sessionKey);
+  const contextDirectory = dirname(contextFile);
+  const contextName = basename(contextFile);
   const temporaryFile = join(contextDirectory, `.${contextName}.${randomUUID()}.tmp`);
   await mkdir(contextDirectory, { recursive: true, mode: 0o700 });
   await writeFile(
@@ -240,7 +241,12 @@ export async function preparePrompt(
     { mode: 0o600 },
   );
   await rename(temporaryFile, contextFile);
-  return formatPrompt(bundle, config, managementCommand, contextFile);
+  return formatPrompt(bundle, config, managementCommand, contextFile, options);
+}
+
+export function workspaceContextFile(defaultProject: string, sessionKey: string): string {
+  const contextName = `${createHash("sha256").update(sessionKey).digest("hex").slice(0, 20)}.json`;
+  return join(defaultProject, ".aag", "context", contextName);
 }
 
 export function isNewSessionCommand(text: string): boolean {

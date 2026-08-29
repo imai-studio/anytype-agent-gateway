@@ -367,7 +367,9 @@ export class AgentController {
         this.config,
         sessionKey,
         this.managementCommand?.(conversation.routeId, message.creator ?? ""),
+        { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId },
       );
+      const workspacePath = this.store.sessionWorkspace(threadKey);
       const handle = await this.runtime.start(
         {
           sessionKey,
@@ -377,6 +379,7 @@ export class AgentController {
             message,
             replyTargetId,
             ...(message.mentioned === undefined ? {} : { wasMentioned: message.mentioned }),
+            ...(workspacePath ? { workspacePath } : {}),
           },
         },
         (event) => {

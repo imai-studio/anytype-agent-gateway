@@ -89,6 +89,16 @@ export class AnytypeClient {
         const chats = await this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/chats`);
         return chats.map((chat) => ({ id: chat.id, name: chat.name ?? chat.id }));
     }
+    async createChat(spaceId, input) {
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/chats`, {
+            method: "POST",
+            body: JSON.stringify({ name: input.name }),
+        })).json());
+        const chat = json.object;
+        if (!chat?.id)
+            throw new Error("Anytype returned no chat ID");
+        return { id: String(chat.id), name: String(chat.name || input.name || chat.id) };
+    }
     async getMessage(spaceId, chatId, messageId) {
         const json = (await (await this.request(this.messagePath(spaceId, chatId, messageId))).json());
         return json.message;

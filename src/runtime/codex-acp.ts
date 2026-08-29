@@ -87,9 +87,10 @@ export class CodexAcpDriver implements RuntimeDriver {
     input: { sessionKey: string; prompt: string; turn?: RuntimeTurn },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<ActiveRuntime> {
+    const workspacePath = input.turn?.workspacePath ?? this.config.defaultProject;
     const environment = inheritedAgentEnvironment(this.config.environment);
     const child = spawn(this.config.command, this.config.args, {
-      cwd: this.config.defaultProject,
+      cwd: workspacePath,
       env: environment,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -218,8 +219,14 @@ export class CodexAcpDriver implements RuntimeDriver {
             protocolVersion: acp.PROTOCOL_VERSION,
             clientCapabilities: {},
           });
+          const additionalDirectories = [
+            ...this.config.allowedProjects,
+            ...(this.config.defaultProject && this.config.defaultProject !== workspacePath
+              ? [this.config.defaultProject]
+              : []),
+          ];
           const sessionSetup = {
-            cwd: this.config.defaultProject ?? process.cwd(),
+            cwd: workspacePath ?? process.cwd(),
             mcpServers: this.mcpServer
               ? [
                   {
@@ -230,19 +237,17 @@ export class CodexAcpDriver implements RuntimeDriver {
                   },
                 ]
               : [],
-            ...(this.config.allowedProjects.length
-              ? { additionalDirectories: this.config.allowedProjects }
-              : {}),
+            ...(additionalDirectories.length ? { additionalDirectories } : {}),
           };
           let savedSessionId = this.store?.codexAcpSession(input.sessionKey);
           if (
             !savedSessionId &&
             this.config.desktopProject === "auto" &&
-            this.config.defaultProject &&
+            workspacePath &&
             initialized.agentCapabilities?.loadSession
           ) {
             const nativeSessionId = await createCodexDesktopThread({
-              workspace: this.config.defaultProject,
+              workspace: workspacePath,
               title: `${this.agentName ?? "Agent"} — Anytype ${input.turn?.conversation.kind === "discussion" ? "discussion" : "chat"}`,
               ...(this.config.environment.CODEX_HOME
                 ? { codexHome: this.config.environment.CODEX_HOME }
@@ -349,10 +354,11 @@ export class CodexAcpDriver implements RuntimeDriver {
   }
 
   private async associateDesktopProject(sessionId: string, turn?: RuntimeTurn): Promise<void> {
-    if (this.config.desktopProject !== "auto" || !this.config.defaultProject) return;
+    const workspacePath = turn?.workspacePath ?? this.config.defaultProject;
+    if (this.config.desktopProject !== "auto" || !workspacePath) return;
     await associateCodexDesktopThread({
       threadId: sessionId,
-      workspace: this.config.defaultProject,
+      workspace: workspacePath,
       ...(this.agentName
         ? {
             title: `${this.agentName} — Anytype ${turn?.conversation.kind === "discussion" ? "discussion" : "chat"}`,
@@ -381,7 +387,11 @@ export class CodexAcpDriver implements RuntimeDriver {
   }
 
   private retryDesktopProjectAssociation(sessionId: string, turn?: RuntimeTurn): void {
-    if (this.config.desktopProject !== "auto" || !this.config.defaultProject) return;
+    if (
+      this.config.desktopProject !== "auto" ||
+      !(turn?.workspacePath ?? this.config.defaultProject)
+    )
+      return;
     for (const delayMs of [1_000, 5_000, 30_000, 60_000]) {
       const timer = setTimeout(() => void this.associateDesktopProject(sessionId, turn), delayMs);
       timer.unref?.();

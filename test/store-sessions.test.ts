@@ -25,7 +25,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(2);
+    expect(store.schemaVersion()).toBe(3);
     expect(store.cursor("route")).toBe("order-7");
     expect(
       (

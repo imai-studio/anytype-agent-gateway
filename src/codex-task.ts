@@ -52,7 +52,10 @@ export async function createCodexTask(
   return { thread_id: state.threadId, project, status: "running" };
 }
 
-async function resolveConfiguredProject(config: AgentConfig, requested: string): Promise<string> {
+export async function resolveConfiguredProject(
+  config: AgentConfig,
+  requested: string,
+): Promise<string> {
   const configured = [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter(
     Boolean,
   ) as string[];

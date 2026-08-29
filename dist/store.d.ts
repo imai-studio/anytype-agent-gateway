@@ -7,6 +7,7 @@ export declare class Store {
     private migrate;
     private migrateToVersion1;
     private migrateToVersion2;
+    private migrateToVersion3;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;
@@ -80,6 +81,8 @@ export declare class Store {
         state?: SessionBindingState;
     }, now?: number): SessionBinding | undefined;
     deleteSessionBinding(threadKey: string): boolean;
+    sessionWorkspace(threadKey: string): string | undefined;
+    saveSessionWorkspace(threadKey: string, workspacePath: string, now?: number): void;
     runtimeCapabilities(runtime: AgentRuntime): RuntimeCapabilities | undefined;
     saveRuntimeCapabilities(runtime: AgentRuntime, capabilities: RuntimeCapabilities, now?: number): void;
     createOutputCycle(input: {

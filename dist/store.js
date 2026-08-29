@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 export class Store {
     db;
     constructor(path) {
@@ -25,6 +25,8 @@ export class Store {
                 this.migrateToVersion1();
             if (current < 2)
                 this.migrateToVersion2();
+            if (current < 3)
+                this.migrateToVersion3();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -143,6 +145,15 @@ export class Store {
         cursor TEXT NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY(bridge_id, stream_key)
+      );
+    `);
+    }
+    migrateToVersion3() {
+        this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_workspaces (
+        thread_key TEXT PRIMARY KEY REFERENCES session_bindings(thread_key) ON DELETE CASCADE,
+        workspace_path TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
       );
     `);
     }
@@ -432,6 +443,17 @@ export class Store {
     }
     deleteSessionBinding(threadKey) {
         return (this.db.prepare("DELETE FROM session_bindings WHERE thread_key=?").run(threadKey).changes > 0);
+    }
+    sessionWorkspace(threadKey) {
+        return this.db
+            .prepare("SELECT workspace_path FROM session_workspaces WHERE thread_key=?")
+            .get(threadKey)?.workspace_path;
+    }
+    saveSessionWorkspace(threadKey, workspacePath, now = Date.now()) {
+        this.db
+            .prepare(`INSERT INTO session_workspaces(thread_key,workspace_path,updated_at) VALUES(?,?,?)
+         ON CONFLICT(thread_key) DO UPDATE SET workspace_path=excluded.workspace_path,updated_at=excluded.updated_at`)
+            .run(threadKey, workspacePath, now);
     }
     runtimeCapabilities(runtime) {
         const row = this.db

@@ -14,7 +14,7 @@ import type {
   SessionBindingState,
 } from "./session-types.js";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 export class Store {
   readonly db: DatabaseSync;
@@ -45,6 +45,7 @@ export class Store {
     try {
       if (current < 1) this.migrateToVersion1();
       if (current < 2) this.migrateToVersion2();
+      if (current < 3) this.migrateToVersion3();
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -164,6 +165,16 @@ export class Store {
         cursor TEXT NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY(bridge_id, stream_key)
+      );
+    `);
+  }
+
+  private migrateToVersion3(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_workspaces (
+        thread_key TEXT PRIMARY KEY REFERENCES session_bindings(thread_key) ON DELETE CASCADE,
+        workspace_path TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
       );
     `);
   }
@@ -621,6 +632,23 @@ export class Store {
     return (
       this.db.prepare("DELETE FROM session_bindings WHERE thread_key=?").run(threadKey).changes > 0
     );
+  }
+
+  sessionWorkspace(threadKey: string): string | undefined {
+    return (
+      this.db
+        .prepare("SELECT workspace_path FROM session_workspaces WHERE thread_key=?")
+        .get(threadKey) as { workspace_path: string } | undefined
+    )?.workspace_path;
+  }
+
+  saveSessionWorkspace(threadKey: string, workspacePath: string, now = Date.now()): void {
+    this.db
+      .prepare(
+        `INSERT INTO session_workspaces(thread_key,workspace_path,updated_at) VALUES(?,?,?)
+         ON CONFLICT(thread_key) DO UPDATE SET workspace_path=excluded.workspace_path,updated_at=excluded.updated_at`,
+      )
+      .run(threadKey, workspacePath, now);
   }
 
   runtimeCapabilities(runtime: AgentRuntime): RuntimeCapabilities | undefined {

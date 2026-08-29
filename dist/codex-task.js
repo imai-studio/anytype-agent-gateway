@@ -35,7 +35,7 @@ export async function createCodexTask(config, input) {
         throw new Error(state.error ?? "Codex did not return a task ID before startup timed out");
     return { thread_id: state.threadId, project, status: "running" };
 }
-async function resolveConfiguredProject(config, requested) {
+export async function resolveConfiguredProject(config, requested) {
     const configured = [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter(Boolean);
     const canonical = await Promise.all(configured.map(async (path) => await realpath(resolve(path)).catch(() => resolve(path))));
     const requestedPath = resolve(requested);

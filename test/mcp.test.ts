@@ -62,13 +62,15 @@ describe("AAG Anytype MCP policy", () => {
     expect(toolDefinitions(config()).map((tool) => tool.name)).not.toContain(
       "aag_create_codex_task",
     );
-    expect(
-      toolDefinitions(
-        config({ tools: { anytype: { allowWrite: true }, codex: { enabled: true } } }),
-      )
-        .map((tool) => tool.name)
-        .filter((name) => name === "aag_create_codex_task"),
-    ).toEqual(["aag_create_codex_task"]);
+    const enabled = toolDefinitions(
+      config({ tools: { anytype: { allowWrite: true }, codex: { enabled: true } } }),
+    ).map((tool) => tool.name);
+    expect(enabled.filter((name) => name === "aag_create_codex_task")).toEqual([
+      "aag_create_codex_task",
+    ]);
+    expect(enabled.filter((name) => name === "aag_create_bound_chat")).toEqual([
+      "aag_create_bound_chat",
+    ]);
   });
 
   it("reports its gateway context without exposing the API key", async () => {

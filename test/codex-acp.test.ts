@@ -16,6 +16,32 @@ afterEach(async () => {
 });
 
 describe("Codex ACP continuity", () => {
+  it("starts a bound chat session in its selected Codex project", async () => {
+    const directory = await temporaryDirectory();
+    const workspace = await temporaryDirectory();
+    const logPath = join(directory, "calls.jsonl");
+    const runtime = driver(undefined, { FAKE_ACP_LOG: logPath });
+    const turn: RuntimeTurn = {
+      conversation: {
+        routeId: "chat:space:project-chat",
+        spaceId: "space",
+        chatId: "project-chat",
+        kind: "chat",
+      },
+      message: { id: "trigger", creator: "human", content: { text: "hello" } },
+      replyTargetId: "trigger",
+      workspacePath: workspace,
+    };
+
+    await (
+      await runtime.start({ sessionKey: "aag:project-chat", prompt: "hello", turn }, () => {})
+    ).result;
+
+    expect(
+      (await log(logPath)).find((call) => call.method === "session/new")?.params,
+    ).toMatchObject({ cwd: workspace });
+  });
+
   it("persists a session, loads it after reopening SQLite, and ignores replayed history", async () => {
     const directory = await temporaryDirectory();
     const database = join(directory, "state.sqlite");

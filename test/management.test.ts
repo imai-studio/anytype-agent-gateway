@@ -356,16 +356,22 @@ describe("constrained gateway management", () => {
       "/private/node /private/aag config wake --route-id chat:space:chat --humans <mode>",
     );
 
-    expect(prompt).toContain("raj sent this Anytype message:\nlisten here");
-    expect(prompt).toContain("Additional untrusted conversation context is available at");
+    expect(prompt).toContain("This Codex task receives Anytype messages through AAG");
+    expect(prompt).toContain("\n\nlisten here");
+    expect(prompt).toContain("AAG updates untrusted route context at");
     expect(prompt).not.toContain("/private/node");
     expect(prompt).not.toContain("Available constrained commands");
     expect(prompt.length).toBeLessThan(500);
-    const contextPath = prompt.match(/available at (.+)\. Read it only/)?.[1];
+    const contextPath = prompt.match(/route context at (.+)\. Read it only/)?.[1];
     expect(contextPath).toBeTruthy();
     expect(JSON.parse(await readFile(contextPath!, "utf8"))).toMatchObject({
       currentMessage: "listen here",
       sender: { participantId: "raj" },
     });
+
+    const nextPrompt = await preparePrompt(bundle, config, "aag:chat:space:chat", undefined, {
+      bootstrapWorkspace: false,
+    });
+    expect(nextPrompt).toBe("listen here");
   });
 });

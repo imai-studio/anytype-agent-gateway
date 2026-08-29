@@ -102,6 +102,7 @@ export type RuntimeTurn = {
     message: ChatMessage;
     replyTargetId: string;
     wasMentioned?: boolean;
+    workspacePath?: string;
 };
 export type ActiveRuntime = {
     sessionKey?: string;

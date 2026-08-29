@@ -2,6 +2,7 @@ import { access, constants, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { AnytypeClient } from "./anytype-client.js";
+import { createBoundCodexChat } from "./bound-chat.js";
 import { createCodexTask } from "./codex-task.js";
 import { loadConfig } from "./config.js";
 import { setRouteAccess, setRouteWake } from "./management.js";
@@ -229,6 +230,20 @@ export function toolDefinitions(config) {
                     prompt: stringSchema("Complete initial instructions for the new Codex task"),
                 }, ["project", "prompt"]),
             },
+            ...(config.tools.anytype.allowWrite
+                ? [
+                    {
+                        name: "aag_create_bound_chat",
+                        description: "Create an Anytype chat and bind it one-to-one to a new persistent Codex task in a configured project. Use only when the user explicitly asks for a new linked Anytype chat and Codex task.",
+                        inputSchema: objectSchema({
+                            space_id: stringSchema("Configured Anytype space ID; omit to use the current conversation space"),
+                            name: stringSchema("Name for the new Anytype chat"),
+                            project: stringSchema("Configured absolute project path or its unique final directory name"),
+                            prompt: stringSchema("Complete initial instructions for the Codex task backing the new chat"),
+                        }, ["name", "project", "prompt"]),
+                    },
+                ]
+                : []),
         ]
         : [];
     if (!config.tools.anytype.allowWrite)
@@ -365,6 +380,18 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
             project: required(input, "project"),
             prompt: required(input, "prompt"),
         });
+    if (name === "aag_create_bound_chat") {
+        const spaceId = String(input.space_id ?? defaultSpaceId ?? "");
+        if (!spaceId)
+            throw new Error("space_id is required outside a bound Anytype conversation");
+        assertSpaceAllowed(config, spaceId, defaultSpaceId);
+        return await createBoundCodexChat(anytype, config, configPath, {
+            spaceId,
+            name: required(input, "name"),
+            project: required(input, "project"),
+            prompt: required(input, "prompt"),
+        });
+    }
     if (name === "anytype_list_spaces") {
         const spaces = await anytype.listSpaces();
         return spaces.filter((space) => spaceAllowed(config, space.id, defaultSpaceId));

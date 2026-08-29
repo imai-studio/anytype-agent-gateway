@@ -120,6 +120,21 @@ export class AnytypeClient implements AnytypePort {
     return chats.map((chat) => ({ id: chat.id, name: chat.name ?? chat.id }));
   }
 
+  async createChat(
+    spaceId: string,
+    input: { name: string },
+  ): Promise<{ id: string; name: string }> {
+    const json = (await (
+      await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/chats`, {
+        method: "POST",
+        body: JSON.stringify({ name: input.name }),
+      })
+    ).json()) as { object?: JsonRecord };
+    const chat = json.object;
+    if (!chat?.id) throw new Error("Anytype returned no chat ID");
+    return { id: String(chat.id), name: String(chat.name || input.name || chat.id) };
+  }
+
   async getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage> {
     const json = (await (
       await this.request(this.messagePath(spaceId, chatId, messageId))
