@@ -1,6 +1,6 @@
 import { inactivityTimeoutSeconds } from "./config.js";
 import { createHash } from "node:crypto";
-import { buildContext, formatPrompt, isNewSessionCommand } from "./context.js";
+import { buildContext, isNewSessionCommand, preparePrompt } from "./context.js";
 import { renderForAnytype, RunProjection } from "./projection.js";
 import { decideWake, mergeWakeOverride } from "./wake.js";
 export class AgentController {
@@ -281,9 +281,10 @@ export class AgentController {
                 }
             });
             let lastActivityAt = Date.now();
+            const prompt = await preparePrompt(context, this.config, sessionKey, this.managementCommand?.(conversation.routeId, message.creator ?? ""));
             const handle = await this.runtime.start({
                 sessionKey,
-                prompt: formatPrompt(context, this.config, this.managementCommand?.(conversation.routeId, message.creator ?? "")),
+                prompt,
                 turn: {
                     conversation,
                     message,

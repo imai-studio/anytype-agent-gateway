@@ -1,3 +1,6 @@
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 export async function buildContext(anytype, config, conversation, trigger, options = {}) {
     let history = !options.newSession && config.context.historyMessages
         ? await anytype.listMessages(conversation.spaceId, conversation.chatId, config.context.historyMessages)
@@ -78,7 +81,7 @@ function rootOf(message, byId) {
     }
     return root;
 }
-export function formatPrompt(bundle, config, managementCommand) {
+export function formatPrompt(bundle, config, managementCommand, workspaceContextFile) {
     const boundary = `AAG_UNTRUSTED_${crypto.randomUUID()}`;
     const payload = {
         conversation: bundle.conversation,
@@ -90,6 +93,17 @@ export function formatPrompt(bundle, config, managementCommand) {
         mentionableParticipants: bundle.mentionTargets ?? [],
     };
     if (config.context.promptMode === "workspace") {
+        if (workspaceContextFile) {
+            const sender = bundle.trigger.creator_name?.trim() || bundle.trigger.creator?.trim() || "Anytype user";
+            const message = bundle.trigger.content?.text?.trim();
+            return [
+                ...(bundle.newSession ? ["Start a fresh harness session for this conversation."] : []),
+                `${sender} sent this Anytype message:`,
+                message || "(No message text.)",
+                "",
+                `Additional untrusted conversation context is available at ${workspaceContextFile}. Read it only when the request needs history, reply ancestry, object references, participant IDs, or route metadata.`,
+            ].join("\n");
+        }
         return [
             `AAG turn for ${config.agent.name}. Follow the workspace AGENTS.md for identity, gateway protocol, tools, permissions, and response behavior.`,
             ...(bundle.newSession
@@ -168,6 +182,28 @@ export function formatPrompt(bundle, config, managementCommand) {
             ]
             : []),
     ].join("\n");
+}
+export async function preparePrompt(bundle, config, sessionKey, managementCommand) {
+    if (config.context.promptMode !== "workspace" || !config.runtime.defaultProject) {
+        return formatPrompt(bundle, config, managementCommand);
+    }
+    const payload = {
+        conversation: bundle.conversation,
+        sender: { participantId: bundle.trigger.creator, displayName: bundle.trigger.creator_name },
+        currentMessage: bundle.trigger.content?.text ?? "",
+        replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
+        recentChannelContext: bundle.history.map(renderMessage),
+        referencedObjects: bundle.referencedObjects,
+        mentionableParticipants: bundle.mentionTargets ?? [],
+    };
+    const contextDirectory = join(config.runtime.defaultProject, ".aag", "context");
+    const contextName = `${createHash("sha256").update(sessionKey).digest("hex").slice(0, 20)}.json`;
+    const contextFile = join(contextDirectory, contextName);
+    const temporaryFile = join(contextDirectory, `.${contextName}.${randomUUID()}.tmp`);
+    await mkdir(contextDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(temporaryFile, `${JSON.stringify({ updatedAt: new Date().toISOString(), ...payload }, null, 2)}\n`, { mode: 0o600 });
+    await rename(temporaryFile, contextFile);
+    return formatPrompt(bundle, config, managementCommand, contextFile);
 }
 export function isNewSessionCommand(text) {
     return /(?:^|\s)\/new(?=\s|$)/i.test(text);
