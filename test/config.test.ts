@@ -32,6 +32,7 @@ describe("loadConfig", () => {
     expect(config.runtime.maxRunSeconds).toBe(0);
     expect(config.tools.anytype.enabled).toBe(false);
     expect(config.tools.anytype.allowWrite).toBe(false);
+    expect(config.tools.codex.enabled).toBe(false);
     expect(config.spaces[0]?.chatDiscovery.enabled).toBe(false);
     expect(config.spaces[0]?.chatDiscovery.autoEnroll).toBe(false);
   });

@@ -22,6 +22,7 @@ runtime:
   kind: codex
   command: codex-acp
   permissions: deny
+  desktopProject: auto
   defaultProject: /absolute/path/to/default-project
   allowedProjects:
     - /absolute/path/to/another-project
@@ -35,6 +36,10 @@ tools:
     allowedSpaceIds: [_space_replace_me]
     allowedFileRoots:
       - /absolute/path/to/default-project
+  codex:
+    enabled: true
+    command: codex
+    sandbox: workspace-write
 responses:
   mode: milestones
   streaming: true

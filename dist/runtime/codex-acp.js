@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
+import { associateCodexDesktopThread } from "../codex-desktop.js";
 import { commandExists } from "../process.js";
 import { parseSilence } from "./openclaw.js";
 const SKILL_WARNING_PREFIXES = [
@@ -36,10 +37,13 @@ export class CodexAcpDriver {
     async doctor() {
         if (!(await commandExists(this.config.command)))
             throw new Error(`Codex ACP command not found: ${this.config.command}`);
-        return [
+        const lines = [
             `Codex ACP command: ${this.config.command}`,
             `project policy: ${this.projectEnforcement} (ACP cwd + additionalDirectories)`,
         ];
+        if (this.config.desktopProject === "auto")
+            lines.push("Codex Desktop project association: auto (exact workspace match)");
+        return lines;
     }
     async start(input, onEvent) {
         const environment = inheritedAgentEnvironment(this.config.environment);
@@ -235,6 +239,7 @@ export class CodexAcpDriver {
                     this.repeatedInternalLoadFailures.delete(input.sessionKey);
                 }
                 this.store?.saveCodexAcpSession(input.sessionKey, sessionId);
+                await this.associateDesktopProject(sessionId);
                 markReady();
                 try {
                     await ctx.request(acp.methods.agent.session.prompt, {
@@ -246,6 +251,7 @@ export class CodexAcpDriver {
                     acceptingSteers = false;
                     filteredText.finish();
                 }
+                await this.associateDesktopProject(sessionId);
                 const terminalText = messageTexts.get(finalMessageId ?? latestMessageId ?? "") ?? output;
                 return parseSilence(stripLeadingSkillWarning(terminalText));
             }
@@ -283,6 +289,19 @@ export class CodexAcpDriver {
                 }
             },
         };
+    }
+    async associateDesktopProject(sessionId) {
+        if (this.config.desktopProject !== "auto" || !this.config.defaultProject)
+            return;
+        await associateCodexDesktopThread({
+            threadId: sessionId,
+            workspace: this.config.defaultProject,
+            ...(this.config.environment.CODEX_HOME
+                ? { codexHome: this.config.environment.CODEX_HOME }
+                : process.env.CODEX_HOME
+                    ? { codexHome: process.env.CODEX_HOME }
+                    : {}),
+        }).catch(() => undefined);
     }
 }
 function savedSessionUnavailable(error) {

@@ -204,6 +204,7 @@ const runtimeSchema = z.discriminatedUnion("kind", [
     command: z.string().default("codex-acp"),
     args: z.array(z.string()).default([]),
     permissions: z.enum(["deny", "allow-once"]).default("deny"),
+    desktopProject: z.enum(["disabled", "auto"]).default("disabled"),
   }),
 ]);
 
@@ -266,6 +267,13 @@ export const configSchema = z.object({
           allowedSpaceIds: [],
           allowedFileRoots: [],
         }),
+      codex: z
+        .object({
+          enabled: z.boolean().default(false),
+          command: z.string().default("codex"),
+          sandbox: z.enum(["read-only", "workspace-write"]).default("workspace-write"),
+        })
+        .default({ enabled: false, command: "codex", sandbox: "workspace-write" }),
     })
     .default({
       anytype: {
@@ -275,6 +283,7 @@ export const configSchema = z.object({
         allowedSpaceIds: [],
         allowedFileRoots: [],
       },
+      codex: { enabled: false, command: "codex", sandbox: "workspace-write" },
     }),
   responses: z
     .object({

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
+import { associateCodexDesktopThread } from "../codex-desktop.js";
 import type { AgentConfig } from "../config.js";
 import { commandExists } from "../process.js";
 import type { Store } from "../store.js";
@@ -16,12 +17,20 @@ type McpServerCommand = { command: string; args: string[]; env?: Record<string, 
 type CodexRuntimeConfig = Extract<AgentConfig["runtime"], { kind: "codex" }>;
 type CodexDriverConfig = Omit<
   CodexRuntimeConfig,
-  "maxRunSeconds" | "setupTimeoutSeconds" | "livenessProbeSeconds" | "terminationGraceSeconds"
+  | "maxRunSeconds"
+  | "setupTimeoutSeconds"
+  | "livenessProbeSeconds"
+  | "terminationGraceSeconds"
+  | "desktopProject"
 > &
   Partial<
     Pick<
       CodexRuntimeConfig,
-      "maxRunSeconds" | "setupTimeoutSeconds" | "livenessProbeSeconds" | "terminationGraceSeconds"
+      | "maxRunSeconds"
+      | "setupTimeoutSeconds"
+      | "livenessProbeSeconds"
+      | "terminationGraceSeconds"
+      | "desktopProject"
     >
   >;
 
@@ -59,10 +68,13 @@ export class CodexAcpDriver implements RuntimeDriver {
   async doctor(): Promise<string[]> {
     if (!(await commandExists(this.config.command)))
       throw new Error(`Codex ACP command not found: ${this.config.command}`);
-    return [
+    const lines = [
       `Codex ACP command: ${this.config.command}`,
       `project policy: ${this.projectEnforcement} (ACP cwd + additionalDirectories)`,
     ];
+    if (this.config.desktopProject === "auto")
+      lines.push("Codex Desktop project association: auto (exact workspace match)");
+    return lines;
   }
 
   async start(
@@ -258,6 +270,7 @@ export class CodexAcpDriver implements RuntimeDriver {
             this.repeatedInternalLoadFailures.delete(input.sessionKey);
           }
           this.store?.saveCodexAcpSession(input.sessionKey, sessionId);
+          await this.associateDesktopProject(sessionId);
           markReady();
           try {
             await ctx.request(acp.methods.agent.session.prompt, {
@@ -268,6 +281,7 @@ export class CodexAcpDriver implements RuntimeDriver {
             acceptingSteers = false;
             filteredText.finish();
           }
+          await this.associateDesktopProject(sessionId);
           const terminalText = messageTexts.get(finalMessageId ?? latestMessageId ?? "") ?? output;
           return parseSilence(stripLeadingSkillWarning(terminalText));
         } catch (error) {
@@ -304,6 +318,19 @@ export class CodexAcpDriver implements RuntimeDriver {
         }
       },
     };
+  }
+
+  private async associateDesktopProject(sessionId: string): Promise<void> {
+    if (this.config.desktopProject !== "auto" || !this.config.defaultProject) return;
+    await associateCodexDesktopThread({
+      threadId: sessionId,
+      workspace: this.config.defaultProject,
+      ...(this.config.environment.CODEX_HOME
+        ? { codexHome: this.config.environment.CODEX_HOME }
+        : process.env.CODEX_HOME
+          ? { codexHome: process.env.CODEX_HOME }
+          : {}),
+    }).catch(() => undefined);
   }
 }
 

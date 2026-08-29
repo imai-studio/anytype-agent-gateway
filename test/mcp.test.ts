@@ -58,6 +58,19 @@ function client() {
 }
 
 describe("AAG Anytype MCP policy", () => {
+  it("exposes separate Codex task creation only when explicitly enabled", () => {
+    expect(toolDefinitions(config()).map((tool) => tool.name)).not.toContain(
+      "aag_create_codex_task",
+    );
+    expect(
+      toolDefinitions(
+        config({ tools: { anytype: { allowWrite: true }, codex: { enabled: true } } }),
+      )
+        .map((tool) => tool.name)
+        .filter((name) => name === "aag_create_codex_task"),
+    ).toEqual(["aag_create_codex_task"]);
+  });
+
   it("reports its gateway context without exposing the API key", async () => {
     const result = await callTool(
       client(),

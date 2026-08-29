@@ -273,6 +273,21 @@ describe("example workflows", () => {
     await eventually(() => expect(anytype.deleted).toContain(reply));
   });
 
+  it("keeps a visible acknowledgement when a new session has no other output", async () => {
+    const { anytype, runtime, controller } = setup("delete");
+    const message = incoming({
+      content: { text: "@AAG /new", marks: [{ type: "mention", param: "bot" }] },
+    });
+    anytype.messages.push(message);
+    await controller.process(conversation, wake, message);
+    const reply = anytype.messages.at(-1)!.id;
+    runtime.finish({ text: "", silent: true, reason: "reset command only" });
+    await eventually(() =>
+      expect(anytype.edits).toContainEqual({ id: reply, text: "Started a new session." }),
+    );
+    expect(anytype.deleted).not.toContain(reply);
+  });
+
   it("can wake when a previously ignored message is edited to add a mention", async () => {
     const { anytype, runtime, controller } = setup();
     const original = incoming({ content: { text: "not for the agent" }, created_at: 1 });

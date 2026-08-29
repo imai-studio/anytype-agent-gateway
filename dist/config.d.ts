@@ -221,6 +221,10 @@ export declare const configSchema: z.ZodObject<{
             deny: "deny";
             "allow-once": "allow-once";
         }>>;
+        desktopProject: z.ZodDefault<z.ZodEnum<{
+            disabled: "disabled";
+            auto: "auto";
+        }>>;
         defaultProject: z.ZodOptional<z.ZodString>;
         allowedProjects: z.ZodDefault<z.ZodArray<z.ZodString>>;
         environment: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodString>>;
@@ -244,6 +248,14 @@ export declare const configSchema: z.ZodObject<{
             allowArchive: z.ZodDefault<z.ZodBoolean>;
             allowedSpaceIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
             allowedFileRoots: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        }, z.core.$strip>>;
+        codex: z.ZodDefault<z.ZodObject<{
+            enabled: z.ZodDefault<z.ZodBoolean>;
+            command: z.ZodDefault<z.ZodString>;
+            sandbox: z.ZodDefault<z.ZodEnum<{
+                "read-only": "read-only";
+                "workspace-write": "workspace-write";
+            }>>;
         }, z.core.$strip>>;
     }, z.core.$strip>>;
     responses: z.ZodDefault<z.ZodObject<{

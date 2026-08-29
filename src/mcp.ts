@@ -2,6 +2,7 @@ import { access, constants, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { AnytypeClient } from "./anytype-client.js";
+import { createCodexTask } from "./codex-task.js";
 import { loadConfig, type AgentConfig } from "./config.js";
 import { setRouteAccess, setRouteWake } from "./management.js";
 import { Store } from "./store.js";
@@ -44,8 +45,8 @@ export async function runMcpServer(
   context: { routeId?: string; spaceId?: string; actorId?: string } = {},
 ): Promise<void> {
   const config = await loadConfig(configPath);
-  if (!config.tools.anytype.enabled)
-    throw new Error("Anytype tools are disabled in this AAG configuration");
+  if (!config.tools.anytype.enabled && !config.tools.codex.enabled)
+    throw new Error("All AAG tools are disabled in this configuration");
   const anytype = await AnytypeClient.create(config);
   const routeId = context.routeId ?? process.env.AAG_ROUTE_ID;
   const actorId = context.actorId ?? process.env.AAG_ACTOR_ID;
@@ -259,7 +260,25 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
         ]
       : []),
   ];
-  if (!config.tools.anytype.allowWrite) return [...readTools, ...managementTools];
+  const codexTools: Tool[] = config.tools.codex.enabled
+    ? [
+        {
+          name: "aag_create_codex_task",
+          description:
+            "Create and start a separate persistent Codex task in the agent's default or allowed projects. Use only when the user explicitly asks for a separate task or thread; ordinary work stays in the current session.",
+          inputSchema: objectSchema(
+            {
+              project: stringSchema(
+                "Configured absolute project path or its unique final directory name",
+              ),
+              prompt: stringSchema("Complete initial instructions for the new Codex task"),
+            },
+            ["project", "prompt"],
+          ),
+        },
+      ]
+    : [];
+  if (!config.tools.anytype.allowWrite) return [...readTools, ...managementTools, ...codexTools];
   return [
     ...readTools,
     {
@@ -333,6 +352,7 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
         ]
       : []),
     ...managementTools,
+    ...codexTools,
   ];
 }
 
@@ -417,6 +437,11 @@ export async function callTool(
     });
     return { route_id: effectiveRouteId, allowed_users: allowedUsers };
   }
+  if (name === "aag_create_codex_task")
+    return await createCodexTask(config, {
+      project: required(input, "project"),
+      prompt: required(input, "prompt"),
+    });
   if (name === "anytype_list_spaces") {
     const spaces = await anytype.listSpaces();
     return spaces.filter((space) => spaceAllowed(config, space.id, defaultSpaceId));

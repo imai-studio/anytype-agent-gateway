@@ -325,7 +325,13 @@ export class AgentController {
                     return;
                 if (this.active.get(threadKey)?.id === runId)
                     this.active.delete(threadKey);
-                const status = await projection.finish(value);
+                const visibleResult = newSession && value.silent
+                    ? {
+                        text: "Started a new session.",
+                        ...(value.reason ? { reason: value.reason } : {}),
+                    }
+                    : value;
+                const status = await projection.finish(visibleResult);
                 this.store.finishRun(runId, status);
                 this.log("run_finished", { routeId: conversation.routeId, runId, status });
             })

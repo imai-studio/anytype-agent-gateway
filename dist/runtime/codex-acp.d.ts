@@ -10,7 +10,7 @@ type McpServerCommand = {
 type CodexRuntimeConfig = Extract<AgentConfig["runtime"], {
     kind: "codex";
 }>;
-type CodexDriverConfig = Omit<CodexRuntimeConfig, "maxRunSeconds" | "setupTimeoutSeconds" | "livenessProbeSeconds" | "terminationGraceSeconds"> & Partial<Pick<CodexRuntimeConfig, "maxRunSeconds" | "setupTimeoutSeconds" | "livenessProbeSeconds" | "terminationGraceSeconds">>;
+type CodexDriverConfig = Omit<CodexRuntimeConfig, "maxRunSeconds" | "setupTimeoutSeconds" | "livenessProbeSeconds" | "terminationGraceSeconds" | "desktopProject"> & Partial<Pick<CodexRuntimeConfig, "maxRunSeconds" | "setupTimeoutSeconds" | "livenessProbeSeconds" | "terminationGraceSeconds" | "desktopProject">>;
 export declare class RuntimeTurnAlreadyCompletedError extends Error {
     readonly name = "RuntimeTurnAlreadyCompletedError";
     constructor();
@@ -36,5 +36,6 @@ export declare class CodexAcpDriver implements RuntimeDriver {
         prompt: string;
         turn?: RuntimeTurn;
     }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;
+    private associateDesktopProject;
 }
 export {};

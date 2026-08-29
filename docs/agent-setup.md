@@ -105,6 +105,7 @@ runtime:
   kind: codex
   command: codex-acp
   permissions: deny
+  desktopProject: auto
   defaultProject: /absolute/path/to/default-project
   allowedProjects:
     - /absolute/path/to/another-project
@@ -115,6 +116,8 @@ context:
   promptMode: workspace
   historyMessages: 10
 ```
+
+The interactive `aag init` flow uses the directory where it is run as the default workspace and can install the stable gateway instructions into `AGENTS.md`. `desktopProject: auto` groups ACP-created tasks under the saved Codex Desktop project with that exact root. To let the agent explicitly create sibling Codex tasks, enable `tools.codex.enabled`; task creation remains limited to `defaultProject` and `allowedProjects`.
 
 The installed package resolves its bundled `codex-acp` executable automatically. For OpenClaw, use `examples/openclaw-agent.yaml`, provide the absolute Gateway client-module path, and keep the Gateway token in the configured environment variable or protected OpenClaw config file.
 

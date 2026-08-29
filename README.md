@@ -118,6 +118,8 @@ For a safe minimal starting point, use the interactive initializer:
 aag init --output ~/.config/aag/agent.yaml
 ```
 
+`aag init` is the guided setup path. It asks for the agent identity, Anytype space and sender allowlist, runtime, permissions, and workspace. The workspace defaults to the directory where the command is run. For Codex it can create or extend that workspace's `AGENTS.md`, enables compact workspace instructions, and opts newly created ACP tasks into the matching saved Codex Desktop project.
+
 It asks for the agent participant ID, API-key file, exact space/chat IDs, authorized participant IDs, runtime, and optional default project. It writes a new mode-`0600` file and refuses to overwrite an existing one. The generated chat uses `mention-or-reply`, rejects agent-authored messages, and leaves object discussions disabled.
 
 An abbreviated OpenClaw configuration looks like this:
@@ -261,6 +263,8 @@ The Anytype tool server defaults to off. Turn on `tools.anytype.enabled` only af
 Object tools return `object_ref` for a compact inline reference, `object_card` for a native card attachment, and an `anytype://` deep-link fallback. A shared MCP process can pass `route_id` to `aag_set_wake`; a route-bound process may omit it. With one allowed space, the MCP process also uses that space as its safe default.
 
 For Codex, the npm package includes `codex-acp`; the default `command: codex-acp` resolves that packaged executable automatically and falls back to `PATH` in source/operator-managed layouts. `runtime.defaultProject` becomes the ACP session working directory and `allowedProjects` become ACP additional directories. These are declarations to the ACP implementation, not a security sandbox. `runtime.permissions` is `deny` by default; `allow-once` selects an available one-run allow option for permission requests. For OpenClaw, project values are context declarations only; configure actual filesystem/tool permissions in OpenClaw.
+
+Set `runtime.desktopProject: auto` when this agent runs beside Codex Desktop. AAG then associates every ACP-created task with the saved local Codex project whose root exactly matches `defaultProject`; if no exact saved project exists, it leaves the task ungrouped. Set `tools.codex.enabled: true` to expose `aag_create_codex_task`. That tool starts a separate persistent Codex task only in `defaultProject` or `allowedProjects`, then associates it with the matching saved Codex Desktop project. Ordinary Anytype turns continue in their existing one-task-per-chat or discussion session.
 
 ## Validate and run
 

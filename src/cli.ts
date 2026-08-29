@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-import { access, constants, cp, mkdir, mkdtemp, open, rm } from "node:fs/promises";
+import { access, constants, cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
-import YAML from "yaml";
 import { AnytypeClient } from "./anytype-client.js";
-import { configSchema, loadConfig } from "./config.js";
+import { loadConfig } from "./config.js";
 import { HeartDiscussionAdapter } from "./discussions.js";
 import { Gateway } from "./gateway.js";
 import { createIdentity, joinSpaces } from "./identity.js";
@@ -21,103 +20,27 @@ import { enrollChatRoute, setRouteAccess, setRouteWake } from "./management.js";
 import { runMcpServer } from "./mcp.js";
 import type { RuntimeDriver } from "./types.js";
 import { VERSION } from "./version.js";
+import { runInitOnboarding } from "./onboarding.js";
 
 const program = new Command().name("aag").description("Anytype Agent Gateway").version(VERSION);
 
 program
   .command("init")
-  .description("Interactively create a one-agent configuration")
-  .option("-o, --output <path>", "configuration file", "./agent.yaml")
+  .description("Interactively onboard a Codex or OpenClaw agent")
+  .option("-o, --output <path>", "configuration file")
   .action(async (options) => {
     const prompt = createInterface({ input: process.stdin, output: process.stdout });
     try {
-      const name = (await prompt.question("Agent display name: ")).trim();
-      const participantId = (await prompt.question("Anytype participant ID: ")).trim();
-      const apiKeyFile =
-        (await prompt.question("Anytype API key file [~/.config/aag/anytype-api-key]: ")).trim() ||
-        "~/.config/aag/anytype-api-key";
-      const spaceId = (await prompt.question("Anytype space ID: ")).trim();
-      const chatId = (
-        await prompt.question("Initial Anytype chat/channel ID (optional with discovery): ")
-      ).trim();
-      const discoverChats = /^y(?:es)?$/i.test(
-        (await prompt.question("Discover new chats in this space [y/N]: ")).trim(),
-      );
-      const autoEnrollChats =
-        discoverChats &&
-        /^y(?:es)?$/i.test(
-          (
-            await prompt.question(
-              "Persist a discovered chat when an authorized user tags the agent [y/N]: ",
-            )
-          ).trim(),
-        );
-      const allowedUsers = (await prompt.question("Authorized participant IDs (comma-separated): "))
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
-      const runtimeKind =
-        (await prompt.question("Runtime (openclaw/codex) [openclaw]: ")).trim().toLowerCase() ||
-        "openclaw";
-      if (runtimeKind !== "openclaw" && runtimeKind !== "codex")
-        throw new Error("Runtime must be openclaw or codex");
-      const defaultProject = (
-        await prompt.question("Default project directory (optional): ")
-      ).trim();
-      const allowAnytypeWrites = /^y(?:es)?$/i.test(
-        (
-          await prompt.question("Allow this agent to create and update Anytype objects [y/N]: ")
-        ).trim(),
-      );
-      const runtime =
-        runtimeKind === "openclaw"
-          ? {
-              kind: "openclaw",
-              agentId: (await prompt.question("OpenClaw agent ID [main]: ")).trim() || "main",
-              ...(defaultProject ? { defaultProject } : {}),
-            }
-          : { kind: "codex", permissions: "deny", ...(defaultProject ? { defaultProject } : {}) };
-      if (!chatId && !discoverChats)
-        throw new Error("Provide an initial chat ID or enable chat discovery");
-      const wake = { humans: "mention-or-reply", agents: "never", allowedUsers } as const;
-      const value = {
-        version: 1,
-        agent: { name, participantId },
-        anytype: { apiKeyFile },
-        spaces: [
-          {
-            id: spaceId,
-            chats: chatId ? [{ id: chatId, wake }] : [],
-            ...(discoverChats
-              ? {
-                  chatDiscovery: {
-                    enabled: true,
-                    autoEnroll: autoEnrollChats,
-                    discoveryIntervalSeconds: 30,
-                    wake,
-                  },
-                }
-              : {}),
-            comments: { mode: "disabled" },
-          },
-        ],
-        runtime,
-        tools: {
-          anytype: {
-            enabled: allowAnytypeWrites,
-            allowWrite: allowAnytypeWrites,
-            allowedSpaceIds: [spaceId],
-          },
-        },
-        responses: { mode: "single", streaming: true },
-      };
-      configSchema.parse(value);
-      const output = resolve(options.output);
-      await mkdir(dirname(output), { recursive: true });
-      const handle = await open(output, "wx", 0o600);
-      await handle.writeFile(YAML.stringify(value));
-      await handle.close();
-      console.log(`Wrote ${output}. Run: aag doctor --config ${output}`);
+      const result = await runInitOnboarding(prompt, {
+        ...(options.output ? { output: options.output } : {}),
+      });
+      console.log(`\nCreated ${result.runtimeKind} agent configuration: ${result.output}`);
+      console.log(`Workspace: ${result.workspace}`);
+      if (result.agentsFile) console.log(`Workspace instructions: ${result.agentsFile}`);
+      console.log("\nNext steps:");
+      console.log(`  aag doctor --config ${result.output}`);
+      console.log(`  aag run --config ${result.output}`);
+      console.log(`  aag service install --config ${result.output}`);
     } finally {
       prompt.close();
     }
