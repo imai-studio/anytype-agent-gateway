@@ -238,6 +238,8 @@ export function buildLaunchdPlist(options: LaunchdPlistOptions): string {
   </dict>
   <key>RunAtLoad</key>
   <true/>
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
   <key>KeepAlive</key>
   <dict>
     <key>SuccessfulExit</key>

@@ -292,6 +292,11 @@ export function toolDefinitions(config) {
             description: "Upload a file from an allowed project/file root into Anytype.",
             inputSchema: objectSchema({ space_id: stringSchema(), path: stringSchema("Absolute local file path") }, ["path"]),
         },
+        {
+            name: "aag_set_profile_image",
+            description: "Set this agent identity's own Anytype profile image from an allowed local image file. The target identity is fixed by AAG and cannot be changed by the caller.",
+            inputSchema: objectSchema({ space_id: stringSchema(), path: stringSchema("Absolute local image file path") }, ["path"]),
+        },
         ...(config.tools.anytype.allowArchive
             ? [
                 {
@@ -476,6 +481,17 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
         const path = await allowedFile(config, required(input, "path"));
         return withLink(await anytype.uploadFile(spaceId, path), spaceId);
     }
+    if (name === "aag_set_profile_image") {
+        const path = await allowedFile(config, required(input, "path"));
+        if (!isImagePath(path))
+            throw new Error("Profile image must be a PNG, JPEG, WebP, or GIF file");
+        const configuredSpace = config.spaces.find((space) => space.id === spaceId);
+        const memberId = configuredSpace?.participantId ?? config.agent.participantId;
+        if (!memberId)
+            throw new Error("This space needs spaces[].participantId or agent.participantId before AAG can update its own profile");
+        const updated = await anytype.setProfileImage(spaceId, path);
+        return { updated: true, space_id: spaceId, member_id: memberId, ...updated };
+    }
     if (name === "anytype_archive_object") {
         if (!config.tools.anytype.allowArchive)
             throw new Error("Archiving is disabled for this agent");
@@ -522,6 +538,9 @@ async function allowedFile(config, value) {
             return path;
     }
     throw new Error("File is outside this agent's allowed file roots");
+}
+function isImagePath(path) {
+    return /\.(?:gif|jpe?g|png|webp)$/iu.test(path);
 }
 function withLink(object, spaceId) {
     const objectId = String(object.id ?? object.object_id ?? object.object?.id ?? "");

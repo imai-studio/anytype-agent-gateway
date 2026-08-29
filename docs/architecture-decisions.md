@@ -45,7 +45,7 @@ AAG is not an agent runtime. OpenClaw, Codex, or a future adapter handles reason
 
 Use the public Anytype API for spaces, chats, messages, reactions, object lookup, and streaming. Use the official Anytype CLI for headless identity lifecycle.
 
-We considered building directly on AnySync or Anytype Heart. That would couple the whole gateway to private synchronization internals. The only missing public capability required by the product is resolving an object's internal discussion ID, so a version-pinned Go adapter isolates that Heart call behind a tiny JSON interface.
+We considered building directly on AnySync or Anytype Heart. That would couple the whole gateway to private synchronization internals. A version-pinned Go adapter therefore isolates the small compatibility surface that the public API does not expose: resolving and writing object discussions, and updating the signed-in agent identity's own profile image. Ordinary spaces, chats, messages, files, objects, and reactions stay on the public API.
 
 The Heart adapter is optional and has a separate dependency-license boundary. The Any Source Available License 1.0 governs `anytype-heart`. Core AAG remains Apache-2.0; see [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
@@ -69,7 +69,7 @@ Codex ACP does not currently expose Codex desktop scheduled tasks or external se
 
 Agents need more than prompt context when asked to create a daily object, update a task, search a space, upload a file, add an object to a collection, or return an object link. AAG exposes those operations through a policy-mediated MCP server rather than handing an API key to the model.
 
-The read side includes complete object payloads plus type, property, select-tag, and template discovery. This matters because property keys and value shapes are space-specific: an agent must inspect that schema before an arbitrary object mutation instead of guessing it. Write, archive, space, and local-file permissions remain separate configuration boundaries. Results include an `object_ref` token for a compact native object mark, an `object_card` token for a full native Anytype object-card attachment, and a deep-link fallback.
+The read side includes complete object payloads plus type, property, select-tag, and template discovery. This matters because property keys and value shapes are space-specific: an agent must inspect that schema before an arbitrary object mutation instead of guessing it. Write, archive, space, and local-file permissions remain separate configuration boundaries. A self-profile mutation resolves the member from configuration rather than accepting an arbitrary target identity. Results include an `object_ref` token for a compact native object mark, an `object_card` token for a full native Anytype object-card attachment, and a deep-link fallback.
 
 Read access is limited to configured or explicitly allowed spaces. Writes default off, archive has its own switch, and file uploads are constrained to real paths below declared roots. The tool boundary cannot protect a key file from an unrestricted shell running as the same operating-system user, so strong credential isolation still requires a runtime sandbox or separate service account.
 

@@ -2,6 +2,7 @@ import { openAsBlob } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import type { AgentConfig } from "./config.js";
+import { runProcess } from "./process.js";
 import type { AnytypeEvent, AnytypePort, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 
 type JsonRecord = Record<string, any>;
@@ -14,6 +15,8 @@ export class AnytypeClient implements AnytypePort {
     private readonly base: string,
     private readonly headers: Record<string, string>,
     private readonly participantId?: string,
+    private readonly heartAdapter?: AgentConfig["anytype"]["heartAdapter"],
+    private readonly anytypeCliConfigPath?: string,
   ) {}
 
   static async create(config: AgentConfig): Promise<AnytypeClient> {
@@ -23,6 +26,8 @@ export class AnytypeClient implements AnytypePort {
       config.anytype.apiBase.replace(/\/$/, ""),
       { Authorization: `Bearer ${apiKey}`, "Anytype-Version": config.anytype.apiVersion },
       config.agent.participantId,
+      config.anytype.heartAdapter,
+      config.anytype.cli.configPath,
     );
   }
 
@@ -133,6 +138,41 @@ export class AnytypeClient implements AnytypePort {
     const chat = json.object;
     if (!chat?.id) throw new Error("Anytype returned no chat ID");
     return { id: String(chat.id), name: String(chat.name || input.name || chat.id) };
+  }
+
+  async downloadFile(
+    spaceId: string,
+    fileId: string,
+    maxBytes: number,
+  ): Promise<{ bytes: Uint8Array; contentType?: string }> {
+    const response = await this.request(
+      `/v1/spaces/${encodeURIComponent(spaceId)}/files/${encodeURIComponent(fileId)}`,
+    );
+    const declaredSize = Number(response.headers.get("content-length") ?? 0);
+    if (declaredSize > maxBytes)
+      throw new Error(`Anytype attachment exceeds the ${maxBytes}-byte download limit`);
+    if (!response.body) throw new Error("Anytype returned an empty attachment body");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel();
+        throw new Error(`Anytype attachment exceeds the ${maxBytes}-byte download limit`);
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+    return { bytes, ...(contentType ? { contentType } : {}) };
   }
 
   async getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage> {
@@ -458,6 +498,18 @@ export class AnytypeClient implements AnytypePort {
         body: form,
       })
     ).json()) as JsonRecord;
+  }
+
+  async setProfileImage(spaceId: string, path: string): Promise<JsonRecord> {
+    if (!this.heartAdapter)
+      throw new Error("Anytype Heart adapter is not configured for profile updates");
+    const args = ["profile-image", "--grpc-address", this.heartAdapter.grpcAddress];
+    if (this.anytypeCliConfigPath) args.push("--config", this.anytypeCliConfigPath);
+    const { stdout } = await runProcess(this.heartAdapter.command, args, {
+      stdin: `${JSON.stringify({ spaceId, localPath: path })}\n`,
+      timeoutMs: 60_000,
+    });
+    return stdout.trim() ? (JSON.parse(stdout) as JsonRecord) : { updated: true };
   }
 
   private messagesPath(spaceId: string, chatId: string): string {

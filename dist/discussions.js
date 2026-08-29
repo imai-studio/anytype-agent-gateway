@@ -137,6 +137,11 @@ export class DiscussionAnytypePort {
     async getObject(spaceId, objectId) {
         return this.base.getObject(spaceId, objectId);
     }
+    async downloadFile(spaceId, fileId, maxBytes) {
+        if (!this.base.downloadFile)
+            throw new Error("Anytype attachment downloads are unavailable for this discussion");
+        return this.base.downloadFile(spaceId, fileId, maxBytes);
+    }
     async searchObjects(spaceId, offset, limit) {
         return this.base.searchObjects(spaceId, offset, limit);
     }

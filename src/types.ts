@@ -33,7 +33,18 @@ export type ContextBundle = {
   newSession?: boolean;
   history: ChatMessage[];
   replyAncestry: ChatMessage[];
-  referencedObjects: Array<{ id: string; name?: string; markdown?: string }>;
+  referencedObjects: Array<
+    { id: string; name?: string; markdown?: string } & Record<string, unknown>
+  >;
+  attachments?: Array<{
+    messageId: string;
+    objectId: string;
+    type: ChatAttachment["type"];
+    localPath?: string;
+    contentType?: string;
+    sourceObjectId?: string;
+    error?: string;
+  }>;
   mentionTargets?: Array<{ name: string; participantId: string }>;
 };
 
@@ -148,4 +159,9 @@ export interface AnytypePort {
     offset: number,
     limit: number,
   ): Promise<Array<{ id: string; name?: string; type?: string }>>;
+  downloadFile?(
+    spaceId: string,
+    fileId: string,
+    maxBytes: number,
+  ): Promise<{ bytes: Uint8Array; contentType?: string }>;
 }

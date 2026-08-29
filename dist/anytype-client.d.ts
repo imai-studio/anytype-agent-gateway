@@ -5,6 +5,8 @@ export declare class AnytypeClient implements AnytypePort {
     private readonly base;
     private readonly headers;
     private readonly participantId?;
+    private readonly heartAdapter?;
+    private readonly anytypeCliConfigPath?;
     private readonly localReactions;
     private readonly reactionTails;
     private writeTail;
@@ -39,6 +41,10 @@ export declare class AnytypeClient implements AnytypePort {
     }): Promise<{
         id: string;
         name: string;
+    }>;
+    downloadFile(spaceId: string, fileId: string, maxBytes: number): Promise<{
+        bytes: Uint8Array;
+        contentType?: string;
     }>;
     getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage>;
     listMessages(spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]>;
@@ -97,6 +103,7 @@ export declare class AnytypeClient implements AnytypePort {
     }): Promise<JsonRecord[]>;
     removeObjectFromList(spaceId: string, listId: string, objectId: string): Promise<void>;
     uploadFile(spaceId: string, path: string): Promise<JsonRecord>;
+    setProfileImage(spaceId: string, path: string): Promise<JsonRecord>;
     private messagesPath;
     private messagePath;
     private listPages;

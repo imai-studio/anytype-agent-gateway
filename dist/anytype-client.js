@@ -1,23 +1,28 @@
 import { openAsBlob } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
+import { runProcess } from "./process.js";
 export class AnytypeClient {
     base;
     headers;
     participantId;
+    heartAdapter;
+    anytypeCliConfigPath;
     localReactions = new Set();
     reactionTails = new Map();
     writeTail = Promise.resolve();
-    constructor(base, headers, participantId) {
+    constructor(base, headers, participantId, heartAdapter, anytypeCliConfigPath) {
         this.base = base;
         this.headers = headers;
         this.participantId = participantId;
+        this.heartAdapter = heartAdapter;
+        this.anytypeCliConfigPath = anytypeCliConfigPath;
     }
     static async create(config) {
         const apiKey = (await readFile(config.anytype.apiKeyFile, "utf8")).trim();
         if (!apiKey)
             throw new Error(`Anytype API key file is empty: ${config.anytype.apiKeyFile}`);
-        return new AnytypeClient(config.anytype.apiBase.replace(/\/$/, ""), { Authorization: `Bearer ${apiKey}`, "Anytype-Version": config.anytype.apiVersion }, config.agent.participantId);
+        return new AnytypeClient(config.anytype.apiBase.replace(/\/$/, ""), { Authorization: `Bearer ${apiKey}`, "Anytype-Version": config.anytype.apiVersion }, config.agent.participantId, config.anytype.heartAdapter, config.anytype.cli.configPath);
     }
     async request(path, init = {}) {
         const method = init.method ?? "GET";
@@ -98,6 +103,36 @@ export class AnytypeClient {
         if (!chat?.id)
             throw new Error("Anytype returned no chat ID");
         return { id: String(chat.id), name: String(chat.name || input.name || chat.id) };
+    }
+    async downloadFile(spaceId, fileId, maxBytes) {
+        const response = await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/files/${encodeURIComponent(fileId)}`);
+        const declaredSize = Number(response.headers.get("content-length") ?? 0);
+        if (declaredSize > maxBytes)
+            throw new Error(`Anytype attachment exceeds the ${maxBytes}-byte download limit`);
+        if (!response.body)
+            throw new Error("Anytype returned an empty attachment body");
+        const reader = response.body.getReader();
+        const chunks = [];
+        let size = 0;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done)
+                break;
+            size += value.byteLength;
+            if (size > maxBytes) {
+                await reader.cancel();
+                throw new Error(`Anytype attachment exceeds the ${maxBytes}-byte download limit`);
+            }
+            chunks.push(value);
+        }
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+        }
+        const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+        return { bytes, ...(contentType ? { contentType } : {}) };
     }
     async getMessage(spaceId, chatId, messageId) {
         const json = (await (await this.request(this.messagePath(spaceId, chatId, messageId))).json());
@@ -291,6 +326,18 @@ export class AnytypeClient {
             method: "POST",
             body: form,
         })).json());
+    }
+    async setProfileImage(spaceId, path) {
+        if (!this.heartAdapter)
+            throw new Error("Anytype Heart adapter is not configured for profile updates");
+        const args = ["profile-image", "--grpc-address", this.heartAdapter.grpcAddress];
+        if (this.anytypeCliConfigPath)
+            args.push("--config", this.anytypeCliConfigPath);
+        const { stdout } = await runProcess(this.heartAdapter.command, args, {
+            stdin: `${JSON.stringify({ spaceId, localPath: path })}\n`,
+            timeoutMs: 60_000,
+        });
+        return stdout.trim() ? JSON.parse(stdout) : { updated: true };
     }
     messagesPath(spaceId, chatId) {
         return `/v1/spaces/${encodeURIComponent(spaceId)}/chats/${encodeURIComponent(chatId)}/messages`;

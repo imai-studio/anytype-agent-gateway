@@ -23,7 +23,9 @@ export declare class AgentController {
         wakeIsEffective?: boolean;
     }): Promise<void>;
     private processClaimed;
-    stop(): Promise<void>;
+    stop(options?: {
+        drain?: boolean;
+    }): Promise<void>;
     private start;
     private replaceActiveSession;
     private steerPrompt;

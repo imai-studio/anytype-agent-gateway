@@ -21,6 +21,8 @@ describe("buildLaunchdPlist", () => {
     expect(plist).toContain("<key>OtherJobEnabled</key>");
     expect(plist).toContain("<key>anytype</key>");
     expect(plist).toContain("<key>SuccessfulExit</key>");
+    expect(plist).toContain("<key>ExitTimeOut</key>");
+    expect(plist).toContain("<integer>30</integer>");
     expect(plist).toContain("<key>StandardOutPath</key>");
     expect(plist).toContain("<key>CODEX_APP_TOOLS_PIPE_PATH</key>");
     expect(plist).toContain("<string>/tmp/codex-app.sock</string>");

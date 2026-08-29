@@ -123,7 +123,7 @@ program
         (spaceId, spaceName, chatId, chatName, wake) =>
           enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }),
       );
-      const stop = () => gateway.stop();
+      const stop = () => gateway.stop({ drain: true });
       process.once("SIGINT", stop);
       process.once("SIGTERM", stop);
       await gateway.start();

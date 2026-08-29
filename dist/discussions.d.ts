@@ -61,6 +61,10 @@ export declare class DiscussionAnytypePort implements AnytypePort {
         name?: string;
         markdown?: string;
     }>;
+    downloadFile(spaceId: string, fileId: string, maxBytes: number): Promise<{
+        bytes: Uint8Array;
+        contentType?: string;
+    }>;
     searchObjects(spaceId: string, offset: number, limit: number): Promise<Array<{
         id: string;
         name?: string;

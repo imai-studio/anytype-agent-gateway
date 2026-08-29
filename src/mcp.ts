@@ -365,6 +365,15 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
         ["path"],
       ),
     },
+    {
+      name: "aag_set_profile_image",
+      description:
+        "Set this agent identity's own Anytype profile image from an allowed local image file. The target identity is fixed by AAG and cannot be changed by the caller.",
+      inputSchema: objectSchema(
+        { space_id: stringSchema(), path: stringSchema("Absolute local image file path") },
+        ["path"],
+      ),
+    },
     ...(config.tools.anytype.allowArchive
       ? [
           {
@@ -574,6 +583,18 @@ export async function callTool(
     const path = await allowedFile(config, required(input, "path"));
     return withLink(await anytype.uploadFile(spaceId, path), spaceId);
   }
+  if (name === "aag_set_profile_image") {
+    const path = await allowedFile(config, required(input, "path"));
+    if (!isImagePath(path)) throw new Error("Profile image must be a PNG, JPEG, WebP, or GIF file");
+    const configuredSpace = config.spaces.find((space) => space.id === spaceId);
+    const memberId = configuredSpace?.participantId ?? config.agent.participantId;
+    if (!memberId)
+      throw new Error(
+        "This space needs spaces[].participantId or agent.participantId before AAG can update its own profile",
+      );
+    const updated = await anytype.setProfileImage(spaceId, path);
+    return { updated: true, space_id: spaceId, member_id: memberId, ...updated };
+  }
   if (name === "anytype_archive_object") {
     if (!config.tools.anytype.allowArchive) throw new Error("Archiving is disabled for this agent");
     return withLink(await anytype.archiveObject(spaceId, required(input, "object_id")), spaceId);
@@ -626,6 +647,10 @@ async function allowedFile(config: AgentConfig, value: string): Promise<string> 
     if (child === "" || (!child.startsWith("..") && !isAbsolute(child))) return path;
   }
   throw new Error("File is outside this agent's allowed file roots");
+}
+
+function isImagePath(path: string): boolean {
+  return /\.(?:gif|jpe?g|png|webp)$/iu.test(path);
 }
 
 function withLink<T extends Record<string, any>>(

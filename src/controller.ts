@@ -227,14 +227,23 @@ export class AgentController {
       });
   }
 
-  async stop(): Promise<void> {
+  async stop(options: { drain?: boolean } = {}): Promise<void> {
+    const startedRuns = [...this.active.values()];
     clearInterval(this.outboxTimer);
     clearInterval(this.observerTimer);
     await Promise.allSettled([...this.observerStarts.values()]);
     await Promise.allSettled([...this.observers.values()].map((observer) => observer.close()));
     this.observers.clear();
     await this.outboxDrain?.catch(() => undefined);
-    const runs = [...this.active.values()];
+    if (options.drain && startedRuns.length && this.config.runtime.terminationGraceSeconds > 0) {
+      await Promise.race([
+        Promise.allSettled(startedRuns.map((run) => run.completion)),
+        new Promise((resolve) =>
+          setTimeout(resolve, this.config.runtime.terminationGraceSeconds * 1000),
+        ),
+      ]);
+    }
+    const runs = startedRuns.filter((run) => this.active.get(run.threadKey)?.id === run.id);
     for (const run of runs) {
       run.cancelled = true;
       await run.handle.cancel().catch(() => undefined);

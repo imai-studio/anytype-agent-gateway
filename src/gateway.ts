@@ -27,6 +27,7 @@ export class Gateway {
   private readonly discussionAnytype: AnytypePort;
   private readonly terminal: Promise<void>;
   private pruneTimer: NodeJS.Timeout | undefined;
+  private drainOnStop = false;
   private resolveTerminal!: () => void;
   private rejectTerminal!: (error: unknown) => void;
 
@@ -132,11 +133,12 @@ export class Gateway {
       if (this.pruneTimer) clearInterval(this.pruneTimer);
       this.pruneTimer = undefined;
       await Promise.allSettled([...this.tasks]);
-      await this.controller.stop();
+      await this.controller.stop({ drain: this.drainOnStop });
     }
   }
 
-  stop(): void {
+  stop(options: { drain?: boolean } = {}): void {
+    this.drainOnStop ||= options.drain ?? false;
     this.abort.abort();
     this.resolveTerminal();
   }

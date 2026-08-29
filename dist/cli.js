@@ -104,7 +104,7 @@ program
         store = new Store(config.state.path);
         const configPath = resolve(options.config);
         const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId, actorId) => managementCommand(config, configPath, routeId, actorId), (spaceId, spaceName, chatId, chatName, wake) => enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }));
-        const stop = () => gateway.stop();
+        const stop = () => gateway.stop({ drain: true });
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
         await gateway.start();

@@ -17,11 +17,14 @@ export declare class Gateway {
     private readonly discussionAnytype;
     private readonly terminal;
     private pruneTimer;
+    private drainOnStop;
     private resolveTerminal;
     private rejectTerminal;
     constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string, actorId: string) => string, enrollChat?: ((spaceId: string, spaceName: string, chatId: string, chatName: string, wake: WakeConfig) => Promise<"enrolled" | "existing" | "disabled">) | undefined);
     start(): Promise<void>;
-    stop(): void;
+    stop(options?: {
+        drain?: boolean;
+    }): void;
     private addRoute;
     private track;
     private runRoute;

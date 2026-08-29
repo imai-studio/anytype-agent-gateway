@@ -86,6 +86,10 @@ type profileRequest struct {
 	Name            string `json:"name"`
 	IconImage       string `json:"iconImage,omitempty"`
 }
+type profileImageRequest struct {
+	SpaceID   string `json:"spaceId"`
+	LocalPath string `json:"localPath"`
+}
 type approveRequest struct {
 	SpaceID    string `json:"spaceId"`
 	Identity   string `json:"identity"`
@@ -94,7 +98,7 @@ type approveRequest struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|space-approve> [flags]"))
+		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve> [flags]"))
 	}
 	switch os.Args[1] {
 	case "resolve":
@@ -105,11 +109,77 @@ func main() {
 		runMutation(os.Args[1], os.Args[2:])
 	case "profile":
 		runProfile(os.Args[2:])
+	case "profile-image":
+		runProfileImage(os.Args[2:])
 	case "space-approve":
 		runSpaceApprove(os.Args[2:])
 	default:
-		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|space-approve> [flags]"))
+		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve> [flags]"))
 	}
+}
+
+func runProfileImage(args []string) {
+	flags := flag.NewFlagSet("profile-image", flag.ExitOnError)
+	address := flags.String("grpc-address", "127.0.0.1:31010", "Anytype Heart gRPC address")
+	configPath := flags.String("config", defaultConfigPath(), "Anytype CLI config file")
+	allowUnauthenticated := flags.Bool("allow-unauthenticated", false, "allow a loopback Heart connection when the config has no session token")
+	_ = flags.Parse(args)
+	var input profileImageRequest
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fatal(fmt.Errorf("decode request: %w", err))
+	}
+	if input.SpaceID == "" || input.LocalPath == "" {
+		fatal(errors.New("spaceId and localPath are required"))
+	}
+	if info, err := os.Stat(input.LocalPath); err != nil || !info.Mode().IsRegular() {
+		fatal(errors.New("localPath must be a readable regular file"))
+	}
+	client, ctx, closeClient := heartClientWithTimeout(*address, *configPath, *allowUnauthenticated, 60*time.Second)
+	defer closeClient()
+	opened, err := client.WorkspaceOpen(ctx, &pb.RpcWorkspaceOpenRequest{SpaceId: input.SpaceID})
+	if err != nil {
+		fatal(fmt.Errorf("open workspace: %w", err))
+	}
+	if opened.GetError().GetCode() != pb.RpcWorkspaceOpenResponseError_NULL {
+		fatal(errors.New(opened.GetError().GetDescription()))
+	}
+	account := opened.GetInfo()
+	if account.GetProfileObjectId() == "" || account.GetAccountSpaceId() == "" {
+		fatal(errors.New("Heart returned no profile object or account space"))
+	}
+	uploaded, err := client.FileUpload(ctx, &pb.RpcFileUploadRequest{
+		SpaceId:   account.GetAccountSpaceId(),
+		LocalPath: input.LocalPath,
+		Type:      model.BlockContentFile_Image,
+		ImageKind: model.ImageKind_Icon,
+	})
+	if err != nil {
+		fatal(fmt.Errorf("upload profile image: %w", err))
+	}
+	if uploaded.GetError().GetCode() != pb.RpcFileUploadResponseError_NULL {
+		fatal(errors.New(uploaded.GetError().GetDescription()))
+	}
+	if uploaded.GetObjectId() == "" {
+		fatal(errors.New("Heart returned no uploaded image object ID"))
+	}
+	set, err := client.ObjectSetDetails(ctx, &pb.RpcObjectSetDetailsRequest{
+		ContextId: account.GetProfileObjectId(),
+		Details: []*model.Detail{{
+			Key:   "iconImage",
+			Value: stringValue(uploaded.GetObjectId()),
+		}},
+	})
+	if err != nil {
+		fatal(fmt.Errorf("set profile image: %w", err))
+	}
+	if set.GetError().GetCode() != pb.RpcObjectSetDetailsResponseError_NULL {
+		fatal(errors.New(set.GetError().GetDescription()))
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+		"updated":         true,
+		"profileObjectId": account.GetProfileObjectId(),
+		"fileObjectId":    uploaded.GetObjectId(),
+	})
 }
 
 func runProfile(args []string) {
@@ -174,6 +244,10 @@ func runSpaceApprove(args []string) {
 }
 
 func heartClient(address, configPath string, allowUnauthenticated bool) (service.ClientCommandsClient, context.Context, func()) {
+	return heartClientWithTimeout(address, configPath, allowUnauthenticated, 15*time.Second)
+}
+
+func heartClientWithTimeout(address, configPath string, allowUnauthenticated bool, timeout time.Duration) (service.ClientCommandsClient, context.Context, func()) {
 	token := os.Getenv("ANYTYPE_SESSION_TOKEN")
 	if token == "" {
 		var err error
@@ -190,7 +264,7 @@ func heartClient(address, configPath string, allowUnauthenticated bool) (service
 	if token != "" {
 		ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("token", token))
 	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	return service.NewClientCommandsClient(conn), ctx, func() { cancel(); _ = conn.Close() }
 }
 

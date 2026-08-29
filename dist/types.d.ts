@@ -46,6 +46,15 @@ export type ContextBundle = {
         id: string;
         name?: string;
         markdown?: string;
+    } & Record<string, unknown>>;
+    attachments?: Array<{
+        messageId: string;
+        objectId: string;
+        type: ChatAttachment["type"];
+        localPath?: string;
+        contentType?: string;
+        sourceObjectId?: string;
+        error?: string;
     }>;
     mentionTargets?: Array<{
         name: string;
@@ -175,4 +184,8 @@ export interface AnytypePort {
         name?: string;
         type?: string;
     }>>;
+    downloadFile?(spaceId: string, fileId: string, maxBytes: number): Promise<{
+        bytes: Uint8Array;
+        contentType?: string;
+    }>;
 }

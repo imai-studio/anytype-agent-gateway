@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -53,6 +53,7 @@ function client() {
     addObjectsToList: vi.fn().mockResolvedValue(undefined),
     removeObjectFromList: vi.fn().mockResolvedValue(undefined),
     uploadFile: vi.fn().mockResolvedValue({ object: { id: "file-object", name: "Asset" } }),
+    setProfileImage: vi.fn().mockResolvedValue({ file: { object_id: "file-object" } }),
     archiveObject: vi.fn().mockResolvedValue({ id: "archived" }),
   } as unknown as AnytypeClient;
 }
@@ -413,6 +414,28 @@ describe("AAG Anytype MCP policy", () => {
       object_ref: "[[AAG_OBJECT:file-object|Asset]]",
       object_card: "[[AAG_OBJECT_CARD:file-object|Asset]]",
     });
+  });
+
+  it("updates only the configured agent identity's profile image", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aag-mcp-profile-"));
+    const path = join(directory, "avatar.png");
+    await writeFile(path, "image");
+    const anytype = client();
+    const result = await callTool(
+      anytype,
+      config({
+        agent: { name: "Tool Agent", participantId: "agent-member" },
+        tools: { anytype: { allowWrite: true, allowedFileRoots: [directory] } },
+      }),
+      "/config.yaml",
+      undefined,
+      "space-1",
+      "aag_set_profile_image",
+      { path },
+    );
+
+    expect((anytype as any).setProfileImage).toHaveBeenCalledWith("space-1", await realpath(path));
+    expect(result).toMatchObject({ updated: true, member_id: "agent-member" });
   });
 
   it("keeps implicit access on the current conversation space", async () => {

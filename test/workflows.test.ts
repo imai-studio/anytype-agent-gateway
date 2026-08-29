@@ -35,6 +35,20 @@ function setup(silentPlaceholder: "delete" | "keep" | "replace" = "delete") {
 }
 
 describe("example workflows", () => {
+  it("lets an active run finish during a graceful service shutdown", async () => {
+    const { anytype, runtime, store, controller } = setup();
+    const message = incoming();
+    anytype.messages.push(message);
+    await controller.process(conversation, wake, message);
+
+    const stopping = controller.stop({ drain: true });
+    runtime.finish({ text: "Finished before restart" });
+    await stopping;
+
+    expect(anytype.edits.at(-1)?.text).toBe("Finished before restart");
+    expect(store.runningRuns(conversation.routeId)).toEqual([]);
+  });
+
   it("applies a live participant allowlist change to the next message", async () => {
     const { anytype, runtime, store, controller } = setup();
     const restrictedWake = {

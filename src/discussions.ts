@@ -203,6 +203,15 @@ export class DiscussionAnytypePort implements AnytypePort {
   ): Promise<{ id: string; name?: string; markdown?: string }> {
     return this.base.getObject(spaceId, objectId);
   }
+  async downloadFile(
+    spaceId: string,
+    fileId: string,
+    maxBytes: number,
+  ): Promise<{ bytes: Uint8Array; contentType?: string }> {
+    if (!this.base.downloadFile)
+      throw new Error("Anytype attachment downloads are unavailable for this discussion");
+    return this.base.downloadFile(spaceId, fileId, maxBytes);
+  }
   async searchObjects(
     spaceId: string,
     offset: number,

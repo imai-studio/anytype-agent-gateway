@@ -60,6 +60,7 @@ export async function buildContext(anytype, config, conversation, trigger, optio
             content: { ...trigger.content, text: stripNewSessionCommand(trigger.content?.text ?? "") },
         }
         : trigger;
+    const attachments = await materializeAttachments(anytype, config, conversation, [contextualTrigger, ...history, ...replyAncestry], referencedObjects);
     return {
         conversation,
         trigger: contextualTrigger,
@@ -67,6 +68,7 @@ export async function buildContext(anytype, config, conversation, trigger, optio
         history,
         replyAncestry,
         referencedObjects,
+        attachments,
         mentionTargets,
     };
 }
@@ -90,19 +92,37 @@ export function formatPrompt(bundle, config, managementCommand, workspaceContext
         replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
         recentChannelContext: bundle.history.map(renderMessage),
         referencedObjects: bundle.referencedObjects,
+        attachments: bundle.attachments ?? [],
         mentionableParticipants: bundle.mentionTargets ?? [],
     };
     if (config.context.promptMode === "workspace") {
         if (workspaceContextFile) {
             const message = bundle.trigger.content?.text?.trim();
+            const attached = (bundle.attachments ?? [])
+                .filter((attachment) => attachment.messageId === bundle.trigger.id)
+                .flatMap((attachment) => attachment.localPath
+                ? [
+                    `- ${attachment.localPath}${attachment.contentType ? ` (${attachment.contentType})` : ""}`,
+                ]
+                : []);
+            const objectMedia = (bundle.attachments ?? [])
+                .filter((attachment) => attachment.sourceObjectId && attachment.localPath)
+                .map((attachment) => `- ${attachment.localPath}${attachment.contentType ? ` (${attachment.contentType})` : ""}`);
+            const currentTurn = [
+                ...(message ? [message] : []),
+                ...(attached.length ? ["Attached media available locally:", ...attached] : []),
+                ...(objectMedia.length
+                    ? ["Referenced object media available locally:", ...objectMedia]
+                    : []),
+            ].join("\n\n");
             if (options.bootstrapWorkspace ?? true)
                 return [
                     "This Codex task receives Anytype messages through AAG. Follow the workspace AGENTS.md.",
                     `AAG updates untrusted route context at ${workspaceContextFile}. Read it only when the request needs history, reply ancestry, object references, participant IDs, or route metadata.`,
-                    ...(message ? ["", message] : ["", "Output exactly [[AAG_STAY_SILENT]]."]),
+                    ...(currentTurn ? ["", currentTurn] : ["", "Output exactly [[AAG_STAY_SILENT]]."]),
                 ].join("\n");
-            if (message)
-                return message;
+            if (currentTurn)
+                return currentTurn;
             return `Inspect the current Anytype turn in ${workspaceContextFile}.`;
         }
         return [
@@ -195,6 +215,7 @@ export async function preparePrompt(bundle, config, sessionKey, managementComman
         replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
         recentChannelContext: bundle.history.map(renderMessage),
         referencedObjects: bundle.referencedObjects,
+        attachments: bundle.attachments ?? [],
         mentionableParticipants: bundle.mentionTargets ?? [],
     };
     const contextFile = workspaceContextFile(config.runtime.defaultProject, sessionKey);
@@ -209,6 +230,111 @@ export async function preparePrompt(bundle, config, sessionKey, managementComman
 export function workspaceContextFile(defaultProject, sessionKey) {
     const contextName = `${createHash("sha256").update(sessionKey).digest("hex").slice(0, 20)}.json`;
     return join(defaultProject, ".aag", "context", contextName);
+}
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const MAX_CONTEXT_ATTACHMENTS = 12;
+async function materializeAttachments(anytype, config, conversation, messages, referencedObjects) {
+    if (!config.runtime.defaultProject || !anytype.downloadFile)
+        return [];
+    const seen = new Set();
+    const pending = [
+        ...messages.flatMap((message) => (message.attachments ?? []).map((attachment) => ({
+            messageId: message.id,
+            attachment,
+        }))),
+        ...referencedObjects.flatMap((object) => fileIdsFromObject(object).map((target) => ({
+            messageId: `object:${object.id}`,
+            sourceObjectId: object.id,
+            attachment: { target, type: "file" },
+        }))),
+    ];
+    const output = [];
+    for (const { messageId, sourceObjectId, attachment } of pending) {
+        if (output.length >= MAX_CONTEXT_ATTACHMENTS)
+            break;
+        if (attachment.type === "link" || seen.has(attachment.target))
+            continue;
+        seen.add(attachment.target);
+        try {
+            const downloaded = await anytype.downloadFile(conversation.spaceId, attachment.target, MAX_ATTACHMENT_BYTES);
+            const extension = extensionForContentType(downloaded.contentType);
+            const directory = join(config.runtime.defaultProject, ".aag", "attachments", safePathSegment(messageId));
+            const localPath = join(directory, `${safePathSegment(attachment.target)}${extension}`);
+            await mkdir(directory, { recursive: true, mode: 0o700 });
+            await writeFile(localPath, downloaded.bytes, { mode: 0o600 });
+            output.push({
+                messageId,
+                objectId: attachment.target,
+                type: attachment.type,
+                localPath,
+                ...(sourceObjectId ? { sourceObjectId } : {}),
+                ...(downloaded.contentType ? { contentType: downloaded.contentType } : {}),
+            });
+        }
+        catch (error) {
+            output.push({
+                messageId,
+                objectId: attachment.target,
+                type: attachment.type,
+                ...(sourceObjectId ? { sourceObjectId } : {}),
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+    return output;
+}
+function fileIdsFromObject(object) {
+    const ids = new Set();
+    const visit = (value, key, parent) => {
+        if (typeof value === "string") {
+            for (const match of value.matchAll(/\/files\/([^\s)'"?]+)/gu))
+                if (match[1])
+                    ids.add(safeDecodeURIComponent(match[1]));
+            if (key === "files" || (key === "file" && parent?.format === "file")) {
+                const id = value.includes("/files/") ? value.split("/files/").at(-1) : value;
+                if (id)
+                    ids.add(safeDecodeURIComponent(id.split(/[?#]/u, 1)[0]));
+            }
+            return;
+        }
+        if (Array.isArray(value)) {
+            for (const item of value)
+                visit(item, key, parent);
+            return;
+        }
+        if (!value || typeof value !== "object")
+            return;
+        const record = value;
+        for (const [childKey, child] of Object.entries(record))
+            visit(child, childKey, record);
+    };
+    visit(object);
+    return [...ids];
+}
+function safeDecodeURIComponent(value) {
+    try {
+        return decodeURIComponent(value);
+    }
+    catch {
+        return value;
+    }
+}
+function safePathSegment(value) {
+    return createHash("sha256").update(value).digest("hex").slice(0, 24);
+}
+function extensionForContentType(contentType) {
+    const known = {
+        "image/gif": ".gif",
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "video/mp4": ".mp4",
+        "video/quicktime": ".mov",
+        "audio/mpeg": ".mp3",
+        "audio/wav": ".wav",
+        "application/pdf": ".pdf",
+    };
+    return known[contentType ?? ""] ?? ".bin";
 }
 export function isNewSessionCommand(text) {
     return /(?:^|\s)\/new(?=\s|$)/i.test(text);

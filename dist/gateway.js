@@ -17,6 +17,7 @@ export class Gateway {
     discussionAnytype;
     terminal;
     pruneTimer;
+    drainOnStop = false;
     resolveTerminal;
     rejectTerminal;
     constructor(anytype, runtime, config, store, discussions, log, managementCommand, enrollChat) {
@@ -88,10 +89,11 @@ export class Gateway {
                 clearInterval(this.pruneTimer);
             this.pruneTimer = undefined;
             await Promise.allSettled([...this.tasks]);
-            await this.controller.stop();
+            await this.controller.stop({ drain: this.drainOnStop });
         }
     }
-    stop() {
+    stop(options = {}) {
+        this.drainOnStop ||= options.drain ?? false;
         this.abort.abort();
         this.resolveTerminal();
     }

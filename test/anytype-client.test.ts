@@ -17,6 +17,62 @@ afterEach(async () => {
 });
 
 describe("Anytype object REST client", () => {
+  it("downloads file bytes without treating media as JSON", async () => {
+    const server = createServer((request, response) => {
+      expect(request.url).toBe("/v1/spaces/space/files/video%2Fid");
+      response.setHeader("content-type", "video/mp4");
+      response.end(Buffer.from([0, 1, 2, 255]));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "aag-anytype-download-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "AAG", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "openclaw" },
+      }),
+    );
+
+    const downloaded = await client.downloadFile("space", "video/id", 1024);
+
+    expect([...downloaded.bytes]).toEqual([0, 1, 2, 255]);
+    expect(downloaded.contentType).toBe("video/mp4");
+  });
+
+  it("rejects file downloads above the configured byte limit", async () => {
+    const server = createServer((_request, response) => {
+      response.setHeader("content-length", "5");
+      response.end("large");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "aag-anytype-download-limit-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "AAG", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "openclaw" },
+      }),
+    );
+
+    await expect(client.downloadFile("space", "video", 4)).rejects.toThrow(
+      "exceeds the 4-byte download limit",
+    );
+  });
+
   it("sends and edits native chat attachments", async () => {
     const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
     const server = createServer(async (request, response) => {
