@@ -208,6 +208,14 @@ export async function preparePrompt(bundle, config, sessionKey, managementComman
 export function isNewSessionCommand(text) {
     return /(?:^|\s)\/new(?=\s|$)/i.test(text);
 }
+export function isNewSessionOnlyCommand(text, agentName) {
+    const withoutCommand = stripNewSessionCommand(text);
+    const escapedName = agentName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return (withoutCommand
+        .replace(new RegExp(`@?${escapedName}`, "gi"), "")
+        .replace(/[\s,.:;!?-]+/g, "")
+        .trim().length === 0);
+}
 function stripNewSessionCommand(text) {
     return text
         .replace(/(^|\s)\/new(?=\s|$)/i, "$1")

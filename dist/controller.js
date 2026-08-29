@@ -1,6 +1,6 @@
 import { inactivityTimeoutSeconds } from "./config.js";
 import { createHash } from "node:crypto";
-import { buildContext, isNewSessionCommand, preparePrompt } from "./context.js";
+import { buildContext, isNewSessionCommand, isNewSessionOnlyCommand, preparePrompt, } from "./context.js";
 import { renderForAnytype, RunProjection } from "./projection.js";
 import { decideWake, mergeWakeOverride } from "./wake.js";
 export class AgentController {
@@ -228,6 +228,7 @@ export class AgentController {
                     sameParticipant(candidate.creator, conversation.selfParticipantId ?? this.config.agent.participantId))
                 : undefined);
         const context = await buildContext(anytype, this.config, conversation, message, { newSession });
+        const resetOnly = newSession && isNewSessionOnlyCommand(message.content?.text ?? "", this.config.agent.name);
         const projection = orphan
             ? await RunProjection.resume(anytype, this.config, conversation, orphan.id, message.id, conversation.kind === "discussion" ? replyTargetId : undefined, orphan.content?.text, context.mentionTargets ?? [])
             : await RunProjection.create(anytype, this.config, conversation, message.id, conversation.kind === "discussion" ? replyTargetId : undefined, context.mentionTargets ?? []);
@@ -293,7 +294,8 @@ export class AgentController {
                 },
             }, (event) => {
                 lastActivityAt = Date.now();
-                projection.onEvent(event);
+                if (!resetOnly)
+                    projection.onEvent(event);
             });
             startedHandle = handle;
             void handle.result.catch(() => undefined);
@@ -326,12 +328,14 @@ export class AgentController {
                     return;
                 if (this.active.get(threadKey)?.id === runId)
                     this.active.delete(threadKey);
-                const visibleResult = newSession && value.silent
-                    ? {
-                        text: "Started a new session.",
-                        ...(value.reason ? { reason: value.reason } : {}),
-                    }
-                    : value;
+                const visibleResult = resetOnly
+                    ? { text: "Started a new session." }
+                    : newSession && value.silent
+                        ? {
+                            text: "Started a new session.",
+                            ...(value.reason ? { reason: value.reason } : {}),
+                        }
+                        : value;
                 const status = await projection.finish(visibleResult);
                 this.store.finishRun(runId, status);
                 this.log("run_finished", { routeId: conversation.routeId, runId, status });

@@ -1,6 +1,11 @@
 import { inactivityTimeoutSeconds, type AgentConfig, type WakeConfig } from "./config.js";
 import { createHash } from "node:crypto";
-import { buildContext, isNewSessionCommand, preparePrompt } from "./context.js";
+import {
+  buildContext,
+  isNewSessionCommand,
+  isNewSessionOnlyCommand,
+  preparePrompt,
+} from "./context.js";
 import { renderForAnytype, RunProjection, type ProjectionCycleSnapshot } from "./projection.js";
 import { Store } from "./store.js";
 import type { AgentRuntime } from "./session-types.js";
@@ -288,6 +293,8 @@ export class AgentController {
           )
         : undefined);
     const context = await buildContext(anytype, this.config, conversation, message, { newSession });
+    const resetOnly =
+      newSession && isNewSessionOnlyCommand(message.content?.text ?? "", this.config.agent.name);
     const projection = orphan
       ? await RunProjection.resume(
           anytype,
@@ -374,7 +381,7 @@ export class AgentController {
         },
         (event) => {
           lastActivityAt = Date.now();
-          projection.onEvent(event);
+          if (!resetOnly) projection.onEvent(event);
         },
       );
       startedHandle = handle;
@@ -411,8 +418,9 @@ export class AgentController {
         .then(async (value) => {
           if (active.cancelled) return;
           if (this.active.get(threadKey)?.id === runId) this.active.delete(threadKey);
-          const visibleResult =
-            newSession && value.silent
+          const visibleResult = resetOnly
+            ? { text: "Started a new session." }
+            : newSession && value.silent
               ? {
                   text: "Started a new session.",
                   ...(value.reason ? { reason: value.reason } : {}),

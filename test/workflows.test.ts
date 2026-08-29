@@ -288,6 +288,25 @@ describe("example workflows", () => {
     expect(anytype.deleted).not.toContain(reply);
   });
 
+  it("suppresses harness chatter for a reset-only /new command", async () => {
+    const { anytype, runtime, controller } = setup("delete");
+    const message = incoming({
+      content: { text: "@AAG /new", marks: [{ type: "mention", param: "bot" }] },
+    });
+    anytype.messages.push(message);
+    await controller.process(conversation, wake, message);
+    const reply = anytype.messages.at(-1)!.id;
+    runtime.events?.({ type: "text-delta", text: "I'll inspect the route context." });
+    runtime.events?.({ type: "text-delta", text: "[[AAG_STAY_SILENT]]" });
+    runtime.finish({ text: "[[AAG_STAY_SILENT]]", silent: true });
+
+    await eventually(() =>
+      expect(anytype.edits).toContainEqual({ id: reply, text: "Started a new session." }),
+    );
+    expect(anytype.edits.some((edit) => edit.text.includes("route context"))).toBe(false);
+    expect(anytype.edits.some((edit) => edit.text.includes("AAG_STAY_SILENT"))).toBe(false);
+  });
+
   it("can wake when a previously ignored message is edited to add a mention", async () => {
     const { anytype, runtime, controller } = setup();
     const original = incoming({ content: { text: "not for the agent" }, created_at: 1 });

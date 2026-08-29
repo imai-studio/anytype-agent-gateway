@@ -247,6 +247,17 @@ export function isNewSessionCommand(text: string): boolean {
   return /(?:^|\s)\/new(?=\s|$)/i.test(text);
 }
 
+export function isNewSessionOnlyCommand(text: string, agentName: string): boolean {
+  const withoutCommand = stripNewSessionCommand(text);
+  const escapedName = agentName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return (
+    withoutCommand
+      .replace(new RegExp(`@?${escapedName}`, "gi"), "")
+      .replace(/[\s,.:;!?-]+/g, "")
+      .trim().length === 0
+  );
+}
+
 function stripNewSessionCommand(text: string): string {
   return text
     .replace(/(^|\s)\/new(?=\s|$)/i, "$1")
