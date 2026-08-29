@@ -241,6 +241,38 @@ describe("Codex ACP output and steering", () => {
     ]);
   });
 
+  it("suppresses the exceeded skill-budget warning", async () => {
+    const warning =
+      "Warning: Exceeded skills context budget. All skill descriptions were removed and 105 additional skills were not included in the model-visible skills list.";
+    const events: RuntimeEvent[] = [];
+    const runtime = driver(undefined, {
+      FAKE_ACP_UPDATES: JSON.stringify([
+        {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "final",
+          content: { type: "text", text: warning.slice(0, 44) },
+          _meta: { codex: { phase: "final_answer" } },
+        },
+        {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "final",
+          content: { type: "text", text: `${warning.slice(44)}\n\nvisible answer` },
+          _meta: { codex: { phase: "final_answer" } },
+        },
+      ]),
+    });
+    const result = await (
+      await runtime.start({ sessionKey: "exceeded-warning", prompt: "answer" }, (event) =>
+        events.push(event),
+      )
+    ).result;
+
+    expect(result).toMatchObject({ text: "visible answer" });
+    expect(events).toEqual([
+      { type: "text-delta", text: "visible answer", partId: "final", phase: "final_answer" },
+    ]);
+  });
+
   it("uses the terminal final-answer message instead of concatenating progress replies", async () => {
     const updates = [
       {

@@ -25,9 +25,12 @@ type CodexDriverConfig = Omit<
     >
   >;
 
-const SKILL_WARNING_PREFIX = "Warning: Skill descriptions were shortened";
+const SKILL_WARNING_PREFIXES = [
+  "Warning: Skill descriptions were shortened",
+  "Warning: Exceeded skills context budget",
+];
 const LEADING_SKILL_WARNING =
-  /^\s*Warning:\s*Skill descriptions were shortened to fit the (?:\d+%\s+)?skills context budget\. Codex can still see every skill, but some descriptions are shorter\. Disable unused skills or plugins to leave more room for the rest\./;
+  /^\s*Warning:\s*(?:Skill descriptions were shortened to fit the (?:\d+%\s+)?skills context budget\. Codex can still see every skill, but some descriptions are shorter\. Disable unused skills or plugins to leave more room for the rest\.|Exceeded skills context budget\. All skill descriptions were removed and \d+ additional skills were not included in the model-visible skills list\.)/;
 
 export class RuntimeTurnAlreadyCompletedError extends Error {
   override readonly name = "RuntimeTurnAlreadyCompletedError";
@@ -415,7 +418,11 @@ class LeadingSkillWarningFilter {
       return;
     }
     const candidate = this.pending.trimStart();
-    if (!SKILL_WARNING_PREFIX.startsWith(candidate) && !candidate.startsWith(SKILL_WARNING_PREFIX))
+    if (
+      !SKILL_WARNING_PREFIXES.some(
+        (prefix) => prefix.startsWith(candidate) || candidate.startsWith(prefix),
+      )
+    )
       this.flush(this.pending);
   }
 
