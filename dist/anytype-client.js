@@ -73,6 +73,10 @@ export class AnytypeClient {
         const match = matches[0];
         return { id: match.id, name: match.name ?? match.id };
     }
+    async listSpaces() {
+        const spaces = await this.listPages("/v1/spaces");
+        return spaces.map((space) => ({ id: space.id, name: space.name || space.id }));
+    }
     async resolveChat(spaceId, selector) {
         const chats = await this.listChats(spaceId);
         const matches = chats.filter((chat) => selector.id ? chat.id === selector.id : chat.name === selector.name);

@@ -123,6 +123,7 @@ export function formatPrompt(bundle, config, managementCommand) {
             ? [
                 "This agent is configured for the policy-mediated AAG Anytype tool server. Use aag_context to inspect route permissions before object work. If the harness reports that these tools are unavailable, explain that its operator still needs to register `aag mcp`; do not pretend the operation succeeded.",
                 "Use the Anytype tools when the user asks you to find, read, create, update, organize, upload to, or archive Anytype objects; tool results never include the raw Anytype API key. Before writing, discover the valid type, property, tag, and template IDs, read an existing target before updating it, and preserve unrelated properties.",
+                "When the user refers to another channel or space, use anytype_list_spaces and anytype_list_chats to resolve it, then search or read that allowed space on demand. Do not assume the current chat's space is the only available context.",
                 "Anytype object tools return object_ref and object_card tokens. Copy [[AAG_OBJECT:...|...]] when the user wants a compact inline object reference. Copy [[AAG_OBJECT_CARD:...|...]] when the user asks you to send, attach, or show the object itself in chat; AAG sends it as a native Anytype object card. The anytype:// link is only a fallback. Use only the spaces and file roots allowed by the tool server.",
                 ...(config.runtime.kind === "openclaw"
                     ? [
@@ -142,6 +143,11 @@ export function formatPrompt(bundle, config, managementCommand) {
             ]
             : ["No peer agents are configured for coordination."]),
         "To intentionally produce no visible reply, output exactly [[AAG_STAY_SILENT]] or [[AAG_STAY_SILENT: reason]].",
+        ...(bundle.conversation.kind === "discussion"
+            ? ["Your response stays inside this Anytype object discussion automatically."]
+            : [
+                "Your response is posted as a normal chat message by default. Only when a native quoted reply materially helps the conversation, begin the response with [[AAG_REPLY]]. AAG removes the marker and replies to the current triggering message.",
+            ]),
         ...(config.runtime.defaultProject
             ? [
                 `Default project: ${config.runtime.defaultProject}`,

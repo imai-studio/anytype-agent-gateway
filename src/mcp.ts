@@ -125,6 +125,17 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
       }),
     },
     {
+      name: "anytype_list_spaces",
+      description:
+        "List the Anytype spaces this agent identity has joined and its policy permits it to inspect.",
+      inputSchema: objectSchema({}),
+    },
+    {
+      name: "anytype_list_chats",
+      description: "List chats in an allowed Anytype space before reading cross-channel context.",
+      inputSchema: objectSchema({ space_id: stringSchema() }),
+    },
+    {
       name: "anytype_search",
       description: "Search objects in an allowed Anytype space.",
       inputSchema: objectSchema({
@@ -347,11 +358,13 @@ export async function callTool(
       route_id: effectiveRouteId,
       space_id: defaultSpaceId,
       permissions: {
-        allowed_space_ids: config.tools.anytype.allowedSpaceIds.length
-          ? config.tools.anytype.allowedSpaceIds
-          : defaultSpaceId
-            ? [defaultSpaceId]
-            : [],
+        allowed_space_ids: config.tools.anytype.allowedSpaceIds.includes("*")
+          ? "all spaces joined by this Anytype identity"
+          : config.tools.anytype.allowedSpaceIds.length
+            ? config.tools.anytype.allowedSpaceIds
+            : defaultSpaceId
+              ? [defaultSpaceId]
+              : [],
         write: config.tools.anytype.allowWrite,
         archive: config.tools.anytype.allowArchive,
         wake_changes: config.management.allowWakeChanges,
@@ -404,9 +417,14 @@ export async function callTool(
     });
     return { route_id: effectiveRouteId, allowed_users: allowedUsers };
   }
+  if (name === "anytype_list_spaces") {
+    const spaces = await anytype.listSpaces();
+    return spaces.filter((space) => spaceAllowed(config, space.id, defaultSpaceId));
+  }
   const spaceId = String(input.space_id ?? defaultSpaceId ?? "");
   if (!spaceId) throw new Error("space_id is required outside a bound Anytype conversation");
   assertSpaceAllowed(config, spaceId, defaultSpaceId);
+  if (name === "anytype_list_chats") return await anytype.listChats(spaceId);
   if (name === "anytype_search") {
     const requestedLimit = Number(input.limit ?? 50);
     if (!Number.isFinite(requestedLimit) || requestedLimit < 1)
@@ -509,7 +527,7 @@ function assertSpaceAllowed(
 ): void {
   const explicit = config.tools.anytype.allowedSpaceIds;
   if (explicit.length) {
-    if (!explicit.includes(spaceId))
+    if (!explicit.includes("*") && !explicit.includes(spaceId))
       throw new Error(`Space ${spaceId} is not allowed for this agent`);
     return;
   }
@@ -517,6 +535,17 @@ function assertSpaceAllowed(
   throw new Error(
     "No cross-space Anytype access is configured for this agent; set allowedSpaceIds explicitly",
   );
+}
+
+function spaceAllowed(
+  config: AgentConfig,
+  spaceId: string,
+  defaultSpaceId: string | undefined,
+): boolean {
+  const explicit = config.tools.anytype.allowedSpaceIds;
+  if (explicit.includes("*")) return true;
+  if (explicit.length) return explicit.includes(spaceId);
+  return defaultSpaceId === spaceId;
 }
 
 async function allowedFile(config: AgentConfig, value: string): Promise<string> {

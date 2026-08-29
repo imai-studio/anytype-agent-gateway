@@ -19,6 +19,10 @@ export declare class AnytypeClient implements AnytypePort {
         id: string;
         name: string;
     }>;
+    listSpaces(): Promise<Array<{
+        id: string;
+        name: string;
+    }>>;
     resolveChat(spaceId: string, selector: {
         id?: string;
         name?: string;

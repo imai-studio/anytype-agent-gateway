@@ -15,7 +15,7 @@ type OutputCycle = {
   state: CycleState;
   sourceId: string | undefined;
   text: string;
-  replyToMessageId: string;
+  replyToMessageId?: string;
   messageId?: string;
   completed: boolean;
   deleted?: boolean;
@@ -25,7 +25,7 @@ type OutputCycle = {
 export type ProjectionCycleSnapshot = {
   id: string;
   messageId: string;
-  replyToMessageId: string;
+  replyToMessageId?: string;
   phase: "working" | "thinking" | "answer" | "error";
   state: "open" | "complete" | "failed" | "deleted";
   text: string;
@@ -34,7 +34,8 @@ export type ProjectionCycleSnapshot = {
 export class RunProjection {
   private responseId: string;
   private reactionTargetId: string;
-  private replyTargetId: string;
+  private replyTargetId: string | undefined;
+  private readonly triggerReplyTargetId: string;
   private readonly cycles: OutputCycle[] = [];
   private activeCycle: OutputCycle;
   private timer: NodeJS.Timeout | undefined;
@@ -51,18 +52,20 @@ export class RunProjection {
     private readonly conversation: ConversationRef,
     responseId: string,
     reactionTargetId: string,
-    replyTargetId: string,
+    replyTargetId: string | undefined,
+    triggerReplyTargetId: string,
     mentionTargets: Array<{ name: string; participantId: string }> = [],
   ) {
     this.responseId = responseId;
     this.reactionTargetId = reactionTargetId;
     this.replyTargetId = replyTargetId;
+    this.triggerReplyTargetId = triggerReplyTargetId;
     this.activeCycle = {
       id: crypto.randomUUID(),
       state: "transient",
       sourceId: undefined,
       text: config.responses.workingText,
-      replyToMessageId: replyTargetId,
+      ...(replyTargetId ? { replyToMessageId: replyTargetId } : {}),
       messageId: responseId,
       completed: false,
     };
@@ -76,7 +79,7 @@ export class RunProjection {
     config: AgentConfig,
     conversation: ConversationRef,
     triggerId: string,
-    replyTargetId = triggerId,
+    replyTargetId?: string,
     mentionTargets: Array<{ name: string; participantId: string }> = [],
   ): Promise<RunProjection> {
     await anytype.ensureReaction(
@@ -90,7 +93,7 @@ export class RunProjection {
     try {
       const responseId = await anytype.sendMessage(conversation.spaceId, conversation.chatId, {
         text: config.responses.workingText,
-        replyTo: replyTargetId,
+        ...(replyTargetId ? { replyTo: replyTargetId } : {}),
       });
       return new RunProjection(
         anytype,
@@ -99,6 +102,7 @@ export class RunProjection {
         responseId,
         triggerId,
         replyTargetId,
+        triggerId,
         mentionTargets,
       );
     } catch (error) {
@@ -122,7 +126,7 @@ export class RunProjection {
     conversation: ConversationRef,
     responseId: string,
     triggerId: string,
-    replyTargetId = triggerId,
+    replyTargetId: string | undefined,
     text = "",
     mentionTargets: Array<{ name: string; participantId: string }> = [],
   ): Promise<RunProjection> {
@@ -133,6 +137,7 @@ export class RunProjection {
       responseId,
       triggerId,
       replyTargetId,
+      triggerId,
       mentionTargets,
     );
     if (text && text !== config.responses.workingText) {
@@ -168,7 +173,7 @@ export class RunProjection {
     for (const target of targets) this.mentionTargets.set(target.participantId, target);
   }
 
-  async move(triggerId: string, replyTargetId = triggerId): Promise<string> {
+  async move(triggerId: string, replyTargetId?: string): Promise<string> {
     this.cancelScheduledEdit();
     return this.enqueue(async () => {
       const previous = this.activeCycle;
@@ -193,7 +198,7 @@ export class RunProjection {
         state: "transient",
         sourceId: undefined,
         text: this.config.responses.workingText,
-        replyToMessageId: replyTargetId,
+        ...(replyTargetId ? { replyToMessageId: replyTargetId } : {}),
         completed: false,
       };
       this.cycles.push(cycle);
@@ -362,7 +367,7 @@ export class RunProjection {
       state: "text",
       sourceId,
       text,
-      replyToMessageId: this.replyTargetId,
+      ...(this.replyTargetId ? { replyToMessageId: this.replyTargetId } : {}),
       completed: false,
     });
   }
@@ -376,7 +381,7 @@ export class RunProjection {
         state: "thinking",
         sourceId,
         text,
-        replyToMessageId: this.replyTargetId,
+        ...(this.replyTargetId ? { replyToMessageId: this.replyTargetId } : {}),
         completed: false,
       });
       return;
@@ -433,7 +438,7 @@ export class RunProjection {
     marks: TextMark[];
     attachments: ChatAttachment[];
   } {
-    const raw = cycle.text || this.config.responses.workingText;
+    const raw = stripNativeReplyDirective(cycle.text) || this.config.responses.workingText;
     const labeled = cycle.state === "thinking" ? `Thinking…\n\n${raw}` : raw;
     const rendered = renderForAnytype(labeled, this.config, [...this.mentionTargets.values()]);
     return truncateRendered(rendered, this.config.responses.maxCharacters);
@@ -456,6 +461,17 @@ export class RunProjection {
 
   private async editCycleNow(cycle: OutputCycle): Promise<void> {
     if (cycle.deleted) return;
+    if (!cycle.replyToMessageId && cycle.state === "text" && requestsNativeReply(cycle.text)) {
+      cycle.replyToMessageId = this.triggerReplyTargetId;
+      if (cycle.messageId) {
+        await this.anytype.deleteMessage(
+          this.conversation.spaceId,
+          this.conversation.chatId,
+          cycle.messageId,
+        );
+        delete cycle.messageId;
+      }
+    }
     if (!cycle.messageId) {
       await this.createCycleMessageNow(cycle);
       return;
@@ -481,7 +497,7 @@ export class RunProjection {
         text: current.text,
         marks: current.marks,
         attachments: current.attachments,
-        replyTo: cycle.replyToMessageId,
+        ...(cycle.replyToMessageId ? { replyTo: cycle.replyToMessageId } : {}),
       },
     );
     this.responseId = cycle.messageId;
@@ -502,14 +518,14 @@ export class RunProjection {
     const messageId = await this.anytype.sendMessage(
       this.conversation.spaceId,
       this.conversation.chatId,
-      { text, replyTo: this.replyTargetId },
+      { text, ...(this.replyTargetId ? { replyTo: this.replyTargetId } : {}) },
     );
     const cycle: OutputCycle = {
       id: crypto.randomUUID(),
       state: "transient",
       sourceId: "terminal-notice",
       text,
-      replyToMessageId: this.replyTargetId,
+      ...(this.replyTargetId ? { replyToMessageId: this.replyTargetId } : {}),
       messageId,
       completed: false,
       failed: true,
@@ -533,7 +549,7 @@ export class RunProjection {
     this.onCycle({
       id: cycle.id,
       messageId: cycle.messageId,
-      replyToMessageId: cycle.replyToMessageId,
+      ...(cycle.replyToMessageId ? { replyToMessageId: cycle.replyToMessageId } : {}),
       phase: cycle.failed
         ? "error"
         : cycle.state === "thinking"
@@ -551,6 +567,16 @@ export class RunProjection {
       text: cycle.text,
     });
   }
+}
+
+const nativeReplyDirective = /^\s*\[\[AAG_REPLY\]\]\s*/i;
+
+function requestsNativeReply(text: string): boolean {
+  return nativeReplyDirective.test(text);
+}
+
+function stripNativeReplyDirective(text: string): string {
+  return text.replace(nativeReplyDirective, "");
 }
 
 function sameRenderedText(left: string, right: string): boolean {

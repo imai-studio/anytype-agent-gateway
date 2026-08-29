@@ -22,6 +22,11 @@ function config(overrides: Record<string, unknown> = {}) {
 function client() {
   return {
     resolveSpace: vi.fn(),
+    listSpaces: vi.fn().mockResolvedValue([
+      { id: "space-1", name: "Agents" },
+      { id: "space-2", name: "imai.tech" },
+    ]),
+    listChats: vi.fn().mockResolvedValue([{ id: "chat-1", name: "main" }]),
     searchSpace: vi.fn().mockResolvedValue([{ id: "found" }]),
     getObject: vi.fn().mockResolvedValue({
       id: "object-1",
@@ -155,6 +160,37 @@ describe("AAG Anytype MCP policy", () => {
       ),
     ).rejects.toThrow("not allowed");
     expect((anytype as any).searchSpace).not.toHaveBeenCalled();
+  });
+
+  it("can discover every space joined by the identity when explicitly configured", async () => {
+    const anytype = client();
+    const joinedSpaces = config({ tools: { anytype: { allowedSpaceIds: ["*"] } } });
+
+    await expect(
+      callTool(
+        anytype,
+        joinedSpaces,
+        "/config.yaml",
+        "chat:space-1:chat",
+        "space-1",
+        "anytype_list_spaces",
+        {},
+      ),
+    ).resolves.toEqual([
+      { id: "space-1", name: "Agents" },
+      { id: "space-2", name: "imai.tech" },
+    ]);
+    await expect(
+      callTool(
+        anytype,
+        joinedSpaces,
+        "/config.yaml",
+        "chat:space-1:chat",
+        "space-1",
+        "anytype_list_chats",
+        { space_id: "space-2" },
+      ),
+    ).resolves.toEqual([{ id: "chat-1", name: "main" }]);
   });
 
   it("returns native links for search results", async () => {

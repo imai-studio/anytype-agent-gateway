@@ -94,6 +94,7 @@ export class AgentController {
             : conversation;
         const threadKey = thread.key;
         const replyTargetId = conversation.kind === "discussion" ? thread.rootId : message.id;
+        const projectionReplyTargetId = conversation.kind === "discussion" ? replyTargetId : undefined;
         const newSession = isNewSessionCommand(message.content?.text ?? "");
         const hop = decision.isAgent ? await this.agentHop(conversation, message) : 0;
         if (hop > this.config.coordination.maxHops) {
@@ -121,7 +122,7 @@ export class AgentController {
                     replyTargetId,
                     ...(message.mentioned === undefined ? {} : { wasMentioned: message.mentioned }),
                 });
-                const responseId = await active.projection.move(message.id, replyTargetId);
+                const responseId = await active.projection.move(message.id, projectionReplyTargetId);
                 this.store.updateRunResponse(active.id, responseId, message.id);
                 if (this.active.get(threadKey)?.id !== active.id) {
                     await active.completion.catch(() => undefined);
@@ -228,8 +229,8 @@ export class AgentController {
                 : undefined);
         const context = await buildContext(anytype, this.config, conversation, message, { newSession });
         const projection = orphan
-            ? await RunProjection.resume(anytype, this.config, conversation, orphan.id, message.id, replyTargetId, orphan.content?.text, context.mentionTargets ?? [])
-            : await RunProjection.create(anytype, this.config, conversation, message.id, replyTargetId, context.mentionTargets ?? []);
+            ? await RunProjection.resume(anytype, this.config, conversation, orphan.id, message.id, conversation.kind === "discussion" ? replyTargetId : undefined, orphan.content?.text, context.mentionTargets ?? [])
+            : await RunProjection.create(anytype, this.config, conversation, message.id, conversation.kind === "discussion" ? replyTargetId : undefined, context.mentionTargets ?? []);
         this.store.createRun({
             id: runId,
             routeId: conversation.routeId,
@@ -651,7 +652,7 @@ export class AgentController {
                 id: cycle.id,
                 threadKey,
                 anytypeMessageId: cycle.messageId,
-                replyToMessageId: cycle.replyToMessageId,
+                ...(cycle.replyToMessageId ? { replyToMessageId: cycle.replyToMessageId } : {}),
                 phase: cycle.phase,
             });
         }
@@ -661,7 +662,7 @@ export class AgentController {
         this.store.updateOutputCycle(cycleId, {
             phase: cycle.phase,
             ...(cycle.phase === "answer" || cycle.phase === "error" ? { answerText: cycle.text } : {}),
-            replyToMessageId: cycle.replyToMessageId,
+            ...(cycle.replyToMessageId ? { replyToMessageId: cycle.replyToMessageId } : {}),
         });
         if (cycle.state !== "open")
             this.store.finishOutputCycle(cycleId, cycle.state);

@@ -3,7 +3,7 @@ import type { AnytypePort, ChatAttachment, ConversationRef, RuntimeEvent, Runtim
 export type ProjectionCycleSnapshot = {
     id: string;
     messageId: string;
-    replyToMessageId: string;
+    replyToMessageId?: string;
     phase: "working" | "thinking" | "answer" | "error";
     state: "open" | "complete" | "failed" | "deleted";
     text: string;
@@ -15,6 +15,7 @@ export declare class RunProjection {
     private responseId;
     private reactionTargetId;
     private replyTargetId;
+    private readonly triggerReplyTargetId;
     private readonly cycles;
     private activeCycle;
     private timer;
@@ -29,7 +30,7 @@ export declare class RunProjection {
         name: string;
         participantId: string;
     }>): Promise<RunProjection>;
-    static resume(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, responseId: string, triggerId: string, replyTargetId?: string, text?: string, mentionTargets?: Array<{
+    static resume(anytype: AnytypePort, config: AgentConfig, conversation: ConversationRef, responseId: string, triggerId: string, replyTargetId: string | undefined, text?: string, mentionTargets?: Array<{
         name: string;
         participantId: string;
     }>): Promise<RunProjection>;

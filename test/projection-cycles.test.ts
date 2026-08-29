@@ -125,7 +125,7 @@ describe("output-cycle projection", () => {
     expect(anytype.messages.map((message) => message.content?.text)).toEqual(["First", "Second"]);
   });
 
-  it("freezes completed output and starts a clean Working message when steered", async () => {
+  it("freezes completed output and starts a standalone Working message when steered", async () => {
     vi.useFakeTimers();
     try {
       const anytype = new FakeAnytype();
@@ -138,9 +138,11 @@ describe("output-cycle projection", () => {
         "Before steer",
       );
       expect(anytype.messages.find((message) => message.id === nextMessageId)).toMatchObject({
-        reply_to_message_id: "trigger-2",
         content: { text: "Working…" },
       });
+      expect(
+        anytype.messages.find((message) => message.id === nextMessageId)?.reply_to_message_id,
+      ).toBeUndefined();
       expect(anytype.reactions.slice(-2)).toEqual([
         { id: "trigger-1", emoji: "👀", present: false },
         { id: "trigger-2", emoji: "👀", present: true },
@@ -152,6 +154,31 @@ describe("output-cycle projection", () => {
         "Before steer",
         "After steer",
       ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets the agent explicitly choose a native reply without exposing the directive", async () => {
+    vi.useFakeTimers();
+    try {
+      const anytype = new FakeAnytype();
+      const projection = await RunProjection.create(anytype, config(), conversation, "trigger");
+
+      projection.onEvent({
+        type: "text-delta",
+        text: "[[AAG_REPLY]] This is easier to follow as a reply.",
+        partId: "answer",
+      });
+      await flushProjection();
+
+      expect(anytype.deleted).toEqual(["reply-1"]);
+      expect(anytype.messages.at(-1)).toMatchObject({
+        reply_to_message_id: "trigger",
+        content: { text: "This is easier to follow as a reply." },
+      });
+      await projection.finish({ text: "[[AAG_REPLY]] This is easier to follow as a reply." });
+      expect(anytype.messages.at(-1)?.content?.text).not.toContain("AAG_REPLY");
     } finally {
       vi.useRealTimers();
     }

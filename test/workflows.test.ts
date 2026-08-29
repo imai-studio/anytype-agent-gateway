@@ -53,7 +53,7 @@ describe("example workflows", () => {
     await controller.process(conversation, restrictedWake, accepted);
 
     expect(runtime.starts).toHaveLength(1);
-    expect(anytype.messages.at(-1)?.reply_to_message_id).toBe("shyam-accepted");
+    expect(anytype.messages.at(-1)?.reply_to_message_id).toBeUndefined();
     runtime.finish({ text: "Allowed" });
     await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Allowed"));
     await controller.stop();
@@ -71,7 +71,7 @@ describe("example workflows", () => {
     expect(anytype.reactions.at(-1)).toEqual({ id: message.id, emoji: "👀", present: false });
   });
 
-  it("steers an active run and moves progress to a reply after the follow-up", async () => {
+  it("steers an active run and moves progress to a standalone follow-up message", async () => {
     const { anytype, runtime, controller } = setup();
     const first = incoming();
     anytype.messages.push(first);
@@ -85,7 +85,7 @@ describe("example workflows", () => {
     anytype.messages.push(followup);
     await controller.process(conversation, wake, followup);
     expect(runtime.steers[0]).toContain("also cover tests");
-    expect(anytype.messages.at(-1)?.reply_to_message_id).toBe("message-2");
+    expect(anytype.messages.at(-1)?.reply_to_message_id).toBeUndefined();
     expect(anytype.reactions).toEqual(
       expect.arrayContaining([
         { id: first.id, emoji: "👀", present: false },
@@ -170,9 +170,9 @@ describe("example workflows", () => {
     expect(anytype.edits).toContainEqual({ id: "reply-1", text: "First turn final" });
     expect(anytype.edits.some((edit) => edit.text.startsWith("Agent run failed:"))).toBe(false);
     expect(anytype.messages.at(-1)).toMatchObject({
-      reply_to_message_id: "late-followup",
       content: { text: "Working…" },
     });
+    expect(anytype.messages.at(-1)?.reply_to_message_id).toBeUndefined();
     await controller.stop();
     store.close();
   });

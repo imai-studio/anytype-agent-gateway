@@ -94,6 +94,11 @@ export class AnytypeClient implements AnytypePort {
     return { id: match.id, name: match.name ?? match.id };
   }
 
+  async listSpaces(): Promise<Array<{ id: string; name: string }>> {
+    const spaces = await this.listPages("/v1/spaces");
+    return spaces.map((space) => ({ id: space.id, name: space.name || space.id }));
+  }
+
   async resolveChat(
     spaceId: string,
     selector: { id?: string; name?: string },
