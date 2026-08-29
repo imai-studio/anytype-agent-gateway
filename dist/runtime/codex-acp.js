@@ -252,6 +252,7 @@ export class CodexAcpDriver {
                     filteredText.finish();
                 }
                 await this.associateDesktopProject(sessionId);
+                this.retryDesktopProjectAssociation(sessionId);
                 const terminalText = messageTexts.get(finalMessageId ?? latestMessageId ?? "") ?? output;
                 return parseSilence(stripLeadingSkillWarning(terminalText));
             }
@@ -302,6 +303,14 @@ export class CodexAcpDriver {
                     ? { codexHome: process.env.CODEX_HOME }
                     : {}),
         }).catch(() => undefined);
+    }
+    retryDesktopProjectAssociation(sessionId) {
+        if (this.config.desktopProject !== "auto" || !this.config.defaultProject)
+            return;
+        for (const delayMs of [1_000, 5_000]) {
+            const timer = setTimeout(() => void this.associateDesktopProject(sessionId), delayMs);
+            timer.unref?.();
+        }
     }
 }
 function savedSessionUnavailable(error) {

@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { associateCodexDesktopThread } from "../src/codex-desktop.js";
 
@@ -38,6 +39,19 @@ describe("Codex Desktop project association", () => {
         "projectless-thread-ids": ["new-thread", "other-thread"],
       }),
     );
+    const database = new DatabaseSync(join(codexHome, "state_5.sqlite"));
+    database.exec(`CREATE TABLE threads (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      updated_at INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`);
+    database
+      .prepare(
+        "INSERT INTO threads (id, project_id, updated_at, updated_at_ms) VALUES (?, ?, ?, ?)",
+      )
+      .run("new-thread", null, 1, 1);
+    database.close();
 
     await expect(
       associateCodexDesktopThread({ threadId: "new-thread", workspace, codexHome }),
@@ -54,6 +68,20 @@ describe("Codex Desktop project association", () => {
       "older-thread",
     ]);
     expect(state["projectless-thread-ids"]).toEqual(["other-thread"]);
+    const updatedDatabase = new DatabaseSync(join(codexHome, "state_5.sqlite"), {
+      readOnly: true,
+    });
+    const thread = updatedDatabase
+      .prepare("SELECT project_id, updated_at, updated_at_ms FROM threads WHERE id = ?")
+      .get("new-thread") as {
+      project_id: string;
+      updated_at: number;
+      updated_at_ms: number;
+    };
+    updatedDatabase.close();
+    expect(thread.project_id).toBe("project-klee");
+    expect(thread.updated_at).toBeGreaterThan(1);
+    expect(thread.updated_at_ms).toBeGreaterThan(1);
   });
 
   it("leaves state unchanged when no saved project matches", async () => {

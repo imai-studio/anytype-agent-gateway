@@ -37,5 +37,6 @@ export declare class CodexAcpDriver implements RuntimeDriver {
         turn?: RuntimeTurn;
     }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;
     private associateDesktopProject;
+    private retryDesktopProjectAssociation;
 }
 export {};

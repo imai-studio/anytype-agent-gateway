@@ -282,6 +282,7 @@ export class CodexAcpDriver implements RuntimeDriver {
             filteredText.finish();
           }
           await this.associateDesktopProject(sessionId);
+          this.retryDesktopProjectAssociation(sessionId);
           const terminalText = messageTexts.get(finalMessageId ?? latestMessageId ?? "") ?? output;
           return parseSilence(stripLeadingSkillWarning(terminalText));
         } catch (error) {
@@ -331,6 +332,14 @@ export class CodexAcpDriver implements RuntimeDriver {
           ? { codexHome: process.env.CODEX_HOME }
           : {}),
     }).catch(() => undefined);
+  }
+
+  private retryDesktopProjectAssociation(sessionId: string): void {
+    if (this.config.desktopProject !== "auto" || !this.config.defaultProject) return;
+    for (const delayMs of [1_000, 5_000]) {
+      const timer = setTimeout(() => void this.associateDesktopProject(sessionId), delayMs);
+      timer.unref?.();
+    }
   }
 }
 

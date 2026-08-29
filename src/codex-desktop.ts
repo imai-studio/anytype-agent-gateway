@@ -1,6 +1,7 @@
 import { copyFile, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 type LocalProject = {
   id?: string;
@@ -63,9 +64,31 @@ export async function associateCodexDesktopThread(input: {
     await copyFile(statePath, `${statePath}.aag-backup`);
     await writeFile(temporaryPath, `${JSON.stringify(state)}\n`, { mode: info.mode });
     await rename(temporaryPath, statePath);
+    touchCodexThread(codexHome, input.threadId, projectId);
     return { projectId, projectName: project.name ?? projectId };
   } finally {
     await release();
+  }
+}
+
+function touchCodexThread(codexHome: string, threadId: string, projectId: string): void {
+  const databasePath = join(codexHome, "state_5.sqlite");
+  try {
+    const database = new DatabaseSync(databasePath);
+    try {
+      const nowMs = Date.now();
+      database
+        .prepare(
+          `UPDATE threads
+           SET project_id = ?, updated_at = ?, updated_at_ms = ?
+           WHERE id = ?`,
+        )
+        .run(projectId, Math.floor(nowMs / 1000), nowMs, threadId);
+    } finally {
+      database.close();
+    }
+  } catch {
+    // Codex Desktop metadata is best-effort and must never break an agent turn.
   }
 }
 
