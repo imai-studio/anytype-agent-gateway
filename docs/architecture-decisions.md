@@ -120,6 +120,22 @@ Thinking and answer text form explicit output cycles. Safe thinking/progress may
 
 If a follow-up arrives during the same active conversation, it steers the current run instead of starting a queued run. Knot freezes the previous progress message and creates a new reply beneath the follow-up. Later updates go to the new reply. Runtime adapters must report steering failures. Knot does not silently cancel and send the prompt again because that could repeat tool side effects.
 
+## Workflow automation uses three separate trust planes
+
+Phase 2 keeps Anytype workflow intent, local authority, and durable execution state separate. An
+Anytype object can request behavior but cannot grant its author access to another space, project,
+connection, secret, filesystem path, runtime, or destructive capability. SQLite records immutable
+versions and decisions for recovery, while the local configuration remains the authority boundary.
+
+Definitions are parsed strictly and approved by a domain-separated deterministic hash over all
+behavior-bearing content. Cosmetic metadata and enablement are excluded; triggers, steps, prompts,
+destinations, capabilities, transforms, retry and budget policy, and pinned behavior references are
+included. See [`workflow-runtime-contract.md`](workflow-runtime-contract.md) for the frozen Phase 2
+foundation contract.
+
+Polling and reconciliation remain the observation correctness path. Heart events and streaming are
+optional latency hints, never a prerequisite for correct results.
+
 ## Explicit non-decisions
 
 - No multiplexed multi-agent daemon in the first release.

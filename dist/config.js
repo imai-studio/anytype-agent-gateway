@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import YAML from "yaml";
 import { z } from "zod";
+import { workflowCapabilitySchema } from "./automation/workflow.js";
 import { resolveHeartBinary, resolveStatePath } from "./compatibility.js";
 const wakeSchema = z
     .object({
@@ -387,6 +388,90 @@ export const configSchema = z.object({
         maxFanout: 4,
         maxActivationsPerThread: 12,
         windowSeconds: 300,
+    }),
+    automation: z
+        .object({
+        enabled: z.boolean().default(false),
+        observation: z.boolean().default(false),
+        execution: z.boolean().default(false),
+        authoring: z.boolean().default(false),
+        dataProducts: z.boolean().default(false),
+        allowedAuthorIds: z.array(z.string().min(1)).default([]),
+        allowedSpaceIds: z.array(z.string().min(1)).default([]),
+        allowedCapabilities: z.array(workflowCapabilitySchema).default([]),
+        allowedConnections: z.array(z.string().min(1)).default([]),
+        allowedSecretNames: z.array(z.string().min(1)).default([]),
+        maximumRiskTier: z.enum(["T0", "T1", "T2"]).default("T0"),
+        heartHints: z.boolean().default(false),
+        limits: z
+            .object({
+            maximumConcurrentRuns: z.number().int().min(1).max(100).default(4),
+            maximumStepsPerRun: z.number().int().min(1).max(1_000).default(100),
+            maximumEffectsPerRun: z.number().int().min(0).max(1_000).default(20),
+            maximumRunSeconds: z.number().int().min(1).max(604_800).default(3_600),
+            maximumCausalDepth: z.number().int().min(0).max(100).default(8),
+        })
+            .default({
+            maximumConcurrentRuns: 4,
+            maximumStepsPerRun: 100,
+            maximumEffectsPerRun: 20,
+            maximumRunSeconds: 3_600,
+            maximumCausalDepth: 8,
+        }),
+    })
+        .superRefine((value, context) => {
+        if (value.enabled && value.allowedAuthorIds.length === 0)
+            context.addIssue({
+                code: "custom",
+                path: ["allowedAuthorIds"],
+                message: "automation.allowedAuthorIds is required when automation is enabled",
+            });
+        if (value.enabled && value.allowedSpaceIds.length === 0)
+            context.addIssue({
+                code: "custom",
+                path: ["allowedSpaceIds"],
+                message: "automation.allowedSpaceIds is required when automation is enabled",
+            });
+        if (!value.enabled &&
+            (value.observation || value.execution || value.authoring || value.dataProducts))
+            context.addIssue({
+                code: "custom",
+                path: ["enabled"],
+                message: "automation.enabled is required before enabling automation subsystems",
+            });
+        if (value.execution && !value.observation)
+            context.addIssue({
+                code: "custom",
+                path: ["observation"],
+                message: "automation.observation is required before execution",
+            });
+        if ((value.authoring || value.dataProducts) && !value.execution)
+            context.addIssue({
+                code: "custom",
+                path: ["execution"],
+                message: "automation.execution is required before authoring or data products",
+            });
+    })
+        .default({
+        enabled: false,
+        observation: false,
+        execution: false,
+        authoring: false,
+        dataProducts: false,
+        allowedAuthorIds: [],
+        allowedSpaceIds: [],
+        allowedCapabilities: [],
+        allowedConnections: [],
+        allowedSecretNames: [],
+        maximumRiskTier: "T0",
+        heartHints: false,
+        limits: {
+            maximumConcurrentRuns: 4,
+            maximumStepsPerRun: 100,
+            maximumEffectsPerRun: 20,
+            maximumRunSeconds: 3_600,
+            maximumCausalDepth: 8,
+        },
     }),
     state: z
         .object({ path: z.string().default("~/.local/state/knot/state.sqlite") })
