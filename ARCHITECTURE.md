@@ -141,6 +141,15 @@ The SQLite database uses WAL mode and contains:
 - `session_bindings`: exact Anytype thread to native runtime session identity, generation, and observer cursor.
 - `outbound_outbox` and `proactive_deliveries`: retryable Anytype writes and native-output deduplication.
 - `runtime_capabilities` and `bridge_cursors`: adapter capability snapshots and durable stream progress.
+- `workflow_definitions`, `workflow_approval_subjects`, and `workflow_versions`: discovered workflow
+  identity plus immutable full and behavior-bearing versions.
+- `workflow_approval_decisions`: an append-only, authority-bound approval ledger.
+- `normalized_events`: immutable, deduplicated Phase 2 observation facts. Runner delivery state uses
+  separate tables in the runner phase.
+
+The Phase 2 tables are inert while automation feature gates are disabled. Before an on-disk schema
+upgrade, Knot creates a consistent mode-`0600` SQLite snapshot beside the database using `VACUUM
+INTO`; it never copies only the main file of a live WAL database.
 
 It is local coordination state, not a durable distributed work queue. The CLI also acquires `<state.path>.lock`, removes a stale lock only after verifying its PID is dead, and refuses to start when another local Knot process owns it. This is a host-local singleton, not cross-machine locking.
 

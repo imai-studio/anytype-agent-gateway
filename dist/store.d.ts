@@ -1,16 +1,23 @@
 import { DatabaseSync } from "node:sqlite";
 import type { AgentRuntime, ConversationModelState, OutboundItem, OutboundOperation, OutputCycle, OutputCyclePhase, OutputCycleState, ProactiveDelivery, RuntimeCapabilities, SessionBinding, SessionBindingState } from "./session-types.js";
+import type { NormalizedEventRecord, WorkflowApprovalDecision, WorkflowVersionRecord } from "./automation/store-types.js";
 export declare class Store {
+    private readonly reportMigration;
     readonly db: DatabaseSync;
-    constructor(path: string);
+    private _migrationBackupPath?;
+    constructor(path: string, reportMigration?: (message: string) => void);
+    get migrationBackupPath(): string | undefined;
     schemaVersion(): number;
     private migrate;
+    private hasUserTables;
+    private backupBeforeMigration;
     private migrateToVersion1;
     private migrateToVersion2;
     private migrateToVersion3;
     private migrateToVersion4;
     private migrateToVersion5;
     private migrateToVersion6;
+    private migrateToVersion7;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;
@@ -153,5 +160,11 @@ export declare class Store {
     markProactiveDelivered(delivery: Omit<ProactiveDelivery, "deliveredAt">, now?: number): boolean;
     bridgeCursor(bridgeId: string, streamKey: string): string | undefined;
     saveBridgeCursor(bridgeId: string, streamKey: string, cursor: string, now?: number): void;
+    saveWorkflowVersion(input: WorkflowVersionRecord): WorkflowVersionRecord;
+    workflowVersion(workflowId: string, versionHash: string): WorkflowVersionRecord | undefined;
+    recordWorkflowApproval(input: Omit<WorkflowApprovalDecision, "sequence">): WorkflowApprovalDecision;
+    currentWorkflowApproval(workflowId: string, approvalHash: string, authorityHash: string, now?: number): WorkflowApprovalDecision | undefined;
+    recordNormalizedEvent(input: NormalizedEventRecord): NormalizedEventRecord;
+    private workflowApprovalBySequence;
     close(): void;
 }

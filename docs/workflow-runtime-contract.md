@@ -74,3 +74,17 @@ latency but never replace reconciliation. First activation does not backfill unl
 Normalized event IDs and dedupe keys provide immutable input facts; later runner delivery is
 at-least-once. Self-writes are suppressed by default, compatible object changes may coalesce, and
 causal depth bounds terminate loops.
+
+## State migration and retention
+
+Before an on-disk schema migration, Knot creates a consistent SQLite backup next to the configured
+state database. The filename records the source schema version, the backup file is mode `0600`, and
+the service reports its exact path after a successful migration or in a migration failure. To
+restore one, stop Knot, move the failed database and its `-wal` and `-shm` companions aside, copy the
+chosen backup to the configured state path, keep it mode `0600`, and restart with the Knot version
+that understands that backup's schema. Never restore while a Knot process has the database open.
+
+Workflow versions, approval subjects, approval decisions, and normalized events are intentionally
+append-only in the Phase 2 foundation. Knot applies no automatic retention to this audit history.
+A later retention policy must be explicit, preserve referenced approval and run evidence, and be
+reviewed as a trust-boundary change.
