@@ -79,7 +79,9 @@ export async function hydrateCodexDesktopTask(input: {
     if (process.env.AAG_DEBUG_CODEX_DESKTOP === "1")
       process.stderr.write(`[aag codex-desktop] ${message}\n`);
   };
-  if (process.platform !== "darwin") return;
+  // Codex Desktop runs on macOS in production. An explicit pipe is also a
+  // supported dependency-injection seam for protocol tests on other hosts.
+  if (process.platform !== "darwin" && !input.pipePath) return;
   const codexHome = resolve(input.codexHome ?? join(homedir(), ".codex"));
   const sourceThreadId = findCodexDesktopControllerThread(codexHome);
   if (!sourceThreadId) {
@@ -109,6 +111,7 @@ export async function hydrateCodexDesktopTask(input: {
       );
     }
   }
+  if (process.platform !== "darwin") return;
   const open = async (id: string) => {
     const url = `codex://threads/${id}`;
     const openedThroughApp = await spawnAndWait("/usr/bin/osascript", [
