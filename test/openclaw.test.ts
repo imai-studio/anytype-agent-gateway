@@ -19,6 +19,140 @@ afterEach(async () => {
 });
 
 describe("OpenClaw gateway recovery", () => {
+  it("discovers models and patches the native OpenClaw session", async () => {
+    process.env[tokenEnvironment] = "test-token";
+    const calls: Array<{ method: string; params?: unknown }> = [];
+    class ModelGatewayClient {
+      constructor(private readonly options: Record<string, unknown>) {}
+      start(): void {
+        (this.options.onHelloOk as (() => void) | undefined)?.();
+      }
+      stop(): void {}
+      async request<T>(method: string, params?: unknown): Promise<T> {
+        calls.push({ method, params });
+        if (method === "models.list")
+          return {
+            models: [
+              { provider: "openai", id: "gpt-default", name: "Default" },
+              { provider: "openai", id: "gpt-fast", name: "Fast" },
+            ],
+          } as T;
+        if (method === "sessions.patch") {
+          const requested = (params as { model?: string | null } | undefined)?.model;
+          return (
+            requested === null
+              ? { entry: {} }
+              : { entry: { providerOverride: "openai", modelOverride: "gpt-fast" } }
+          ) as T;
+        }
+        throw new Error(`Unexpected request: ${method}`);
+      }
+    }
+    const runtime = configSchema.parse({
+      version: 1,
+      agent: { name: "Anya", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "openclaw", gateway: { tokenEnv: tokenEnvironment } },
+    }).runtime;
+    if (runtime.kind !== "openclaw") throw new Error("Expected OpenClaw runtime");
+    const driver = new OpenClawDriver(runtime, ModelGatewayClient);
+
+    const state = await driver.configureModel({
+      sessionKey: "chat-session",
+      modelId: "openai/gpt-fast",
+    });
+
+    expect(state.currentModelId).toBe("openai/gpt-fast");
+    expect(state.options.map((model) => model.id)).toEqual([
+      "openai/gpt-default",
+      "openai/gpt-fast",
+    ]);
+    expect(calls).toContainEqual({
+      method: "sessions.patch",
+      params: { key: "chat-session", model: "openai/gpt-fast" },
+    });
+    const reset = await driver.configureModel({ sessionKey: "never-created", modelId: null });
+    expect(reset.currentModelId).toBeUndefined();
+    expect(calls).toContainEqual({
+      method: "sessions.patch",
+      params: { key: "never-created", model: null },
+    });
+    await driver.close();
+  });
+
+  it("fails before launching a run when the model patch is rejected", async () => {
+    process.env[tokenEnvironment] = "test-token";
+    const calls: string[] = [];
+    class RejectingModelGatewayClient {
+      constructor(private readonly options: Record<string, unknown>) {}
+      start(): void {
+        (this.options.onHelloOk as (() => void) | undefined)?.();
+      }
+      stop(): void {}
+      async request<T>(method: string): Promise<T> {
+        calls.push(method);
+        if (method === "models.list") return { models: [{ id: "gpt-fast" }] } as T;
+        if (method === "sessions.patch") throw new Error("patch rejected");
+        throw new Error(`Unexpected request: ${method}`);
+      }
+    }
+    const runtime = configSchema.parse({
+      version: 1,
+      agent: { name: "Anya", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "openclaw", gateway: { tokenEnv: tokenEnvironment } },
+    }).runtime;
+    if (runtime.kind !== "openclaw") throw new Error("Expected OpenClaw runtime");
+    const driver = new OpenClawDriver(runtime, RejectingModelGatewayClient);
+    await expect(
+      driver.start(
+        { sessionKey: "new-session", prompt: "hello", modelId: "gpt-fast" },
+        () => undefined,
+      ),
+    ).rejects.toThrow("patch rejected");
+    expect(calls).not.toContain("agent");
+    await driver.close();
+  });
+
+  it("continues an ordinary turn when best-effort model discovery fails", async () => {
+    process.env[tokenEnvironment] = "test-token";
+    const calls: string[] = [];
+    class DiscoveryFailureGatewayClient {
+      constructor(private readonly options: Record<string, unknown>) {}
+      start(): void {
+        (this.options.onHelloOk as (() => void) | undefined)?.();
+      }
+      stop(): void {}
+      async request<T>(method: string): Promise<T> {
+        calls.push(method);
+        if (method === "models.list") throw new Error("catalog temporarily unavailable");
+        if (method === "chat.history") return { messages: [] } as T;
+        if (method === "agent") return { runId: "ordinary-run" } as T;
+        if (method === "agent.wait")
+          return { result: { payloads: [{ text: "ordinary reply" }] } } as T;
+        throw new Error(`Unexpected request: ${method}`);
+      }
+    }
+    const runtime = configSchema.parse({
+      version: 1,
+      agent: { name: "Anya", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "openclaw", gateway: { tokenEnv: tokenEnvironment } },
+    }).runtime;
+    if (runtime.kind !== "openclaw") throw new Error("Expected OpenClaw runtime");
+    const driver = new OpenClawDriver(runtime, DiscoveryFailureGatewayClient, true);
+
+    const active = await driver.start({ sessionKey: "ordinary", prompt: "hello" }, () => undefined);
+
+    await expect(active.result).resolves.toMatchObject({ text: "ordinary reply" });
+    expect(calls).toContain("models.list");
+    expect(calls).toContain("agent");
+    await driver.close();
+  });
+
   it("resumes an in-flight wait after the gateway reconnects", async () => {
     process.env[tokenEnvironment] = "test-token";
     let waitRequests = 0;

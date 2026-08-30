@@ -49,6 +49,7 @@ export declare class RunProjection {
     private updateText;
     private updateThinking;
     private updateTransient;
+    private updateActivity;
     private startCycle;
     private schedule;
     private cancelScheduledEdit;

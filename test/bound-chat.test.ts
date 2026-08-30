@@ -32,7 +32,7 @@ describe("bound Anytype and Codex chats", () => {
         ],
         runtime: {
           kind: "codex",
-          defaultProject: dir,
+          defaultProject: project,
           allowedProjects: [project],
         },
         tools: { anytype: { enabled: true, allowWrite: true }, codex: { enabled: true } },

@@ -19,6 +19,7 @@ The current deployment model is deliberately simple: **one AAG process, one Anyt
 - Streams safe thinking/progress into that first reply, replaces it with the following answer text in the same message, and gives each later assistant text part its own streamed message.
 - Treats a qualifying follow-up during an active run as steering. The gateway freezes the previous progress reply, creates a new reply beneath the follow-up, and continues there.
 - Starts a fresh persisted harness session for the current chat or comment thread when an authorized wake message contains `/new`; an active run is replaced instead of steered.
+- Discovers models from the connected harness and keeps an independent model choice per chat or object discussion.
 - Preserves every reply created by a steered run so a later reply to any of them is still recognized as a follow-up.
 - Allows a runtime to stay silent by returning exactly `[[AAG_STAY_SILENT]]` or `[[AAG_STAY_SILENT: reason]]`. The placeholder can be deleted, retained, or replaced according to configuration.
 - Builds bounded context from recent messages, reply ancestry, the object owning a discussion, and objects referenced by Anytype marks.
@@ -304,10 +305,34 @@ Every configured chat must include its `wake` block; there is no implicit broad 
 - `agents` applies only to creators listed in `coordination.peers` or the legacy `coordination.agentParticipants` list. A peer entry supplies a stable participant ID plus the name/aliases used for outbound coordination.
 - `spaces[].chatDiscovery` is disabled by default. When enabled with its own required `wake` block, AAG subscribes to current and newly created chats in that space. Existing history is baselined; a bounded recent tail is checked when a chat appears after startup so its first mention is not lost.
 - `responses.streaming: true` edits the stable reply with text as the runtime produces it. Streaming is enabled by default and coalesced to avoid excessive API writes; set it to `false` to keep the placeholder unchanged until the final answer. `responses.mode: single` hides tool and status chatter, `milestones` exposes tool lifecycle milestones, and `verbose` also exposes runtime status output.
-- `responses.thinking: stream` displays only the safe progress/thinking text emitted by the harness. It does not expose hidden model chain-of-thought. The first following assistant text replaces thinking in the same message; later assistant parts get separate messages. `editIntervalMilliseconds` controls edit coalescing.
+- `responses.thinking: stream` displays only the safe progress/thinking text emitted by the harness. It does not expose hidden model chain-of-thought. AAG renders current thinking and milestone tool titles as a compact, plain-text `Working…` activity feed, keeps only the latest four items, and updates a tool item in place when it completes. The first following assistant text replaces that feed in the same message; later assistant parts get separate messages. `editIntervalMilliseconds` controls edit coalescing.
 - `runtime.inactivityTimeoutSeconds` and `runtime.maxRunSeconds` are independent. A `maxRunSeconds` value of `0` means AAG does not request or enforce a run cap and keeps using bounded `agent.wait` long polls; OpenClaw, its harness, and the model provider may still apply their own native limits. Set an AAG maximum only when the operator intentionally wants an additional hard cap.
 
 An authorized wake message containing `/new` increments the persistent session generation for that chat or comment thread. AAG starts a fresh OpenClaw/ACP session with only the current message and directly referenced object context. For example, `@Anya /new plan the release` starts cleanly with “plan the release”; if another run is active, AAG marks its reply as replaced and does not steer it.
+
+### Per-conversation models
+
+AAG asks the harness for its live model catalog instead of maintaining a second provider registry. Codex uses ACP session configuration; OpenClaw uses its gateway model catalog and session override. The choice is persisted per Anytype chat or root object-discussion thread.
+
+- `/models` lists the models allowed by `models.allowed`.
+- `/model` shows the current model.
+- `/model <id-or-number>` changes the model for this conversation.
+- `/model default` restores the harness default.
+- `/new --model <id>` starts a fresh session with that model.
+
+Changing a model requires `management.allowModelChanges: true` and a stable sender ID in `management.modelAdmins`. Listing models is read-only. If a run is active, a plain `/model` change is saved and applies after that run; `/new --model` replaces the active run and applies the choice to the fresh session. The agent can use the constrained `aag_list_models` and `aag_set_model` tools when the Anytype tool server is enabled. Operators can inspect or change cached state with `aag config models --thread-key ...` and `aag config model --thread-key ... --model ...`.
+
+```yaml
+models:
+  enabled: true
+  allowed:
+    - "*" # Prefer provider/model globs in shared deployments.
+
+management:
+  allowModelChanges: true
+  modelAdmins:
+    - _participant_owner_id
+```
 
 Silence is a runtime decision, not an Anytype tool call. The prompt tells the runtime about the exact marker; AAG then applies `silentPlaceholder` to the current reply.
 
@@ -333,7 +358,10 @@ Participant access is a separate permission. Set `management.allowAccessChanges:
 management:
   allowWakeChanges: true
   allowAccessChanges: true
+  allowModelChanges: true
   accessAdmins:
+    - _participant_owner_id
+  modelAdmins:
     - _participant_owner_id
 ```
 

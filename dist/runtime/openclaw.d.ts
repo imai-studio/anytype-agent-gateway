@@ -1,5 +1,5 @@
 import type { AgentConfig } from "../config.js";
-import type { ActiveRuntime, ConversationRef, RuntimeDriver, RuntimeEvent, RuntimeResult, RuntimeSessionObserver, RuntimeSessionOutput, RuntimeTurn } from "../types.js";
+import type { ActiveRuntime, ConversationRef, RuntimeDriver, RuntimeEvent, RuntimeModelState, RuntimeResult, RuntimeSessionObserver, RuntimeSessionOutput, RuntimeTurn } from "../types.js";
 type GatewayClientLike = {
     start(): void;
     stop(): void;
@@ -13,6 +13,7 @@ type GatewayClientConstructor = new (options: Record<string, unknown>) => Gatewa
 export declare class OpenClawDriver implements RuntimeDriver {
     private readonly config;
     private readonly clientConstructor?;
+    private readonly discoverModelsOnStart;
     readonly name = "openclaw";
     readonly projectEnforcement: "advisory";
     readonly capabilities: {
@@ -21,6 +22,7 @@ export declare class OpenClawDriver implements RuntimeDriver {
         readonly multipleOutputParts: true;
         readonly sessionObservation: true;
         readonly nativeScheduling: true;
+        readonly modelSelection: true;
     };
     private client;
     private connecting;
@@ -37,13 +39,19 @@ export declare class OpenClawDriver implements RuntimeDriver {
     private lastBridgePollErrorAt;
     constructor(config: Extract<AgentConfig["runtime"], {
         kind: "openclaw";
-    }>, clientConstructor?: GatewayClientConstructor | undefined);
+    }>, clientConstructor?: GatewayClientConstructor | undefined, discoverModelsOnStart?: boolean);
     doctor(): Promise<string[]>;
     close(): Promise<void>;
+    configureModel(input: {
+        sessionKey: string;
+        modelId?: string | null;
+    }): Promise<RuntimeModelState>;
     start(input: {
         sessionKey: string;
         prompt: string;
         turn?: RuntimeTurn;
+        modelId?: string | null;
+        defaultModelId?: string;
     }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;
     observeSession(input: {
         sessionKey: string;

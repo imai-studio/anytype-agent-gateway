@@ -35,6 +35,352 @@ function setup(silentPlaceholder: "delete" | "keep" | "replace" = "delete") {
 }
 
 describe("example workflows", () => {
+  it("lists and changes the native harness model per Anytype chat", async () => {
+    const anytype = new FakeAnytype();
+    const runtime = new FakeRuntime();
+    const store = new Store(":memory:");
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "codex" },
+      models: { enabled: true, allowed: ["*"] },
+      management: {
+        allowModelChanges: true,
+        modelAdmins: ["human-1"],
+      },
+    });
+    const controller = new AgentController(anytype, runtime, config, store, () => undefined);
+    const list = incoming({
+      id: "models",
+      mentioned: true,
+      content: { text: "AAG /models", marks: [{ type: "mention", from: 0, to: 3 }] },
+    });
+    anytype.messages.push(list);
+    await controller.process(conversation, wake, list);
+    expect(anytype.messages.at(-1)?.content?.text).toContain("2. Fast — fast-model");
+
+    const denied = incoming({
+      id: "model-denied",
+      creator: "human-2",
+      mentioned: true,
+      content: { text: "/model 2" },
+    });
+    anytype.messages.push(denied);
+    await controller.process(conversation, wake, denied);
+    expect(anytype.messages.at(-1)?.content?.text).toBe(
+      "You are not allowed to change this agent's model.",
+    );
+    expect(store.conversationModel(conversation.routeId)?.requestedModelId).toBeUndefined();
+
+    const set = incoming({ id: "model", mentioned: true, content: { text: "@AAG /model 2" } });
+    anytype.messages.push(set);
+    await controller.process(conversation, wake, set);
+    expect(runtime.modelConfigurations).toEqual([undefined]);
+    expect(store.conversationModel(conversation.routeId)).toMatchObject({
+      requestedModelId: "fast-model",
+      appliedModelId: "default-model",
+    });
+    expect(anytype.messages.at(-1)?.content?.text).toBe(
+      "Model selected: fast-model. It applies to the next turn.",
+    );
+
+    const next = incoming({ id: "next", mentioned: true, content: { text: "hello" } });
+    anytype.messages.push(next);
+    await controller.process(conversation, wake, next);
+    expect(runtime.modelConfigurations).toEqual([undefined, "fast-model"]);
+    expect(store.conversationModel(conversation.routeId)).toMatchObject({
+      requestedModelId: "fast-model",
+      appliedModelId: "fast-model",
+      appliedGeneration: 0,
+    });
+    runtime.finish({ text: "Using fast model" });
+    await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Using fast model"));
+
+    const ordinary = incoming({
+      id: "ordinary-after-model",
+      mentioned: true,
+      content: { text: "one more turn" },
+    });
+    anytype.messages.push(ordinary);
+    await controller.process(conversation, wake, ordinary);
+    expect(runtime.modelConfigurations).toEqual([undefined, "fast-model"]);
+    expect(store.conversationModel(conversation.routeId)).toMatchObject({
+      requestedModelId: "fast-model",
+      appliedModelId: "fast-model",
+      appliedGeneration: 0,
+    });
+    runtime.finish({ text: "Still using fast model" });
+    await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Still using fast model"));
+
+    const reset = incoming({
+      id: "model-reset",
+      mentioned: true,
+      content: { text: "/model default" },
+    });
+    anytype.messages.push(reset);
+    await controller.process(conversation, wake, reset);
+    const afterReset = incoming({
+      id: "after-reset",
+      mentioned: true,
+      content: { text: "hello again" },
+    });
+    anytype.messages.push(afterReset);
+    await controller.process(conversation, wake, afterReset);
+    expect(runtime.modelConfigurations).toEqual([undefined, "fast-model", null]);
+    runtime.finish({ text: "Using default model" });
+    await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Using default model"));
+    await controller.stop();
+  });
+
+  it("applies /new --model atomically to the fresh harness session", async () => {
+    const anytype = new FakeAnytype();
+    const runtime = new FakeRuntime();
+    const store = new Store(":memory:");
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "codex" },
+      models: { enabled: true, allowed: ["*"] },
+      management: { allowModelChanges: true, modelAdmins: ["human-1"] },
+    });
+    const controller = new AgentController(anytype, runtime, config, store, () => undefined);
+    const reset = incoming({
+      id: "new-model",
+      mentioned: true,
+      content: { text: "/new --model fast-model" },
+    });
+    anytype.messages.push(reset);
+    await controller.process(conversation, wake, reset);
+    expect(runtime.modelConfigurations).toEqual([undefined, "fast-model"]);
+    expect(runtime.starts[0]?.sessionKey).toContain(":g1");
+    expect(store.conversationModel(conversation.routeId)?.requestedModelId).toBe("fast-model");
+    runtime.finish({ text: "ignored reset output" });
+    await eventually(() => expect(anytype.edits.at(-1)?.text).toBe("Started a new session."));
+    await controller.stop();
+  });
+
+  it("counts model controls against the per-thread activation circuit", async () => {
+    const anytype = new FakeAnytype();
+    const runtime = new FakeRuntime();
+    const store = new Store(":memory:");
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "codex" },
+      models: { enabled: true, allowed: ["*"] },
+      coordination: { maxActivationsPerThread: 1, windowSeconds: 60 },
+    });
+    const controller = new AgentController(anytype, runtime, config, store, () => undefined);
+    const first = incoming({ id: "models-1", mentioned: true, content: { text: "/models" } });
+    anytype.messages.push(first);
+    await controller.process(conversation, wake, first);
+    const responseCount = anytype.messages.length;
+    const second = incoming({ id: "models-2", mentioned: true, content: { text: "/models" } });
+    anytype.messages.push(second);
+    await controller.process(conversation, wake, second);
+    expect(anytype.messages).toHaveLength(responseCount + 1);
+    expect(runtime.modelConfigurations).toEqual([undefined]);
+    await controller.stop();
+  });
+
+  it("clears a stale pending model after the harness rejects it", async () => {
+    class RejectingModelRuntime extends FakeRuntime {
+      override async start(
+        input: { sessionKey: string; prompt: string; modelId?: string | null },
+        onEvent: (event: RuntimeEvent) => void,
+      ): Promise<ActiveRuntime> {
+        if (input.modelId) throw new Error("Unknown model");
+        return await super.start(input, onEvent);
+      }
+    }
+    const anytype = new FakeAnytype();
+    const runtime = new RejectingModelRuntime();
+    const store = new Store(":memory:");
+    store.saveConversationModel({
+      threadKey: conversation.routeId,
+      runtime: "codex-acp",
+      requestedModelId: "removed-model",
+      catalog: [{ id: "removed-model", name: "Removed" }],
+    });
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "codex" },
+      models: { enabled: true, allowed: ["*"] },
+    });
+    const controller = new AgentController(anytype, runtime, config, store, () => undefined);
+    const message = incoming({ id: "stale-model", mentioned: true, content: { text: "hello" } });
+    anytype.messages.push(message);
+    await controller.process(conversation, wake, message);
+    expect(store.conversationModel(conversation.routeId)?.requestedModelId).toBeUndefined();
+    expect(anytype.edits.at(-1)?.text).toContain("selected model was rejected and cleared");
+    await controller.stop();
+  });
+
+  it("retains a pending model after a transient harness failure", async () => {
+    class FailingRuntime extends FakeRuntime {
+      override async start(): Promise<ActiveRuntime> {
+        throw new Error("gateway closed (1006); codex-acp stderr: model unavailable during retry");
+      }
+    }
+    const anytype = new FakeAnytype();
+    const runtime = new FailingRuntime();
+    const store = new Store(":memory:");
+    store.saveConversationModel({
+      threadKey: conversation.routeId,
+      runtime: "codex-acp",
+      requestedModelId: "fast-model",
+      catalog: [{ id: "fast-model", name: "Fast" }],
+    });
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "codex" },
+      models: { enabled: true, allowed: ["*"] },
+    });
+    const controller = new AgentController(anytype, runtime, config, store, () => undefined);
+    const message = incoming({
+      id: "transient-model",
+      mentioned: true,
+      content: { text: "hello" },
+    });
+    anytype.messages.push(message);
+
+    await controller.process(conversation, wake, message);
+
+    expect(store.conversationModel(conversation.routeId)?.requestedModelId).toBe("fast-model");
+    expect(anytype.edits.at(-1)?.text).toContain("selected model could not be applied");
+    await controller.stop();
+  });
+
+  it("revokes an applied native model override when model controls are disabled", async () => {
+    const anytype = new FakeAnytype();
+    const runtime = new FakeRuntime();
+    runtime.model = "fast-model";
+    const store = new Store(":memory:");
+    store.saveConversationModel({
+      threadKey: conversation.routeId,
+      runtime: "codex-acp",
+      requestedModelId: "fast-model",
+      appliedModelId: "fast-model",
+      defaultModelId: "default-model",
+      appliedGeneration: 0,
+      catalog: [
+        { id: "default-model", name: "Default" },
+        { id: "fast-model", name: "Fast" },
+      ],
+    });
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "codex" },
+      models: { enabled: false, allowed: ["*"] },
+    });
+    const controller = new AgentController(anytype, runtime, config, store, () => undefined);
+    const message = incoming({ id: "disabled-model", mentioned: true, content: { text: "hello" } });
+    anytype.messages.push(message);
+
+    await controller.process(conversation, wake, message);
+
+    expect(runtime.modelConfigurations).toEqual([null]);
+    expect(store.conversationModel(conversation.routeId)).toMatchObject({
+      appliedModelId: "default-model",
+      defaultModelId: "default-model",
+    });
+    expect(store.conversationModel(conversation.routeId)?.requestedModelId).toBeUndefined();
+    runtime.finish({ text: "Using default model" });
+    await controller.stop();
+  });
+
+  it("revokes an applied native model override after the allowlist narrows", async () => {
+    const anytype = new FakeAnytype();
+    const runtime = new FakeRuntime();
+    runtime.model = "fast-model";
+    const store = new Store(":memory:");
+    store.saveConversationModel({
+      threadKey: conversation.routeId,
+      runtime: "codex-acp",
+      requestedModelId: "fast-model",
+      appliedModelId: "fast-model",
+      defaultModelId: "default-model",
+      appliedGeneration: 0,
+      catalog: [{ id: "fast-model", name: "Fast" }],
+    });
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "codex" },
+      models: { enabled: true, allowed: ["default-model"] },
+    });
+    const controller = new AgentController(anytype, runtime, config, store, () => undefined);
+    const message = incoming({ id: "narrowed-model", mentioned: true, content: { text: "hello" } });
+    anytype.messages.push(message);
+
+    await controller.process(conversation, wake, message);
+
+    expect(runtime.modelConfigurations).toEqual([null]);
+    expect(store.conversationModel(conversation.routeId)?.requestedModelId).toBeUndefined();
+    runtime.finish({ text: "Using allowed default" });
+    await controller.stop();
+  });
+
+  it("preserves the applied model when discovery cannot report the current model", async () => {
+    class ModelBlindRuntime extends FakeRuntime {
+      override async configureModel(): Promise<import("../src/types.js").RuntimeModelState> {
+        this.modelConfigurations.push(undefined);
+        return {
+          options: [
+            { id: "default-model", name: "Default" },
+            { id: "fast-model", name: "Fast" },
+          ],
+          defaultModelId: "default-model",
+        };
+      }
+    }
+    const anytype = new FakeAnytype();
+    const runtime = new ModelBlindRuntime();
+    const store = new Store(":memory:");
+    store.saveConversationModel({
+      threadKey: conversation.routeId,
+      runtime: "codex-acp",
+      requestedModelId: "fast-model",
+      appliedModelId: "fast-model",
+      defaultModelId: "default-model",
+      appliedGeneration: 0,
+      catalog: [{ id: "fast-model", name: "Fast" }],
+    });
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "codex" },
+      models: { enabled: true, allowed: ["*"] },
+    });
+    const controller = new AgentController(anytype, runtime, config, store, () => undefined);
+    const message = incoming({ id: "blind-models", mentioned: true, content: { text: "/models" } });
+    anytype.messages.push(message);
+
+    await controller.process(conversation, wake, message);
+
+    expect(store.conversationModel(conversation.routeId)?.appliedModelId).toBe("fast-model");
+    await controller.stop();
+  });
+
   it("lets an active run finish during a graceful service shutdown", async () => {
     const { anytype, runtime, store, controller } = setup();
     const message = incoming();

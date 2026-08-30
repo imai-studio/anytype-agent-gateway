@@ -105,6 +105,8 @@ The runtime owns context compaction beyond these transport-level bounds.
 
 An authorized `/new` wake message creates an explicit session boundary without requiring a second Anytype chat. AAG persists a generation per chat or root comment thread and changes the runtime session key after each reset. A reset excludes earlier message history from the transport prompt. If a run is active, reset replaces it visibly rather than steering it, because steering would preserve the very harness session the user asked to discard.
 
+Model selection follows the same boundary. AAG stores only the requested, applied, and default model IDs plus the last harness catalog for each conversation. It does not proxy providers or invent a cross-harness model taxonomy. Codex ACP applies the selection with `session/set_config_option`; OpenClaw applies it with `sessions.patch`. `/new --model` records the requested model before the generation changes, then applies it to the new native session before the first prompt. An allowlist and separate model-admin list keep model cost and capability changes explicit.
+
 ## Immediate editable replies and native steering
 
 Acknowledge a trigger immediately with a working reaction on the user's message and one reply. Edit that reply as the run progresses.

@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, extname, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import YAML from "yaml";
@@ -235,11 +235,19 @@ export const configSchema = z.object({
   }),
   spaces: z.array(spaceSchema).min(1),
   runtime: runtimeSchema,
+  models: z
+    .object({
+      enabled: z.boolean().default(false),
+      allowed: z.array(z.string()).default(["*"]),
+    })
+    .default({ enabled: false, allowed: ["*"] }),
   management: z
     .object({
       allowWakeChanges: z.boolean().default(false),
       allowAccessChanges: z.boolean().default(false),
+      allowModelChanges: z.boolean().default(false),
       accessAdmins: z.array(z.string()).default([]),
+      modelAdmins: z.array(z.string()).default([]),
     })
     .superRefine((value, context) => {
       if (value.allowAccessChanges && value.accessAdmins.length === 0)
@@ -248,8 +256,20 @@ export const configSchema = z.object({
           path: ["accessAdmins"],
           message: "management.accessAdmins is required when access changes are enabled",
         });
+      if (value.allowModelChanges && value.modelAdmins.length === 0)
+        context.addIssue({
+          code: "custom",
+          path: ["modelAdmins"],
+          message: "management.modelAdmins is required when model changes are enabled",
+        });
     })
-    .default({ allowWakeChanges: false, allowAccessChanges: false, accessAdmins: [] }),
+    .default({
+      allowWakeChanges: false,
+      allowAccessChanges: false,
+      allowModelChanges: false,
+      accessAdmins: [],
+      modelAdmins: [],
+    }),
   tools: z
     .object({
       anytype: z
@@ -384,6 +404,13 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
   if (config.runtime.defaultProject)
     config.runtime.defaultProject = expandHome(config.runtime.defaultProject);
   config.runtime.allowedProjects = config.runtime.allowedProjects.map(expandHome);
+  const stateDirectory = await canonicalPath(dirname(config.state.path));
+  const projectRoots = [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter(
+    (value): value is string => Boolean(value),
+  );
+  const canonicalProjectRoots = await Promise.all(projectRoots.map(canonicalPath));
+  if (canonicalProjectRoots.some((root) => pathContains(root, stateDirectory)))
+    throw new Error("state.path must be outside agent-accessible project directories");
   config.tools.anytype.allowedFileRoots = config.tools.anytype.allowedFileRoots.map(expandHome);
   if (config.runtime.kind === "codex" && config.runtime.command === "codex-acp") {
     const bundled = resolve(
@@ -411,4 +438,25 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
       config.runtime.gateway.clientModule = expandHome(config.runtime.gateway.clientModule);
   }
   return config;
+}
+
+function pathContains(root: string, candidate: string): boolean {
+  const path = relative(root, candidate);
+  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+}
+
+async function canonicalPath(value: string): Promise<string> {
+  let cursor = resolve(value);
+  const missing: string[] = [];
+  for (;;) {
+    try {
+      return resolve(await realpath(cursor), ...missing.reverse());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = dirname(cursor);
+      if (parent === cursor) return resolve(value);
+      missing.push(basename(cursor));
+      cursor = parent;
+    }
+  }
 }

@@ -15,6 +15,7 @@ type OutputCycle = {
   state: CycleState;
   sourceId: string | undefined;
   text: string;
+  activities?: string[];
   replyToMessageId?: string;
   messageId?: string;
   completed: boolean;
@@ -216,7 +217,7 @@ export class RunProjection {
     } else if (event.type === "thinking-delta" && this.config.responses.thinking === "stream") {
       this.updateThinking(event.text, event.partId, event.replace === true);
     } else if (event.type === "tool" && this.config.responses.mode !== "single") {
-      this.updateTransient(`${event.status === "completed" ? "✓" : "↻"} ${event.name}`);
+      this.updateActivity(event.name, event.status);
     } else if (event.type === "status" && this.config.responses.mode === "verbose" && event.text) {
       this.updateTransient(event.text);
     }
@@ -407,6 +408,20 @@ export class RunProjection {
     if (this.config.responses.streaming) this.schedule(this.activeCycle);
   }
 
+  private updateActivity(name: string, status: string): void {
+    if (this.activeCycle.state === "text") return;
+    const title = compactActivityLine(name);
+    if (!title) return;
+    const line = `${status === "completed" ? "✓" : "•"} ${title}`;
+    const activities = this.activeCycle.activities ?? [];
+    const existing = activities.findIndex((item) => item.slice(2) === title);
+    if (existing >= 0) activities[existing] = line;
+    else activities.push(line);
+    this.activeCycle.activities = activities.slice(-4);
+    this.emitCycle(this.activeCycle);
+    if (this.config.responses.streaming) this.schedule(this.activeCycle);
+  }
+
   private startCycle(cycle: OutputCycle): void {
     this.cancelScheduledEdit();
     this.activeCycle.completed = true;
@@ -439,7 +454,12 @@ export class RunProjection {
     attachments: ChatAttachment[];
   } {
     const raw = stripNativeReplyDirective(cycle.text) || this.config.responses.workingText;
-    const labeled = cycle.state === "thinking" ? `Thinking…\n\n${raw}` : raw;
+    const labeled =
+      cycle.state === "thinking"
+        ? activityDisplay(raw, cycle.activities ?? [], this.config.responses.workingText)
+        : cycle.state === "transient" && cycle.activities?.length
+          ? activityDisplay("", cycle.activities, this.config.responses.workingText)
+          : raw;
     const rendered = renderForAnytype(labeled, this.config, [...this.mentionTargets.values()]);
     return truncateRendered(rendered, this.config.responses.maxCharacters);
   }
@@ -510,6 +530,7 @@ export class RunProjection {
     if (this.activeCycle.state !== "text" && !this.activeCycle.deleted) {
       this.activeCycle.state = "transient";
       this.activeCycle.text = text;
+      this.activeCycle.activities = [];
       await this.editCycleNow(this.activeCycle);
       return;
     }
@@ -821,6 +842,29 @@ function normalizeMarkdown(
 
 function isWordCharacter(value: string | undefined): boolean {
   return value !== undefined && /[\p{L}\p{N}]/u.test(value);
+}
+
+function activityDisplay(thinking: string, activities: string[], workingText: string): string {
+  const lines = thinking
+    .split(/\n+/)
+    .map(compactActivityLine)
+    .filter(Boolean)
+    .map((line) => `• ${line}`);
+  const combined = [...lines, ...activities].filter(
+    (line, index, all) =>
+      all.findLastIndex((candidate) => candidate.slice(2) === line.slice(2)) === index,
+  );
+  return combined.length ? `${workingText}\n\n${combined.slice(-4).join("\n")}` : workingText;
+}
+
+function compactActivityLine(value: string): string {
+  const plain = value
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/^[\s#>*+\-\d.)]+/, "")
+    .replace(/[*_~`]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return plain.length > 140 ? `${plain.slice(0, 137).trimEnd()}…` : plain;
 }
 
 function escapeRegExp(value: string): string {

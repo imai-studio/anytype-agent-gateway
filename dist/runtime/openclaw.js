@@ -11,6 +11,7 @@ const MAX_BRIDGE_PAGES_PER_POLL = 10;
 export class OpenClawDriver {
     config;
     clientConstructor;
+    discoverModelsOnStart;
     name = "openclaw";
     projectEnforcement = "advisory";
     capabilities = {
@@ -19,6 +20,7 @@ export class OpenClawDriver {
         multipleOutputParts: true,
         sessionObservation: true,
         nativeScheduling: true,
+        modelSelection: true,
     };
     client;
     connecting;
@@ -33,9 +35,10 @@ export class OpenClawDriver {
     bridgePollTimer;
     bridgePolling;
     lastBridgePollErrorAt = 0;
-    constructor(config, clientConstructor) {
+    constructor(config, clientConstructor, discoverModelsOnStart = false) {
         this.config = config;
         this.clientConstructor = clientConstructor;
+        this.discoverModelsOnStart = discoverModelsOnStart;
     }
     async doctor() {
         if (!(await commandExists(this.config.command)))
@@ -78,6 +81,33 @@ export class OpenClawDriver {
         this.bridgePollTimer = undefined;
         this.bridgeObservers.clear();
     }
+    async configureModel(input) {
+        const client = await this.getClient();
+        const catalog = await this.request(client, "models.list", {}, { timeoutMs: 30_000 });
+        const options = (catalog.models ?? []).flatMap((model) => {
+            const id = typeof model.id === "string" ? model.id : undefined;
+            const provider = typeof model.provider === "string" ? model.provider : undefined;
+            if (!id)
+                return [];
+            const qualifiedId = provider && !id.includes("/") ? `${provider}/${id}` : id;
+            return [
+                {
+                    id: qualifiedId,
+                    name: typeof model.name === "string" ? model.name : qualifiedId,
+                    ...(provider ? { provider } : {}),
+                },
+            ];
+        });
+        let currentModelId;
+        if (input.modelId !== undefined) {
+            const patched = await this.request(client, "sessions.patch", { key: this.resolveSessionKey(input.sessionKey), model: input.modelId }, { timeoutMs: 30_000 });
+            const entry = (patched.entry ?? patched);
+            const provider = typeof entry.providerOverride === "string" ? entry.providerOverride : undefined;
+            const model = typeof entry.modelOverride === "string" ? entry.modelOverride : undefined;
+            currentModelId = provider && model && !model.includes("/") ? `${provider}/${model}` : model;
+        }
+        return { options, ...(currentModelId ? { currentModelId } : {}) };
+    }
     async start(input, onEvent) {
         const requestedSessionKey = this.resolveSessionKey(input.sessionKey);
         let sessionKey = requestedSessionKey;
@@ -86,6 +116,16 @@ export class OpenClawDriver {
                 throw new Error("OpenClaw channel bridge requires Anytype turn context");
         }
         const client = await this.getClient();
+        let modelState;
+        if (input.modelId !== undefined) {
+            modelState = await this.configureModel({
+                sessionKey: input.sessionKey,
+                modelId: input.modelId,
+            });
+        }
+        else if (this.discoverModelsOnStart) {
+            modelState = await this.configureModel({ sessionKey: input.sessionKey }).catch(() => undefined);
+        }
         let generation = 0;
         let currentRunId;
         let settled = false;
@@ -177,6 +217,7 @@ export class OpenClawDriver {
         return {
             sessionKey,
             sessionId: sessionKey,
+            ...(modelState ? { modelState } : {}),
             result,
             steer: async (message) => {
                 const nextGeneration = generation + 1;

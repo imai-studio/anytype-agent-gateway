@@ -38,7 +38,7 @@ describe("output-cycle projection", () => {
       projection.onEvent({ type: "thinking-delta", text: " files", partId: "thought-1" });
       await flushProjection();
       expect(anytype.messages).toHaveLength(1);
-      expect(anytype.messages[0]?.content?.text).toBe("Thinking…\n\nInspecting files");
+      expect(anytype.messages[0]?.content?.text).toBe("Working…\n\n• Inspecting files");
 
       projection.onEvent({ type: "text-delta", text: "Found", partId: "answer-1" });
       projection.onEvent({ type: "text-delta", text: " it.", partId: "answer-1" });
@@ -48,6 +48,35 @@ describe("output-cycle projection", () => {
 
       await projection.finish({ text: "Found it." });
       expect(anytype.messages[0]?.content?.text).toBe("Found it.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders thinking and tool activity as a compact native activity feed", async () => {
+    vi.useFakeTimers();
+    try {
+      const anytype = new FakeAnytype();
+      const projection = await RunProjection.create(
+        anytype,
+        config({ responses: { thinking: "stream", mode: "milestones" } }),
+        conversation,
+        "trigger",
+      );
+
+      projection.onEvent({
+        type: "thinking-delta",
+        text: "**Investigating Codex session logs**\n\n### Planning the next check",
+        partId: "thought-1",
+      });
+      projection.onEvent({ type: "tool", name: "Inspecting user prompts", status: "running" });
+      projection.onEvent({ type: "tool", name: "Inspecting user prompts", status: "completed" });
+      await flushProjection();
+
+      expect(anytype.messages[0]?.content?.text).toBe(
+        "Working…\n\n• Investigating Codex session logs\n• Planning the next check\n✓ Inspecting user prompts",
+      );
+      expect(anytype.messages[0]?.content?.marks).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
@@ -270,7 +299,7 @@ describe("output-cycle projection", () => {
       );
       projection.onEvent({ type: "tool", name: "terminal", status: "completed" });
       await flushProjection();
-      expect(anytype.messages[0]?.content?.text).toBe("✓ terminal");
+      expect(anytype.messages[0]?.content?.text).toBe("Working…\n\n✓ terminal");
       await projection.fail(new Error("boom"));
       expect(anytype.messages).toHaveLength(1);
       expect(anytype.messages[0]?.content?.text).toBe("Agent run failed: boom");

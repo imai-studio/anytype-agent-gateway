@@ -28,6 +28,11 @@ export declare class AgentController {
     }): Promise<void>;
     private start;
     private replaceActiveSession;
+    private handleModelCommand;
+    private canChangeModel;
+    private allowedModels;
+    private resolveModel;
+    private sendControlMessage;
     private steerPrompt;
     private thread;
     private agentHop;

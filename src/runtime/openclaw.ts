@@ -9,6 +9,7 @@ import type {
   ConversationRef,
   RuntimeDriver,
   RuntimeEvent,
+  RuntimeModelState,
   RuntimeResult,
   RuntimeSessionObserver,
   RuntimeSessionOutput,
@@ -52,6 +53,7 @@ export class OpenClawDriver implements RuntimeDriver {
     multipleOutputParts: true,
     sessionObservation: true,
     nativeScheduling: true,
+    modelSelection: true,
   } as const;
   private client: GatewayClientLike | undefined;
   private connecting: Promise<GatewayClientLike> | undefined;
@@ -70,6 +72,7 @@ export class OpenClawDriver implements RuntimeDriver {
   constructor(
     private readonly config: Extract<AgentConfig["runtime"], { kind: "openclaw" }>,
     private readonly clientConstructor?: GatewayClientConstructor,
+    private readonly discoverModelsOnStart = false,
   ) {}
 
   async doctor(): Promise<string[]> {
@@ -112,8 +115,55 @@ export class OpenClawDriver implements RuntimeDriver {
     this.bridgeObservers.clear();
   }
 
+  async configureModel(input: {
+    sessionKey: string;
+    modelId?: string | null;
+  }): Promise<RuntimeModelState> {
+    const client = await this.getClient();
+    const catalog = await this.request<{ models?: Array<Record<string, unknown>> }>(
+      client,
+      "models.list",
+      {},
+      { timeoutMs: 30_000 },
+    );
+    const options = (catalog.models ?? []).flatMap((model) => {
+      const id = typeof model.id === "string" ? model.id : undefined;
+      const provider = typeof model.provider === "string" ? model.provider : undefined;
+      if (!id) return [];
+      const qualifiedId = provider && !id.includes("/") ? `${provider}/${id}` : id;
+      return [
+        {
+          id: qualifiedId,
+          name: typeof model.name === "string" ? model.name : qualifiedId,
+          ...(provider ? { provider } : {}),
+        },
+      ];
+    });
+    let currentModelId: string | undefined;
+    if (input.modelId !== undefined) {
+      const patched = await this.request<Record<string, unknown>>(
+        client,
+        "sessions.patch",
+        { key: this.resolveSessionKey(input.sessionKey), model: input.modelId },
+        { timeoutMs: 30_000 },
+      );
+      const entry = (patched.entry ?? patched) as Record<string, unknown>;
+      const provider =
+        typeof entry.providerOverride === "string" ? entry.providerOverride : undefined;
+      const model = typeof entry.modelOverride === "string" ? entry.modelOverride : undefined;
+      currentModelId = provider && model && !model.includes("/") ? `${provider}/${model}` : model;
+    }
+    return { options, ...(currentModelId ? { currentModelId } : {}) };
+  }
+
   async start(
-    input: { sessionKey: string; prompt: string; turn?: RuntimeTurn },
+    input: {
+      sessionKey: string;
+      prompt: string;
+      turn?: RuntimeTurn;
+      modelId?: string | null;
+      defaultModelId?: string;
+    },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<ActiveRuntime> {
     const requestedSessionKey = this.resolveSessionKey(input.sessionKey);
@@ -122,6 +172,17 @@ export class OpenClawDriver implements RuntimeDriver {
       if (!input.turn) throw new Error("OpenClaw channel bridge requires Anytype turn context");
     }
     const client = await this.getClient();
+    let modelState: RuntimeModelState | undefined;
+    if (input.modelId !== undefined) {
+      modelState = await this.configureModel({
+        sessionKey: input.sessionKey,
+        modelId: input.modelId,
+      });
+    } else if (this.discoverModelsOnStart) {
+      modelState = await this.configureModel({ sessionKey: input.sessionKey }).catch(
+        () => undefined,
+      );
+    }
     let generation = 0;
     let currentRunId: string | undefined;
     let settled = false;
@@ -226,6 +287,7 @@ export class OpenClawDriver implements RuntimeDriver {
     return {
       sessionKey,
       sessionId: sessionKey,
+      ...(modelState ? { modelState } : {}),
       result,
       steer: async (message) => {
         const nextGeneration = generation + 1;

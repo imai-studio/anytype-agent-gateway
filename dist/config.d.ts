@@ -236,10 +236,16 @@ export declare const configSchema: z.ZodObject<{
         terminationGraceSeconds: z.ZodDefault<z.ZodNumber>;
         kind: z.ZodLiteral<"codex">;
     }, z.core.$strip>], "kind">;
+    models: z.ZodDefault<z.ZodObject<{
+        enabled: z.ZodDefault<z.ZodBoolean>;
+        allowed: z.ZodDefault<z.ZodArray<z.ZodString>>;
+    }, z.core.$strip>>;
     management: z.ZodDefault<z.ZodObject<{
         allowWakeChanges: z.ZodDefault<z.ZodBoolean>;
         allowAccessChanges: z.ZodDefault<z.ZodBoolean>;
+        allowModelChanges: z.ZodDefault<z.ZodBoolean>;
         accessAdmins: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        modelAdmins: z.ZodDefault<z.ZodArray<z.ZodString>>;
     }, z.core.$strip>>;
     tools: z.ZodDefault<z.ZodObject<{
         anytype: z.ZodDefault<z.ZodObject<{

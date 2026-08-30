@@ -63,6 +63,21 @@ export type RuntimeCapabilities = {
   multipleOutputParts: boolean;
   sessionObservation: boolean;
   nativeScheduling: boolean;
+  modelSelection: boolean;
+};
+
+export type RuntimeModelOption = {
+  id: string;
+  name: string;
+  provider?: string;
+  description?: string;
+};
+
+export type RuntimeModelState = {
+  options: RuntimeModelOption[];
+  currentModelId?: string;
+  defaultModelId?: string;
+  sessionId?: string;
 };
 
 export type RuntimeSessionOutput = {
@@ -85,6 +100,7 @@ export type RuntimeTurn = {
 export type ActiveRuntime = {
   sessionKey?: string;
   sessionId?: string;
+  modelState?: RuntimeModelState;
   result: Promise<RuntimeResult>;
   steer(message: string, turn?: RuntimeTurn): Promise<void>;
   cancel(): Promise<void>;
@@ -94,8 +110,20 @@ export interface RuntimeDriver {
   readonly name: string;
   readonly projectEnforcement: "enforced" | "advisory" | "unknown";
   readonly capabilities: RuntimeCapabilities;
+  configureModel?(input: {
+    sessionKey: string;
+    turn?: RuntimeTurn;
+    modelId?: string | null;
+    defaultModelId?: string;
+  }): Promise<RuntimeModelState>;
   start(
-    input: { sessionKey: string; prompt: string; turn?: RuntimeTurn },
+    input: {
+      sessionKey: string;
+      prompt: string;
+      turn?: RuntimeTurn;
+      modelId?: string | null;
+      defaultModelId?: string;
+    },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<ActiveRuntime>;
   observeSession?(

@@ -6,6 +6,25 @@ import { setTimeout } from "node:timers";
 const input = createInterface({ input: process.stdin });
 const pending = new Set();
 let internalLoadFailures = 0;
+let selectedModel = process.env.FAKE_ACP_DEFAULT_MODEL ?? "gpt-default";
+
+function configOptions() {
+  if (!process.env.FAKE_ACP_MODELS) return undefined;
+  const options = JSON.parse(process.env.FAKE_ACP_MODELS).map((value) => ({
+    value,
+    name: value,
+  }));
+  return [
+    {
+      type: "select",
+      id: "model",
+      name: "Model",
+      category: "model",
+      currentValue: selectedModel,
+      options,
+    },
+  ];
+}
 
 input.on("line", (line) => {
   const message = JSON.parse(line);
@@ -40,12 +59,21 @@ async function request(message) {
         content: { type: "text", text: "replayed history" },
       },
     });
-    return respond(message.id, {});
+    return respond(message.id, { configOptions: configOptions() });
   }
   if (message.method === "session/new")
-    return respond(message.id, { sessionId: process.env.FAKE_ACP_NEW_SESSION_ID ?? "new-session" });
+    return respond(message.id, {
+      sessionId: process.env.FAKE_ACP_NEW_SESSION_ID ?? "new-session",
+      configOptions: configOptions(),
+    });
+  if (message.method === "session/set_config_option") {
+    selectedModel = message.params.value;
+    return respond(message.id, { configOptions: configOptions() ?? [] });
+  }
   if (message.method === "_session/steering")
-    return fail(message.id, -32601, "Steering rejected by fake agent");
+    return process.env.FAKE_ACP_ACCEPT_STEERING === "true"
+      ? respond(message.id, {})
+      : fail(message.id, -32601, "Steering rejected by fake agent");
   if (message.method === "session/prompt") {
     if (process.env.FAKE_ACP_PROMPT_ERROR_SESSION === message.params.sessionId)
       return fail(message.id, -32603, "Internal error");

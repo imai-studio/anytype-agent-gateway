@@ -16,6 +16,117 @@ afterEach(async () => {
 });
 
 describe("Codex ACP continuity", () => {
+  it("rejects cleanly when the ACP executable cannot be spawned", async () => {
+    const directory = await temporaryDirectory();
+    const actorDirectory = join(directory, "actors");
+    const runtime = new CodexAcpDriver(
+      {
+        kind: "codex",
+        command: join(directory, "missing-codex-acp"),
+        args: [],
+        defaultProject: directory,
+        allowedProjects: [],
+        environment: {},
+        permissions: "deny",
+        setupTimeoutSeconds: 1,
+        timeoutSeconds: 0,
+        maxRunSeconds: 0,
+      },
+      undefined,
+      { command: "aag", args: ["mcp"], actorDirectory },
+    );
+    const turn: RuntimeTurn = {
+      conversation: { routeId: "chat:space:chat", spaceId: "space", chatId: "chat", kind: "chat" },
+      message: { id: "message", creator: "human", content: { text: "hello" } },
+      replyTargetId: "message",
+      workspacePath: directory,
+    };
+
+    await expect(runtime.configureModel({ sessionKey: "aag:model-chat", turn })).rejects.toThrow();
+    await expect(
+      runtime.start({ sessionKey: "aag:model-chat", prompt: "hello", turn }, () => undefined),
+    ).rejects.toThrow();
+  });
+
+  it("discovers models without changing the session", async () => {
+    const directory = await temporaryDirectory();
+    const logPath = join(directory, "calls.jsonl");
+    const store = new Store(join(directory, "state.sqlite"));
+    const runtime = driver(store, {
+      FAKE_ACP_LOG: logPath,
+      FAKE_ACP_MODELS: JSON.stringify(["gpt-default", "gpt-fast"]),
+    });
+
+    const state = await runtime.configureModel({ sessionKey: "aag:model-chat" });
+
+    expect(state).toMatchObject({
+      currentModelId: "gpt-default",
+      defaultModelId: "gpt-default",
+      sessionId: "new-session",
+    });
+    expect(state.options.map((option) => option.id)).toEqual(["gpt-default", "gpt-fast"]);
+    expect(store.codexAcpSession("aag:model-chat")).toBeUndefined();
+    expect((await log(logPath)).some((call) => call.method === "session/set_config_option")).toBe(
+      false,
+    );
+    store.close();
+  });
+
+  it("applies a selected model in the same ACP process before prompting", async () => {
+    const directory = await temporaryDirectory();
+    const logPath = join(directory, "calls.jsonl");
+    const runtime = driver(undefined, {
+      FAKE_ACP_LOG: logPath,
+      FAKE_ACP_MODELS: JSON.stringify(["gpt-default", "gpt-fast"]),
+    });
+
+    const handle = await runtime.start(
+      { sessionKey: "aag:model-chat", prompt: "hello", modelId: "gpt-fast" },
+      () => undefined,
+    );
+    await handle.result;
+
+    expect(handle.modelState).toMatchObject({ currentModelId: "gpt-fast" });
+    const calls = await log(logPath);
+    expect(calls.findIndex((call) => call.method === "session/set_config_option")).toBeLessThan(
+      calls.findIndex((call) => call.method === "session/prompt"),
+    );
+  });
+
+  it("does not delete a saved session when model discovery hits an internal load error", async () => {
+    const directory = await temporaryDirectory();
+    const store = new Store(join(directory, "state.sqlite"));
+    store.saveCodexAcpSession("aag:model-chat", "saved-session");
+    const runtime = driver(store, {
+      FAKE_ACP_LOG: join(directory, "calls.jsonl"),
+      FAKE_ACP_LOAD_ERROR: "internal",
+      FAKE_ACP_MODELS: JSON.stringify(["gpt-default"]),
+    });
+
+    await expect(runtime.configureModel({ sessionKey: "aag:model-chat" })).rejects.toThrow(
+      "Internal error",
+    );
+    expect(store.codexAcpSession("aag:model-chat")).toBe("saved-session");
+    store.close();
+  });
+
+  it("does not rebind a saved thread when read-only discovery replaces an unavailable session", async () => {
+    const directory = await temporaryDirectory();
+    const store = new Store(join(directory, "state.sqlite"));
+    store.saveCodexAcpSession("aag:model-chat", "missing-session");
+    const runtime = driver(store, {
+      FAKE_ACP_LOG: join(directory, "calls.jsonl"),
+      FAKE_ACP_LOAD_ERROR: "missing",
+      FAKE_ACP_NEW_SESSION_ID: "ephemeral-replacement",
+      FAKE_ACP_MODELS: JSON.stringify(["gpt-default"]),
+    });
+
+    await runtime.configureModel({ sessionKey: "aag:model-chat" });
+
+    expect(store.codexAcpSession("aag:model-chat")).toBeUndefined();
+    store.close();
+  });
+
   it("starts a bound chat session in its selected Codex project", async () => {
     const directory = await temporaryDirectory();
     const workspace = await temporaryDirectory();
@@ -363,6 +474,7 @@ describe("Codex ACP output and steering", () => {
 
   it("scopes the Anytype MCP server to the explicit route and space without passing an API key", async () => {
     const directory = await temporaryDirectory();
+    const workspace = await temporaryDirectory();
     const logPath = join(directory, "calls.jsonl");
     const runtime = new CodexAcpDriver(
       {
@@ -370,7 +482,8 @@ describe("Codex ACP output and steering", () => {
         command: process.execPath,
         args: [fixture],
         allowedProjects: [],
-        environment: { FAKE_ACP_LOG: logPath },
+        environment: { FAKE_ACP_LOG: logPath, FAKE_ACP_PROMPT_DELAY_MS: "100" },
+        defaultProject: workspace,
         timeoutSeconds: 2,
         permissions: "deny",
       },
@@ -378,6 +491,7 @@ describe("Codex ACP output and steering", () => {
       {
         command: "aag",
         args: ["mcp", "serve"],
+        actorDirectory: join(directory, "private-actors"),
         env: { SAFE_SETTING: "yes", ANYTYPE_API_KEY: "must-not-leak", AAG_ROUTE_ID: "spoofed" },
       },
     );
@@ -392,12 +506,16 @@ describe("Codex ACP output and steering", () => {
       replyTargetId: "trigger",
     };
 
-    await (
-      await runtime.start(
-        { sessionKey: "native-session-key", prompt: "answer", turn },
-        () => undefined,
-      )
-    ).result;
+    const active = await runtime.start(
+      { sessionKey: "native-session-key", prompt: "answer", turn },
+      () => undefined,
+    );
+    await expect(
+      active.steer("follow up", {
+        ...turn,
+        message: { id: "follow-up", creator: "second-human", content: { text: "follow up" } },
+      }),
+    ).rejects.toThrow("Steering rejected by fake agent");
 
     const calls = await log(logPath);
     const session = calls.find((call) => call.method === "session/new")?.params as
@@ -410,9 +528,81 @@ describe("Codex ACP output and steering", () => {
       AAG_ROUTE_ID: "chat:space-1:chat-1",
       AAG_SPACE_ID: "space-1",
     });
+    expect(environment).not.toHaveProperty("AAG_ACTOR_ID");
+    expect(environment.AAG_ACTOR_FILE).toBeTruthy();
+    expect(JSON.parse(await readFile(environment.AAG_ACTOR_FILE!, "utf8"))).toEqual({
+      actorId: "",
+    });
+    expect(environment.AAG_ACTOR_FILE).toContain(join(directory, "private-actors"));
+    expect(environment.AAG_ACTOR_FILE).not.toContain(workspace);
     expect(environment.AAG_ROUTE_ID).not.toBe("native-session-key");
     expect(Object.keys(environment).some((name) => /api[_-]?key/i.test(name))).toBe(false);
     expect(Object.values(environment)).not.toContain("must-not-leak");
+    await active.result;
+    await expect(readFile(environment.AAG_ACTOR_FILE!, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("fails actor authorization closed after accepting a steer from another sender", async () => {
+    const directory = await temporaryDirectory();
+    const workspace = await temporaryDirectory();
+    const logPath = join(directory, "calls.jsonl");
+    const runtime = new CodexAcpDriver(
+      {
+        kind: "codex",
+        command: process.execPath,
+        args: [fixture],
+        allowedProjects: [],
+        environment: {
+          FAKE_ACP_LOG: logPath,
+          FAKE_ACP_PROMPT_DELAY_MS: "100",
+          FAKE_ACP_ACCEPT_STEERING: "true",
+        },
+        defaultProject: workspace,
+        timeoutSeconds: 2,
+        permissions: "deny",
+      },
+      undefined,
+      {
+        command: "aag",
+        args: ["mcp", "serve"],
+        actorDirectory: join(directory, "private-actors"),
+      },
+    );
+    const turn: RuntimeTurn = {
+      conversation: {
+        routeId: "chat:space-1:chat-1",
+        spaceId: "space-1",
+        chatId: "chat-1",
+        kind: "chat",
+      },
+      message: { id: "trigger", creator: "first-human", content: { text: "hello" } },
+      replyTargetId: "trigger",
+    };
+
+    const active = await runtime.start(
+      { sessionKey: "mixed-actor-session", prompt: "answer", turn },
+      () => undefined,
+    );
+    await active.steer("follow up", {
+      ...turn,
+      message: { id: "follow-up", creator: "second-human", content: { text: "follow up" } },
+    });
+
+    const calls = await log(logPath);
+    const session = calls.find((call) => call.method === "session/new")?.params as
+      { mcpServers?: Array<{ env?: Array<{ name: string; value: string }> }> } | undefined;
+    const environment = Object.fromEntries(
+      (session?.mcpServers?.[0]?.env ?? []).map((item) => [item.name, item.value]),
+    );
+    expect(JSON.parse(await readFile(environment.AAG_ACTOR_FILE!, "utf8"))).toEqual({
+      actorId: "",
+    });
+    await active.result;
+    await expect(readFile(environment.AAG_ACTOR_FILE!, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 });
 

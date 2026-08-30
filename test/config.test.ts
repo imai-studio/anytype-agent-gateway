@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -174,5 +174,36 @@ describe("loadConfig", () => {
     if (config.runtime.kind !== "codex") throw new Error("expected Codex runtime");
     expect(config.runtime.command).toMatch(/node_modules\/[.]bin\/codex-acp$/);
     await expect(access(config.runtime.command, constants.X_OK)).resolves.toBeUndefined();
+  });
+
+  it("keeps gateway state outside agent-accessible projects", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aag-config-"));
+    const project = join(dir, "workspace");
+    const path = join(dir, "unsafe.yaml");
+    await writeFile(
+      path,
+      `${yaml.replace("runtime: { kind: openclaw }", `runtime: { kind: openclaw, defaultProject: ${project} }`)}state: { path: ${join(project, ".aag", "state.sqlite")} }\n`,
+    );
+
+    await expect(loadConfig(path)).rejects.toThrow(
+      "state.path must be outside agent-accessible project directories",
+    );
+  });
+
+  it("resolves project symlinks before checking gateway state isolation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aag-config-"));
+    const stateRoot = join(dir, "state-root");
+    const projectLink = join(dir, "linked-project");
+    const path = join(dir, "unsafe-symlink.yaml");
+    await mkdir(stateRoot);
+    await symlink(stateRoot, projectLink);
+    await writeFile(
+      path,
+      `${yaml.replace("runtime: { kind: openclaw }", `runtime: { kind: openclaw, defaultProject: ${projectLink} }`)}state: { path: ${join(stateRoot, "state.sqlite")} }\n`,
+    );
+
+    await expect(loadConfig(path)).rejects.toThrow(
+      "state.path must be outside agent-accessible project directories",
+    );
   });
 });

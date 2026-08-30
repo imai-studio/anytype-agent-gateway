@@ -506,6 +506,7 @@ describe("failure containment", () => {
         multipleOutputParts: true,
         sessionObservation: true,
         nativeScheduling: true,
+        modelSelection: false,
       } as const;
       output: ((value: RuntimeSessionOutput) => Promise<void>) | undefined;
       async doctor(): Promise<string[]> {

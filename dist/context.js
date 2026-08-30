@@ -349,6 +349,7 @@ export function isNewSessionOnlyCommand(text, agentName) {
 }
 function stripNewSessionCommand(text) {
     return text
+        .replace(/(^|\s)\/new\b([^\n]*?)(?:^|\s)--model(?:=|\s+)[^\s]+(?=\s|$)/i, "$1$2")
         .replace(/(^|\s)\/new(?=\s|$)/i, "$1")
         .replace(/\s{2,}/g, " ")
         .trim();

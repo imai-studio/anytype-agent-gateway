@@ -21,6 +21,19 @@ export interface SessionBinding {
 export type RuntimeCapabilityValue = boolean | number | string | null;
 export type RuntimeCapabilities = Record<string, RuntimeCapabilityValue>;
 
+export interface ConversationModelState {
+  threadKey: string;
+  runtime: AgentRuntime;
+  requestedModelId?: string;
+  useDefault?: boolean;
+  appliedGeneration?: number;
+  appliedModelId?: string;
+  defaultModelId?: string;
+  catalog: Array<{ id: string; name: string; provider?: string; description?: string }>;
+  updatedBy?: string;
+  updatedAt: number;
+}
+
 export type OutputCycleState = "open" | "complete" | "failed" | "deleted";
 export type OutputCyclePhase = "working" | "thinking" | "answer" | "error";
 

@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import {
@@ -9,7 +12,14 @@ import {
 import type { AgentConfig } from "../config.js";
 import { commandExists } from "../process.js";
 import type { Store } from "../store.js";
-import type { ActiveRuntime, RuntimeDriver, RuntimeEvent, RuntimeTurn } from "../types.js";
+import type {
+  ActiveRuntime,
+  RuntimeDriver,
+  RuntimeEvent,
+  RuntimeModelOption,
+  RuntimeModelState,
+  RuntimeTurn,
+} from "../types.js";
 import { parseSilence } from "./openclaw.js";
 
 type ClientCtx = Parameters<Parameters<ReturnType<typeof acp.client>["connectWith"]>[1]>[0];
@@ -17,7 +27,12 @@ type CodexSessionStore = Pick<
   Store,
   "codexAcpSession" | "saveCodexAcpSession" | "deleteCodexAcpSession"
 >;
-type McpServerCommand = { command: string; args: string[]; env?: Record<string, string> };
+type McpServerCommand = {
+  command: string;
+  args: string[];
+  actorDirectory: string;
+  env?: Record<string, string>;
+};
 type CodexRuntimeConfig = Extract<AgentConfig["runtime"], { kind: "codex" }>;
 type CodexDriverConfig = Omit<
   CodexRuntimeConfig,
@@ -61,6 +76,7 @@ export class CodexAcpDriver implements RuntimeDriver {
     multipleOutputParts: true,
     sessionObservation: false,
     nativeScheduling: false,
+    modelSelection: true,
   } as const;
   private readonly repeatedInternalLoadFailures = new Map<string, number>();
   private readonly hydratedDesktopSessions = new Set<string>();
@@ -83,8 +99,150 @@ export class CodexAcpDriver implements RuntimeDriver {
     return lines;
   }
 
+  async configureModel(input: {
+    sessionKey: string;
+    turn?: RuntimeTurn;
+    modelId?: string | null;
+    defaultModelId?: string;
+  }): Promise<RuntimeModelState> {
+    if (input.modelId !== undefined)
+      throw new Error("Codex model changes must be applied with the next session prompt");
+    const workspacePath = input.turn?.workspacePath ?? this.config.defaultProject;
+    const child = spawn(this.config.command, this.config.args, {
+      cwd: workspacePath,
+      env: inheritedAgentEnvironment(this.config.environment),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const childFailure = new Promise<never>((_resolve, reject) => child.once("error", reject));
+    void childFailure.catch(() => undefined);
+    let actorFile: string | undefined;
+    try {
+      actorFile =
+        this.mcpServer && input.turn
+          ? await writeActorContext(
+              this.mcpServer.actorDirectory,
+              input.sessionKey,
+              input.turn.message.creator,
+            )
+          : undefined;
+    } catch (error) {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      throw error;
+    }
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr = `${stderr}${String(chunk)}`.slice(-4000);
+    });
+    const stream = acp.ndJsonStream(
+      Writable.toWeb(child.stdin),
+      Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
+    );
+    const app = acp.client({ name: "anytype-agent-gateway" });
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      const operation = app.connectWith(stream, async (ctx) => {
+        const initialized = await ctx.request(acp.methods.agent.initialize, {
+          protocolVersion: acp.PROTOCOL_VERSION,
+          clientCapabilities: {},
+        });
+        const additionalDirectories = [
+          ...this.config.allowedProjects,
+          ...(this.config.defaultProject && this.config.defaultProject !== workspacePath
+            ? [this.config.defaultProject]
+            : []),
+        ];
+        const sessionSetup = {
+          cwd: workspacePath ?? process.cwd(),
+          mcpServers: this.mcpServer
+            ? [
+                {
+                  name: "aag-anytype",
+                  command: this.mcpServer.command,
+                  args: this.mcpServer.args,
+                  env: mcpEnvironment(this.mcpServer.env, input.turn, actorFile),
+                },
+              ]
+            : [],
+          ...(additionalDirectories.length ? { additionalDirectories } : {}),
+        };
+        let sessionId = this.store?.codexAcpSession(input.sessionKey);
+        const persistedSessionId = sessionId;
+        let response: { sessionId?: string; configOptions?: unknown[] | null } | undefined;
+        if (sessionId && initialized.agentCapabilities?.loadSession) {
+          try {
+            try {
+              response = await ctx.request(acp.methods.agent.session.load, {
+                ...sessionSetup,
+                sessionId,
+              });
+            } catch (error) {
+              if (!savedSessionInternallyBroken(error)) throw error;
+              await new Promise((resolve) => setTimeout(resolve, 250));
+              response = await ctx.request(acp.methods.agent.session.load, {
+                ...sessionSetup,
+                sessionId,
+              });
+            }
+          } catch (error) {
+            if (!savedSessionUnavailable(error)) throw error;
+            this.store?.deleteCodexAcpSession(input.sessionKey);
+            sessionId = undefined;
+          }
+        }
+        if (!sessionId) {
+          const created = (await ctx.request(acp.methods.agent.session.new, sessionSetup)) as {
+            sessionId: string;
+            configOptions?: unknown[] | null;
+          };
+          response = created;
+          sessionId = created.sessionId;
+        }
+        if (!sessionId) throw new Error("Codex ACP returned no session ID");
+        if (persistedSessionId && sessionId === persistedSessionId) {
+          this.store?.saveCodexAcpSession(input.sessionKey, sessionId);
+          await this.associateDesktopProject(sessionId, input.turn);
+        }
+        const configOptions = response?.configOptions ?? [];
+        const model = findModelConfig(configOptions);
+        const defaultModelId = input.defaultModelId ?? model?.defaultValue ?? model?.currentValue;
+        return {
+          options: model?.options ?? [],
+          ...(model?.currentValue ? { currentModelId: model.currentValue } : {}),
+          ...(defaultModelId ? { defaultModelId } : {}),
+          sessionId,
+        };
+      });
+      const timeoutMs = (this.config.setupTimeoutSeconds ?? 30) * 1000;
+      return await Promise.race([
+        operation,
+        childFailure,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            if (child.exitCode === null) child.kill("SIGTERM");
+            reject(new Error(`Codex model discovery timed out after ${timeoutMs / 1000} seconds`));
+          }, timeoutMs);
+          timeout.unref?.();
+        }),
+      ]);
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}${stderr.trim() ? `; codex-acp stderr: ${stderr.trim()}` : ""}`,
+      );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (child.exitCode === null) child.kill("SIGTERM");
+      if (actorFile) await unlink(actorFile).catch(() => undefined);
+    }
+  }
+
   async start(
-    input: { sessionKey: string; prompt: string; turn?: RuntimeTurn },
+    input: {
+      sessionKey: string;
+      prompt: string;
+      turn?: RuntimeTurn;
+      modelId?: string | null;
+      defaultModelId?: string;
+    },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<ActiveRuntime> {
     const workspacePath = input.turn?.workspacePath ?? this.config.defaultProject;
@@ -94,6 +252,23 @@ export class CodexAcpDriver implements RuntimeDriver {
       env: environment,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    const childFailure = new Promise<never>((_resolve, reject) => child.once("error", reject));
+    void childFailure.catch(() => undefined);
+    let actorFile: string | undefined;
+    try {
+      actorFile =
+        this.mcpServer && input.turn
+          ? await writeActorContext(
+              this.mcpServer.actorDirectory,
+              input.sessionKey,
+              input.turn.message.creator,
+            )
+          : undefined;
+    } catch (error) {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      throw error;
+    }
+    let actorId = input.turn?.message.creator;
     let gracefulTerminationTimer: NodeJS.Timeout | undefined;
     let forceTerminationTimer: NodeJS.Timeout | undefined;
     const clearTerminationTimers = () => {
@@ -136,6 +311,7 @@ export class CodexAcpDriver implements RuntimeDriver {
     );
     let context: ClientCtx | undefined;
     let sessionId: string | undefined;
+    let modelState: RuntimeModelState | undefined;
     let output = "";
     const messageTexts = new Map<string, string>();
     let latestMessageId: string | undefined;
@@ -152,7 +328,6 @@ export class CodexAcpDriver implements RuntimeDriver {
       markReady = resolve;
       failReady = reject;
     });
-    child.once("error", failReady);
     const app = acp
       .client({ name: "anytype-agent-gateway" })
       .onRequest(acp.methods.client.session.requestPermission, (ctx) => {
@@ -233,13 +408,14 @@ export class CodexAcpDriver implements RuntimeDriver {
                     name: "aag-anytype",
                     command: this.mcpServer.command,
                     args: this.mcpServer.args,
-                    env: mcpEnvironment(this.mcpServer.env, input.turn),
+                    env: mcpEnvironment(this.mcpServer.env, input.turn, actorFile),
                   },
                 ]
               : [],
             ...(additionalDirectories.length ? { additionalDirectories } : {}),
           };
           let savedSessionId = this.store?.codexAcpSession(input.sessionKey);
+          let sessionResponse: { sessionId?: string; configOptions?: unknown[] | null } | undefined;
           if (
             !savedSessionId &&
             this.config.desktopProject === "auto" &&
@@ -264,14 +440,14 @@ export class CodexAcpDriver implements RuntimeDriver {
             replayingHistory = true;
             try {
               try {
-                await ctx.request(acp.methods.agent.session.load, {
+                sessionResponse = await ctx.request(acp.methods.agent.session.load, {
                   ...sessionSetup,
                   sessionId: savedSessionId,
                 });
               } catch (error) {
                 if (!savedSessionInternallyBroken(error)) throw error;
                 await new Promise((resolve) => setTimeout(resolve, 250));
-                await ctx.request(acp.methods.agent.session.load, {
+                sessionResponse = await ctx.request(acp.methods.agent.session.load, {
                   ...sessionSetup,
                   sessionId: savedSessionId,
                 });
@@ -296,12 +472,45 @@ export class CodexAcpDriver implements RuntimeDriver {
           if (!sessionId) {
             const session = (await ctx.request(acp.methods.agent.session.new, sessionSetup)) as {
               sessionId: string;
+              configOptions?: unknown[] | null;
             };
             sessionId = session.sessionId;
+            sessionResponse = session;
             this.repeatedInternalLoadFailures.delete(input.sessionKey);
           }
           this.store?.saveCodexAcpSession(input.sessionKey, sessionId);
           await this.associateDesktopProject(sessionId, input.turn);
+          let model = findModelConfig(sessionResponse?.configOptions ?? []);
+          if (model) {
+            const defaultModelId = input.defaultModelId ?? model.defaultValue ?? model.currentValue;
+            modelState = {
+              options: model.options,
+              currentModelId: model.currentValue,
+              ...(defaultModelId ? { defaultModelId } : {}),
+              sessionId,
+            };
+          }
+          if (input.modelId !== undefined) {
+            if (!model)
+              throw new Error("The Codex harness does not expose model selection over ACP");
+            const defaultModelId = input.defaultModelId ?? model.defaultValue ?? model.currentValue;
+            const desired = input.modelId === null ? defaultModelId : input.modelId;
+            if (!desired)
+              throw new Error("The Codex harness did not expose a default model for this session");
+            const resolved = resolveRuntimeModel(model.options, desired);
+            const updated = await ctx.request(acp.methods.agent.session.setConfigOption, {
+              sessionId,
+              configId: model.id,
+              value: resolved.id,
+            });
+            model = findModelConfig(updated.configOptions);
+            modelState = {
+              options: model?.options ?? [],
+              currentModelId: model?.currentValue ?? resolved.id,
+              defaultModelId,
+              sessionId,
+            };
+          }
           markReady();
           try {
             await ctx.request(acp.methods.agent.session.prompt, {
@@ -324,19 +533,28 @@ export class CodexAcpDriver implements RuntimeDriver {
           );
         }
       })
-      .finally(terminateNow);
+      .finally(async () => {
+        terminateNow();
+        if (actorFile) await unlink(actorFile).catch(() => undefined);
+      });
     void result.catch(() => undefined);
     const setupSeconds =
       this.config.setupTimeoutSeconds ??
       (this.config.timeoutSeconds > 0 ? Math.min(this.config.timeoutSeconds, 30) : 30);
-    await waitForSetup(ready, setupSeconds * 1000, terminateNow);
+    await waitForSetup(Promise.race([ready, childFailure]), setupSeconds * 1000, terminateNow);
     return {
       sessionKey: input.sessionKey,
       ...(sessionId ? { sessionId } : {}),
+      ...(modelState ? { modelState } : {}),
       result,
-      steer: async (message) => {
+      steer: async (message, turn) => {
         if (!context || !sessionId) throw new Error("Codex ACP session is not ready");
         if (!acceptingSteers) throw new RuntimeTurnAlreadyCompletedError();
+        if (actorFile && turn) {
+          const nextActorId = turn.message.creator;
+          actorId = actorId && nextActorId && actorId === nextActorId ? actorId : undefined;
+          await writeActorFile(actorFile, actorId);
+        }
         await context.request("_session/steering", {
           sessionId,
           prompt: [{ type: "text", text: message }],
@@ -450,6 +668,7 @@ function stringifyErrorData(data: unknown): string {
 function mcpEnvironment(
   configured: Record<string, string> | undefined,
   turn: RuntimeTurn | undefined,
+  actorFile?: string,
 ): Array<{ name: string; value: string }> {
   const environment: Record<string, string> = {};
   for (const [name, value] of Object.entries(configured ?? {})) {
@@ -459,8 +678,81 @@ function mcpEnvironment(
   if (turn) {
     environment.AAG_ROUTE_ID = turn.conversation.routeId;
     environment.AAG_SPACE_ID = turn.conversation.spaceId;
+    if (actorFile) environment.AAG_ACTOR_FILE = actorFile;
+    if (turn.conversation.discussionRootId)
+      environment.AAG_DISCUSSION_ROOT_ID = turn.conversation.discussionRootId;
   }
   return Object.entries(environment).map(([name, value]) => ({ name, value }));
+}
+
+async function writeActorContext(
+  actorDirectory: string,
+  sessionKey: string,
+  actorId?: string,
+): Promise<string> {
+  const name = `${createHash("sha256").update(sessionKey).digest("hex").slice(0, 20)}.json`;
+  const path = join(actorDirectory, name);
+  await writeActorFile(path, actorId);
+  return path;
+}
+
+async function writeActorFile(path: string, actorId?: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
+  await writeFile(temporary, `${JSON.stringify({ actorId: actorId ?? "" })}\n`, { mode: 0o600 });
+  await rename(temporary, path);
+}
+
+function findModelConfig(configOptions: unknown[]):
+  | {
+      id: string;
+      currentValue: string;
+      defaultValue?: string;
+      options: RuntimeModelOption[];
+    }
+  | undefined {
+  const candidate = configOptions.find((option) => {
+    const value = option as Record<string, unknown>;
+    return value.type === "select" && (value.category === "model" || value.id === "model");
+  }) as Record<string, unknown> | undefined;
+  if (!candidate || typeof candidate.id !== "string" || typeof candidate.currentValue !== "string")
+    return undefined;
+  const raw = Array.isArray(candidate.options) ? candidate.options : [];
+  const values = raw.flatMap((entry) => {
+    const value = entry as Record<string, unknown>;
+    if (Array.isArray(value.options)) return value.options as unknown[];
+    return [entry];
+  });
+  const options = values.flatMap((entry) => {
+    const value = entry as Record<string, unknown>;
+    if (typeof value.value !== "string") return [];
+    return [
+      {
+        id: value.value,
+        name: typeof value.name === "string" ? value.name : value.value,
+        ...(typeof value.description === "string" ? { description: value.description } : {}),
+      },
+    ];
+  });
+  return {
+    id: candidate.id,
+    currentValue: candidate.currentValue,
+    ...(typeof candidate.defaultValue === "string" ? { defaultValue: candidate.defaultValue } : {}),
+    options,
+  };
+}
+
+function resolveRuntimeModel(options: RuntimeModelOption[], requested: string): RuntimeModelOption {
+  const exact = options.find((option) => option.id === requested);
+  if (exact) return exact;
+  const folded = requested.toLocaleLowerCase();
+  const matches = options.filter(
+    (option) =>
+      option.id.toLocaleLowerCase() === folded || option.name.toLocaleLowerCase() === folded,
+  );
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) throw new Error(`Model name is ambiguous: ${requested}`);
+  throw new Error(`Unknown model: ${requested}`);
 }
 
 function stripLeadingSkillWarning(text: string): string {

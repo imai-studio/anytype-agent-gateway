@@ -7,6 +7,7 @@ import {
   preparePrompt,
 } from "./context.js";
 import { renderForAnytype, RunProjection, type ProjectionCycleSnapshot } from "./projection.js";
+import { modelAllowed, parseModelCommand, type ModelCommand } from "./model-command.js";
 import { Store } from "./store.js";
 import type { AgentRuntime } from "./session-types.js";
 import type {
@@ -129,12 +130,50 @@ export class AgentController {
     const threadKey = thread.key;
     const replyTargetId = conversation.kind === "discussion" ? thread.rootId : message.id;
     const projectionReplyTargetId = conversation.kind === "discussion" ? replyTargetId : undefined;
-    const newSession = isNewSessionCommand(message.content?.text ?? "");
     const hop = decision.isAgent ? await this.agentHop(conversation, message) : 0;
     if (hop > this.config.coordination.maxHops) {
       this.log("hop_limit", { routeId: conversation.routeId, hop });
       return;
     }
+    const modelCommand = parseModelCommand(
+      modelCommandText(
+        message,
+        [this.config.agent.name, ...this.config.agent.aliases],
+        conversation.selfParticipantId ?? this.config.agent.participantId,
+      ),
+    );
+    if (modelCommand) {
+      const since = Date.now() - this.config.coordination.windowSeconds * 1000;
+      const recent =
+        this.store.recentActivations(conversation.routeId, threadKey, since) +
+        this.store.recentControlActivations(conversation.routeId, threadKey, since);
+      if (recent >= this.config.coordination.maxActivationsPerThread) {
+        this.log("activation_circuit_open", { routeId: conversation.routeId, recent });
+        return;
+      }
+      try {
+        const handled = await this.handleModelCommand(
+          threadConversation,
+          message,
+          threadKey,
+          replyTargetId,
+          modelCommand,
+        );
+        if (handled) {
+          this.store.recordControlActivation(conversation.routeId, threadKey);
+          return;
+        }
+      } catch (error) {
+        await this.sendControlMessage(
+          threadConversation,
+          replyTargetId,
+          `Could not change the model: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        this.store.recordControlActivation(conversation.routeId, threadKey);
+        return;
+      }
+    }
+    const newSession = isNewSessionCommand(message.content?.text ?? "");
     const active = this.active.get(threadKey);
     if (active) {
       if (newSession) {
@@ -379,23 +418,117 @@ export class AgentController {
         { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId },
       );
       const workspacePath = this.store.sessionWorkspace(threadKey);
-      const handle = await this.runtime.start(
-        {
-          sessionKey,
-          prompt,
-          turn: {
-            conversation,
-            message,
-            replyTargetId,
-            ...(message.mentioned === undefined ? {} : { wasMentioned: message.mentioned }),
-            ...(workspacePath ? { workspacePath } : {}),
-          },
-        },
-        (event) => {
-          lastActivityAt = Date.now();
-          if (!resetOnly) projection.onEvent(event);
-        },
+      const turn = {
+        conversation,
+        message,
+        replyTargetId,
+        ...(message.mentioned === undefined ? {} : { wasMentioned: message.mentioned }),
+        ...(workspacePath ? { workspacePath } : {}),
+      };
+      const runtimeName = this.runtimeName();
+      const modelState = this.store.conversationModel(threadKey, runtimeName);
+      const requestedAllowed = Boolean(
+        modelState?.requestedModelId &&
+        modelAllowed(modelState.requestedModelId, this.config.models.allowed),
       );
+      const hasNativeOverride = Boolean(
+        modelState?.requestedModelId ||
+        modelState?.useDefault ||
+        (modelState?.appliedModelId &&
+          (!modelState.defaultModelId || modelState.appliedModelId !== modelState.defaultModelId)),
+      );
+      const modelRevocationPending = Boolean(
+        modelState &&
+        hasNativeOverride &&
+        (!this.config.models.enabled || (modelState.requestedModelId && !requestedAllowed)),
+      );
+      const modelPending = Boolean(
+        modelRevocationPending ||
+        (this.config.models.enabled &&
+          (modelState?.useDefault ||
+            (modelState?.requestedModelId &&
+              requestedAllowed &&
+              (modelState.appliedModelId !== modelState.requestedModelId ||
+                modelState.appliedGeneration !== generation)))),
+      );
+      let handle: ActiveRuntime;
+      try {
+        handle = await this.runtime.start(
+          {
+            sessionKey,
+            prompt,
+            turn,
+            ...(modelPending
+              ? { modelId: modelRevocationPending ? null : (modelState?.requestedModelId ?? null) }
+              : {}),
+            ...(modelPending && modelState?.defaultModelId
+              ? { defaultModelId: modelState.defaultModelId }
+              : {}),
+          },
+          (event) => {
+            lastActivityAt = Date.now();
+            if (!resetOnly) projection.onEvent(event);
+          },
+        );
+      } catch (error) {
+        if (!modelPending || !modelState) throw error;
+        if (modelSelectionRejected(error) && !modelRevocationPending) {
+          this.store.saveConversationModel({
+            threadKey,
+            runtime: runtimeName,
+            ...(modelState.appliedGeneration === undefined
+              ? {}
+              : { appliedGeneration: modelState.appliedGeneration }),
+            ...(modelState.appliedModelId ? { appliedModelId: modelState.appliedModelId } : {}),
+            ...(modelState.defaultModelId ? { defaultModelId: modelState.defaultModelId } : {}),
+            catalog: modelState.catalog,
+            ...(modelState.updatedBy ? { updatedBy: modelState.updatedBy } : {}),
+          });
+          throw new Error(
+            `The selected model was rejected and cleared: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        throw new Error(
+          `${modelRevocationPending ? "The previous model override could not be revoked" : "The selected model could not be applied"}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (modelPending && modelState && handle.modelState) {
+        this.store.saveConversationModel({
+          threadKey,
+          runtime: runtimeName,
+          ...(!modelRevocationPending && modelState.requestedModelId
+            ? { requestedModelId: modelState.requestedModelId }
+            : {}),
+          useDefault: false,
+          appliedGeneration: generation,
+          ...(handle.modelState.currentModelId
+            ? { appliedModelId: handle.modelState.currentModelId }
+            : {}),
+          ...((modelState.defaultModelId ?? handle.modelState.defaultModelId)
+            ? { defaultModelId: modelState.defaultModelId ?? handle.modelState.defaultModelId }
+            : {}),
+          catalog: this.allowedModels(handle.modelState.options),
+          ...(modelState.updatedBy ? { updatedBy: modelState.updatedBy } : {}),
+        });
+      } else if (this.config.models.enabled && handle.modelState) {
+        const appliedModelId = handle.modelState.currentModelId ?? modelState?.appliedModelId;
+        const defaultModelId = modelState?.defaultModelId ?? handle.modelState.defaultModelId;
+        this.store.saveConversationModel({
+          threadKey,
+          runtime: runtimeName,
+          ...(modelState?.requestedModelId
+            ? { requestedModelId: modelState.requestedModelId }
+            : {}),
+          ...(modelState?.useDefault ? { useDefault: true } : {}),
+          ...(modelState?.appliedGeneration === undefined
+            ? {}
+            : { appliedGeneration: modelState.appliedGeneration }),
+          ...(appliedModelId ? { appliedModelId } : {}),
+          ...(defaultModelId ? { defaultModelId } : {}),
+          catalog: this.allowedModels(handle.modelState.options),
+          ...(modelState?.updatedBy ? { updatedBy: modelState.updatedBy } : {}),
+        });
+      }
       startedHandle = handle;
       void handle.result.catch(() => undefined);
       const active: ActiveRun = {
@@ -475,6 +608,230 @@ export class AgentController {
     await active.handle.cancel().catch(() => undefined);
     await active.projection.interrupt("Agent session replaced by /new.").catch(() => undefined);
     this.store.finishRun(active.id, "cancelled");
+  }
+
+  private async handleModelCommand(
+    conversation: ConversationRef,
+    message: ChatMessage,
+    threadKey: string,
+    replyTargetId: string,
+    command: ModelCommand,
+  ): Promise<boolean> {
+    if (!this.config.models.enabled || !this.runtime.capabilities.modelSelection) {
+      return false;
+    }
+    if (!this.runtime.configureModel) {
+      return false;
+    }
+    const runtimeName = this.runtimeName();
+    let existing = this.store.conversationModel(threadKey, runtimeName);
+    if (command.kind === "new") {
+      if (!this.canChangeModel(message.creator)) {
+        await this.sendControlMessage(
+          conversation,
+          replyTargetId,
+          "You are not allowed to change this agent's model.",
+        );
+        return false;
+      }
+      if (!existing?.catalog.length) {
+        const generation = this.store.sessionGeneration(threadKey) + 1;
+        const sessionKey = `aag:${threadKey}:g${generation}`;
+        const workspacePath = this.store.sessionWorkspace(threadKey);
+        const discovered = await this.runtime.configureModel({
+          sessionKey,
+          turn: {
+            conversation,
+            message,
+            replyTargetId,
+            ...(workspacePath ? { workspacePath } : {}),
+          },
+        });
+        existing = this.store.saveConversationModel({
+          threadKey,
+          runtime: runtimeName,
+          ...(discovered.currentModelId ? { appliedModelId: discovered.currentModelId } : {}),
+          ...(discovered.defaultModelId ? { defaultModelId: discovered.defaultModelId } : {}),
+          catalog: this.allowedModels(discovered.options),
+        });
+      }
+      const requested = this.resolveModel(existing.catalog, command.model);
+      if (!requested || !modelAllowed(requested, this.config.models.allowed)) {
+        await this.sendControlMessage(conversation, replyTargetId, "That model is not allowed.");
+        return true;
+      }
+      this.store.saveConversationModel({
+        threadKey,
+        runtime: runtimeName,
+        requestedModelId: requested,
+        useDefault: false,
+        ...(existing?.appliedModelId ? { appliedModelId: existing.appliedModelId } : {}),
+        ...(existing?.appliedGeneration === undefined
+          ? {}
+          : { appliedGeneration: existing.appliedGeneration }),
+        ...(existing?.defaultModelId ? { defaultModelId: existing.defaultModelId } : {}),
+        catalog: existing?.catalog ?? [],
+        ...(message.creator ? { updatedBy: message.creator } : {}),
+      });
+      return false;
+    }
+    const active = this.active.get(threadKey);
+    if (
+      (command.kind === "set" || command.kind === "reset") &&
+      !this.canChangeModel(message.creator)
+    ) {
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        "You are not allowed to change this agent's model.",
+      );
+      return true;
+    }
+    const generation = this.store.sessionGeneration(threadKey);
+    const sessionKey =
+      this.store.sessionBinding(threadKey)?.nativeSessionKey ??
+      (generation === 0 ? `aag:${threadKey}` : `aag:${threadKey}:g${generation}`);
+    const workspacePath = this.store.sessionWorkspace(threadKey);
+    const turn = {
+      conversation,
+      message,
+      replyTargetId,
+      ...(workspacePath ? { workspacePath } : {}),
+    };
+    let state = existing;
+    if (
+      !active &&
+      (command.kind === "list" || command.kind === "status" || !state?.catalog.length)
+    ) {
+      const discovered = await this.runtime.configureModel({ sessionKey, turn });
+      const appliedModelId = discovered.currentModelId ?? existing?.appliedModelId;
+      state = this.store.saveConversationModel({
+        threadKey,
+        runtime: runtimeName,
+        ...(existing?.requestedModelId ? { requestedModelId: existing.requestedModelId } : {}),
+        ...(existing?.useDefault ? { useDefault: true } : {}),
+        ...(existing?.appliedGeneration === undefined
+          ? {}
+          : { appliedGeneration: existing.appliedGeneration }),
+        ...(appliedModelId ? { appliedModelId } : {}),
+        ...((existing?.defaultModelId ?? discovered.defaultModelId)
+          ? { defaultModelId: existing?.defaultModelId ?? discovered.defaultModelId }
+          : {}),
+        catalog: this.allowedModels(discovered.options),
+        ...(existing?.updatedBy ? { updatedBy: existing.updatedBy } : {}),
+      });
+    } else if (active && !state?.catalog.length) {
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        "Models can be listed after the current run finishes.",
+      );
+      return true;
+    }
+    if (command.kind === "list") {
+      const options = state?.catalog ?? [];
+      const lines = options.map(
+        (option, index) =>
+          `${index + 1}. ${option.name} — ${option.id}${option.id === state?.appliedModelId ? " (current)" : ""}`,
+      );
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        lines.length
+          ? `Available models:\n${lines.join("\n")}`
+          : "No allowed models were reported.",
+      );
+      return true;
+    }
+    if (command.kind === "status") {
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        `Current model: ${state?.appliedModelId ?? state?.requestedModelId ?? "harness default"}`,
+      );
+      return true;
+    }
+    const requested =
+      command.kind === "reset" ? undefined : this.resolveModel(state?.catalog ?? [], command.model);
+    if (command.kind === "set" && !requested) {
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        "Unknown or unavailable model. Use /models to list the allowed choices.",
+      );
+      return true;
+    }
+    if (requested && !modelAllowed(requested, this.config.models.allowed)) {
+      await this.sendControlMessage(conversation, replyTargetId, "That model is not allowed.");
+      return true;
+    }
+    this.store.saveConversationModel({
+      threadKey,
+      runtime: runtimeName,
+      ...(requested ? { requestedModelId: requested } : {}),
+      useDefault: !requested,
+      ...(state?.appliedGeneration === undefined
+        ? {}
+        : { appliedGeneration: state.appliedGeneration }),
+      ...(state?.appliedModelId ? { appliedModelId: state.appliedModelId } : {}),
+      ...(state?.defaultModelId ? { defaultModelId: state.defaultModelId } : {}),
+      catalog: state?.catalog ?? [],
+      ...(message.creator ? { updatedBy: message.creator } : {}),
+    });
+    await this.sendControlMessage(
+      conversation,
+      replyTargetId,
+      requested
+        ? `Model selected: ${requested}. It applies to the next turn${active ? " after the current run" : ""}.`
+        : `The harness default model will apply to the next turn${active ? " after the current run" : ""}.`,
+    );
+    return true;
+  }
+
+  private canChangeModel(actorId?: string): boolean {
+    return Boolean(
+      actorId &&
+      this.config.management.allowModelChanges &&
+      this.config.management.modelAdmins.some((admin) => sameParticipant(actorId, admin)),
+    );
+  }
+
+  private allowedModels<T extends { id: string }>(options: T[]): T[] {
+    return options.filter((option) => modelAllowed(option.id, this.config.models.allowed));
+  }
+
+  private resolveModel(
+    options: Array<{ id: string; name: string }>,
+    requested: string,
+  ): string | undefined {
+    if (/^\d+$/.test(requested)) return options[Number(requested) - 1]?.id;
+    const exact = options.find((option) => option.id === requested);
+    if (exact) return exact.id;
+    const folded = requested.toLocaleLowerCase();
+    const matches = options.filter(
+      (option) =>
+        option.id.toLocaleLowerCase() === folded || option.name.toLocaleLowerCase() === folded,
+    );
+    return matches.length === 1 ? matches[0]!.id : undefined;
+  }
+
+  private async sendControlMessage(
+    conversation: ConversationRef,
+    replyTargetId: string,
+    text: string,
+  ): Promise<void> {
+    const rendered = renderForAnytype(text, this.config);
+    const messageId = await this.port(conversation).sendMessage(
+      conversation.spaceId,
+      conversation.chatId,
+      {
+        text: rendered.text,
+        marks: rendered.marks,
+        attachments: rendered.attachments,
+        ...(conversation.kind === "discussion" ? { replyTo: replyTargetId } : {}),
+      },
+    );
+    this.store.markControlMessage(messageId);
   }
 
   private steerPrompt(message: ChatMessage): string {
@@ -927,6 +1284,49 @@ function mentionTargetsFrom(message: ChatMessage): Array<{ name: string; partici
 
 function isTurnAlreadyCompleted(error: unknown): boolean {
   return error instanceof Error && error.name === "RuntimeTurnAlreadyCompletedError";
+}
+
+function modelSelectionRejected(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).split(
+    "; codex-acp stderr:",
+    1,
+  )[0]!;
+  const rejection = "unknown|invalid|unsupported|unavailable|not (?:found|allowed|available)";
+  return new RegExp(
+    `(?:\\bmodel\\b[^\\n]*\\b(?:${rejection})\\b|\\b(?:${rejection})\\b[^\\n]*\\bmodel\\b)`,
+    "i",
+  ).test(message);
+}
+
+function modelCommandText(
+  message: ChatMessage,
+  agentNames: string[],
+  selfParticipantId: string,
+): string {
+  const text = message.content?.text ?? "";
+  const leading = (message.content?.marks ?? [])
+    .filter(
+      (mark) =>
+        mark.type === "mention" &&
+        typeof mark.param === "string" &&
+        sameParticipant(mark.param, selfParticipantId) &&
+        typeof mark.from === "number" &&
+        typeof mark.to === "number" &&
+        text.slice(0, mark.from).trim().length === 0,
+    )
+    .sort((left, right) => (left.from ?? 0) - (right.from ?? 0));
+  let end = 0;
+  for (const mark of leading) {
+    if ((mark.from ?? 0) > end && text.slice(end, mark.from).trim()) break;
+    end = Math.max(end, mark.to ?? end);
+  }
+  const withoutStructuredMention = text.slice(end).trim();
+  for (const name of agentNames) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = new RegExp(`^@?${escaped}(?:[,:])?\\s+`, "i").exec(withoutStructuredMention);
+    if (match) return withoutStructuredMention.slice(match[0].length).trim();
+  }
+  return withoutStructuredMention;
 }
 
 function sameParticipant(left: string | undefined, right: string): boolean {

@@ -1,4 +1,4 @@
-import { access, constants, realpath, stat } from "node:fs/promises";
+import { access, constants, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { AnytypeClient } from "./anytype-client.js";
@@ -6,8 +6,10 @@ import { createBoundCodexChat } from "./bound-chat.js";
 import { createCodexTask } from "./codex-task.js";
 import { loadConfig, type AgentConfig } from "./config.js";
 import { setRouteAccess, setRouteWake } from "./management.js";
+import { modelAllowed } from "./model-command.js";
 import { Store } from "./store.js";
 import { VERSION } from "./version.js";
+import { sameIdentity } from "./wake.js";
 
 type Request = {
   jsonrpc?: string;
@@ -50,7 +52,9 @@ export async function runMcpServer(
     throw new Error("All AAG tools are disabled in this configuration");
   const anytype = await AnytypeClient.create(config);
   const routeId = context.routeId ?? process.env.AAG_ROUTE_ID;
-  const actorId = context.actorId ?? process.env.AAG_ACTOR_ID;
+  const configuredActorId = context.actorId ?? process.env.AAG_ACTOR_ID;
+  const actorFile = process.env.AAG_ACTOR_FILE;
+  const discussionRootId = process.env.AAG_DISCUSSION_ROOT_ID;
   const defaultSpaceId =
     context.spaceId ??
     process.env.AAG_SPACE_ID ??
@@ -79,6 +83,7 @@ export async function runMcpServer(
       else if (request.method === "tools/list") result = { tools };
       else if (request.method === "tools/call") {
         try {
+          const actorId = await currentActorId(configuredActorId, actorFile);
           const value = await callTool(
             anytype,
             config,
@@ -88,6 +93,7 @@ export async function runMcpServer(
             String(request.params?.name ?? ""),
             request.params?.arguments ?? {},
             actorId,
+            discussionRootId,
           );
           result = { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
         } catch (error) {
@@ -108,6 +114,19 @@ export async function runMcpServer(
         error: { code: rpc.code ?? -32000, message: rpc.message },
       });
     }
+  }
+}
+
+async function currentActorId(
+  configuredActorId: string | undefined,
+  actorFile: string | undefined,
+): Promise<string | undefined> {
+  if (!actorFile) return configuredActorId;
+  try {
+    const value = JSON.parse(await readFile(actorFile, "utf8")) as { actorId?: unknown };
+    return typeof value.actorId === "string" && value.actorId ? value.actorId : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -260,6 +279,36 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
           },
         ]
       : []),
+    ...(config.models.enabled
+      ? [
+          {
+            name: "aag_list_models",
+            description:
+              "List the harness models cached for this Anytype conversation and its current selection.",
+            inputSchema: objectSchema({
+              route_id: stringSchema(),
+              discussion_root_id: stringSchema(),
+            }),
+          },
+        ]
+      : []),
+    ...(config.models.enabled && config.management.allowModelChanges
+      ? [
+          {
+            name: "aag_set_model",
+            description:
+              "Select a cached native harness model for this conversation. The selection applies on the next turn. Use model_id=default to restore the harness default.",
+            inputSchema: objectSchema(
+              {
+                route_id: stringSchema(),
+                discussion_root_id: stringSchema(),
+                model_id: stringSchema("Exact model ID from aag_list_models, or default"),
+              },
+              ["model_id"],
+            ),
+          },
+        ]
+      : []),
   ];
   const codexTools: Tool[] = config.tools.codex.enabled
     ? [
@@ -399,6 +448,7 @@ export async function callTool(
   name: string,
   input: Record<string, any>,
   boundActorId?: string,
+  boundDiscussionRootId?: string,
 ): Promise<unknown> {
   const requestedRouteId =
     typeof input.route_id === "string" && input.route_id ? baseRoute(input.route_id) : undefined;
@@ -423,6 +473,7 @@ export async function callTool(
         archive: config.tools.anytype.allowArchive,
         wake_changes: config.management.allowWakeChanges,
         access_changes: config.management.allowAccessChanges,
+        model_changes: config.management.allowModelChanges,
         file_roots: config.tools.anytype.allowedFileRoots,
       },
       response_format:
@@ -437,6 +488,79 @@ export async function callTool(
         typeof input.discussion_root_id === "string" ? input.discussion_root_id : undefined,
       ),
     };
+  if (name === "aag_list_models" || name === "aag_set_model") {
+    if (!config.models.enabled) throw new Error("Model selection is disabled");
+    if (!effectiveRouteId)
+      throw new Error("route_id is required because this MCP process has no bound Anytype route");
+    const routeSpaceId = spaceFromRoute(effectiveRouteId);
+    if (!routeSpaceId) throw new Error("The Anytype route does not contain a valid space ID");
+    assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
+    const requestedDiscussionRoot =
+      typeof input.discussion_root_id === "string" ? input.discussion_root_id : undefined;
+    if (
+      boundDiscussionRootId &&
+      requestedDiscussionRoot &&
+      requestedDiscussionRoot !== boundDiscussionRootId
+    )
+      throw new Error("discussion_root_id must match the current Anytype discussion");
+    const discussionRoot = boundDiscussionRootId ?? requestedDiscussionRoot;
+    const threadKey = effectiveRouteId.startsWith("discussion:")
+      ? discussionRoot
+        ? `${effectiveRouteId}:root:${discussionRoot}`
+        : undefined
+      : effectiveRouteId;
+    if (!threadKey) throw new Error("discussion_root_id is required for discussion model settings");
+    const store = new Store(config.state.path);
+    try {
+      const runtime = config.runtime.kind === "openclaw" ? "openclaw" : "codex-acp";
+      const current = store.conversationModel(threadKey, runtime);
+      if (name === "aag_list_models")
+        return {
+          thread_key: threadKey,
+          current_model: current?.appliedModelId ?? current?.requestedModelId ?? "harness default",
+          requested_model: current?.requestedModelId ?? null,
+          models: current?.catalog ?? [],
+        };
+      if (!config.management.allowModelChanges) throw new Error("Model changes are disabled");
+      if (
+        !boundActorId ||
+        !config.management.modelAdmins.some((admin) => sameIdentity(admin, boundActorId))
+      )
+        throw new Error("The current Anytype sender is not allowed to change models");
+      const requested = required(input, "model_id");
+      const reset = /^(?:default|reset)$/i.test(requested);
+      const resolved = reset
+        ? undefined
+        : current?.catalog.find(
+            (model) =>
+              model.id === requested ||
+              model.name.toLocaleLowerCase() === requested.toLocaleLowerCase(),
+          )?.id;
+      if (!reset && !resolved) throw new Error("Use an exact model from aag_list_models");
+      if (resolved && !modelAllowed(resolved, config.models.allowed))
+        throw new Error("That model is not allowed");
+      const saved = store.saveConversationModel({
+        threadKey,
+        runtime: config.runtime.kind === "openclaw" ? "openclaw" : "codex-acp",
+        ...(resolved ? { requestedModelId: resolved } : {}),
+        useDefault: reset,
+        ...(current?.appliedGeneration === undefined
+          ? {}
+          : { appliedGeneration: current.appliedGeneration }),
+        ...(current?.appliedModelId ? { appliedModelId: current.appliedModelId } : {}),
+        ...(current?.defaultModelId ? { defaultModelId: current.defaultModelId } : {}),
+        catalog: current?.catalog ?? [],
+        updatedBy: boundActorId,
+      });
+      return {
+        thread_key: threadKey,
+        requested_model: saved.requestedModelId ?? "harness default",
+        applies: "next turn",
+      };
+    } finally {
+      store.close();
+    }
+  }
   if (name === "aag_set_wake") {
     if (!config.management.allowWakeChanges) throw new Error("Wake changes are disabled");
     if (!effectiveRouteId)
@@ -460,12 +584,13 @@ export async function callTool(
     if (!routeSpaceId) throw new Error("route_id does not contain a valid Anytype space");
     assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
     const requestedActorId = required(input, "actor_id");
-    if (boundActorId && requestedActorId !== boundActorId)
+    if (!boundActorId) throw new Error("The current Anytype sender could not be verified");
+    if (requestedActorId !== boundActorId)
       throw new Error("actor_id must match the current Anytype sender");
     const allowedUsers = await setRouteAccess({
       configPath,
       routeId: effectiveRouteId,
-      actorId: boundActorId ?? requestedActorId,
+      actorId: boundActorId,
       operation: String(input.operation),
       participantIds: requiredArray(input, "participant_ids"),
     });

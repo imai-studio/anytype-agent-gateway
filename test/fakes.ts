@@ -6,6 +6,7 @@ import type {
   ChatMessage,
   RuntimeDriver,
   RuntimeEvent,
+  RuntimeModelState,
   RuntimeResult,
   TextMark,
 } from "../src/types.js";
@@ -131,29 +132,58 @@ export class FakeRuntime implements RuntimeDriver {
     multipleOutputParts: true,
     sessionObservation: false,
     nativeScheduling: false,
+    modelSelection: true,
   } as const;
   starts: Array<{ sessionKey: string; prompt: string }> = [];
   steers: string[] = [];
   events?: (event: RuntimeEvent) => void;
   current = deferred();
+  model = "default-model";
+  modelConfigurations: Array<string | null | undefined> = [];
   async doctor(): Promise<string[]> {
     return ["fake"];
   }
   async start(
-    input: { sessionKey: string; prompt: string },
+    input: { sessionKey: string; prompt: string; modelId?: string | null },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<ActiveRuntime> {
     this.current = deferred();
     this.starts.push(input);
+    if (input.modelId !== undefined) {
+      this.modelConfigurations.push(input.modelId);
+      this.model = input.modelId ?? "default-model";
+    }
+    const modelState: RuntimeModelState = {
+      options: [
+        { id: "default-model", name: "Default" },
+        { id: "fast-model", name: "Fast" },
+      ],
+      currentModelId: this.model,
+      defaultModelId: "default-model",
+    };
     this.events = onEvent;
     return {
       result: this.current.promise,
+      modelState,
       steer: async (message) => {
         this.steers.push(message);
       },
       cancel: async () => {
         this.current.resolve({ text: "cancelled" });
       },
+    };
+  }
+  async configureModel(input: { modelId?: string | null }): Promise<RuntimeModelState> {
+    this.modelConfigurations.push(input.modelId);
+    if (input.modelId === null) this.model = "default-model";
+    else if (input.modelId) this.model = input.modelId;
+    return {
+      options: [
+        { id: "default-model", name: "Default" },
+        { id: "fast-model", name: "Fast" },
+      ],
+      currentModelId: this.model,
+      defaultModelId: "default-model",
     };
   }
   finish(value: RuntimeResult): void {

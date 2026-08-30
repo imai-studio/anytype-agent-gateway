@@ -92,6 +92,70 @@ describe("AAG Anytype MCP policy", () => {
     expect(JSON.stringify(result)).not.toContain("/private/key");
   });
 
+  it("pins model changes to the bound discussion and authorized sender", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aag-mcp-model-"));
+    const statePath = join(directory, "state.sqlite");
+    const threadKey = "discussion:space-1:discussion:root:root-1";
+    const store = new Store(statePath);
+    store.saveConversationModel({
+      threadKey,
+      runtime: "codex-acp",
+      appliedModelId: "gpt-default",
+      defaultModelId: "gpt-default",
+      catalog: [
+        { id: "gpt-default", name: "Default" },
+        { id: "gpt-fast", name: "Fast" },
+      ],
+    });
+    store.close();
+    const configured = config({
+      state: { path: statePath },
+      models: { enabled: true, allowed: ["*"] },
+      management: { allowModelChanges: true, modelAdmins: ["owner"] },
+    });
+
+    await expect(
+      callTool(
+        client(),
+        configured,
+        "/config.yaml",
+        "discussion:space-1:discussion",
+        "space-1",
+        "aag_set_model",
+        { model_id: "gpt-fast", discussion_root_id: "root-2" },
+        "owner",
+        "root-1",
+      ),
+    ).rejects.toThrow("must match the current Anytype discussion");
+    await expect(
+      callTool(
+        client(),
+        configured,
+        "/config.yaml",
+        "discussion:space-1:discussion",
+        "space-1",
+        "aag_set_model",
+        { model_id: "gpt-fast" },
+        "intruder",
+        "root-1",
+      ),
+    ).rejects.toThrow("not allowed");
+    await expect(
+      callTool(
+        client(),
+        configured,
+        "/config.yaml",
+        "discussion:space-1:discussion",
+        "space-1",
+        "aag_set_model",
+        { model_id: "gpt-fast" },
+        "owner",
+        "root-1",
+      ),
+    ).resolves.toMatchObject({ requested_model: "gpt-fast", applies: "next turn" });
+    await rm(directory, { recursive: true, force: true });
+  });
+
   it("describes a native OpenClaw command job bound to the current chat session", async () => {
     const directory = await mkdtemp(join(tmpdir(), "aag-mcp-schedule-"));
     const statePath = join(directory, "state.sqlite");
@@ -510,6 +574,23 @@ describe("AAG Anytype MCP policy", () => {
         "actual-sender",
       ),
     ).rejects.toThrow("must match the current Anytype sender");
+  });
+
+  it("fails closed when participant access changes have no verified sender", async () => {
+    const managed = config({
+      management: { allowAccessChanges: true, accessAdmins: ["admin"] },
+    });
+    await expect(
+      callTool(
+        client(),
+        managed,
+        "/config.yaml",
+        "chat:space-1:current-chat",
+        "space-1",
+        "aag_set_access",
+        { actor_id: "admin", operation: "add", participant_ids: ["member"] },
+      ),
+    ).rejects.toThrow("could not be verified");
   });
 
   it("keeps archive independent from general write permission", async () => {

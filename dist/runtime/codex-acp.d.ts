@@ -1,10 +1,11 @@
 import type { AgentConfig } from "../config.js";
 import type { Store } from "../store.js";
-import type { ActiveRuntime, RuntimeDriver, RuntimeEvent, RuntimeTurn } from "../types.js";
+import type { ActiveRuntime, RuntimeDriver, RuntimeEvent, RuntimeModelState, RuntimeTurn } from "../types.js";
 type CodexSessionStore = Pick<Store, "codexAcpSession" | "saveCodexAcpSession" | "deleteCodexAcpSession">;
 type McpServerCommand = {
     command: string;
     args: string[];
+    actorDirectory: string;
     env?: Record<string, string>;
 };
 type CodexRuntimeConfig = Extract<AgentConfig["runtime"], {
@@ -28,15 +29,24 @@ export declare class CodexAcpDriver implements RuntimeDriver {
         readonly multipleOutputParts: true;
         readonly sessionObservation: false;
         readonly nativeScheduling: false;
+        readonly modelSelection: true;
     };
     private readonly repeatedInternalLoadFailures;
     private readonly hydratedDesktopSessions;
     constructor(config: CodexDriverConfig, store?: CodexSessionStore | undefined, mcpServer?: McpServerCommand | undefined, agentName?: string | undefined);
     doctor(): Promise<string[]>;
+    configureModel(input: {
+        sessionKey: string;
+        turn?: RuntimeTurn;
+        modelId?: string | null;
+        defaultModelId?: string;
+    }): Promise<RuntimeModelState>;
     start(input: {
         sessionKey: string;
         prompt: string;
         turn?: RuntimeTurn;
+        modelId?: string | null;
+        defaultModelId?: string;
     }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;
     private associateDesktopProject;
     private hydrateDesktopProject;

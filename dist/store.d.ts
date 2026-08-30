@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { AgentRuntime, OutboundItem, OutboundOperation, OutputCycle, OutputCyclePhase, OutputCycleState, ProactiveDelivery, RuntimeCapabilities, SessionBinding, SessionBindingState } from "./session-types.js";
+import type { AgentRuntime, ConversationModelState, OutboundItem, OutboundOperation, OutputCycle, OutputCyclePhase, OutputCycleState, ProactiveDelivery, RuntimeCapabilities, SessionBinding, SessionBindingState } from "./session-types.js";
 export declare class Store {
     readonly db: DatabaseSync;
     constructor(path: string);
@@ -8,6 +8,8 @@ export declare class Store {
     private migrateToVersion1;
     private migrateToVersion2;
     private migrateToVersion3;
+    private migrateToVersion4;
+    private migrateToVersion5;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;
@@ -25,6 +27,7 @@ export declare class Store {
     }): void;
     updateRunResponse(id: string, responseId: string, triggerId?: string): void;
     isResponse(messageId: string): boolean;
+    markControlMessage(messageId: string, now?: number): void;
     runningRuns(routeId: string): Array<{
         id: string;
         threadKey: string;
@@ -40,6 +43,8 @@ export declare class Store {
     } | undefined;
     finishRun(id: string, status: "done" | "failed" | "silent" | "cancelled"): void;
     recentActivations(routeId: string, threadKey: string, since: number): number;
+    recordControlActivation(routeId: string, threadKey: string, now?: number): void;
+    recentControlActivations(routeId: string, threadKey: string, since: number): number;
     prune(before: number): void;
     cacheDiscussion(value: {
         spaceId: string;
@@ -85,6 +90,8 @@ export declare class Store {
     saveSessionWorkspace(threadKey: string, workspacePath: string, now?: number): void;
     runtimeCapabilities(runtime: AgentRuntime): RuntimeCapabilities | undefined;
     saveRuntimeCapabilities(runtime: AgentRuntime, capabilities: RuntimeCapabilities, now?: number): void;
+    conversationModel(threadKey: string, runtime?: AgentRuntime): ConversationModelState | undefined;
+    saveConversationModel(input: Omit<ConversationModelState, "updatedAt">, now?: number): ConversationModelState;
     createOutputCycle(input: {
         id: string;
         threadKey: string;

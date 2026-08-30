@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
   AgentRuntime,
+  ConversationModelState,
   OutboundItem,
   OutboundOperation,
   OutputCycle,
@@ -14,7 +15,7 @@ import type {
   SessionBindingState,
 } from "./session-types.js";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 5;
 
 export class Store {
   readonly db: DatabaseSync;
@@ -46,6 +47,8 @@ export class Store {
       if (current < 1) this.migrateToVersion1();
       if (current < 2) this.migrateToVersion2();
       if (current < 3) this.migrateToVersion3();
+      if (current < 4) this.migrateToVersion4();
+      if (current < 5) this.migrateToVersion5();
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -179,6 +182,43 @@ export class Store {
     `);
   }
 
+  private migrateToVersion4(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS conversation_models (
+        thread_key TEXT PRIMARY KEY,
+        runtime TEXT NOT NULL CHECK(runtime IN ('openclaw','codex-acp','codex-app')),
+        requested_model_id TEXT,
+        use_default INTEGER NOT NULL DEFAULT 0 CHECK(use_default IN (0,1)),
+        applied_model_id TEXT,
+        default_model_id TEXT,
+        catalog_json TEXT NOT NULL DEFAULT '[]',
+        updated_by TEXT,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS control_messages (
+        message_id TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL
+      );
+    `);
+  }
+
+  private migrateToVersion5(): void {
+    const columns = this.db.prepare("PRAGMA table_info(conversation_models)").all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((column) => column.name === "applied_generation"))
+      this.db.exec("ALTER TABLE conversation_models ADD COLUMN applied_generation INTEGER");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS control_activations (
+        route_id TEXT NOT NULL,
+        thread_key TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_control_activations_window
+        ON control_activations(route_id,thread_key,created_at);
+    `);
+  }
+
   isInitialized(routeId: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));
   }
@@ -295,8 +335,14 @@ export class Store {
     return Boolean(
       this.db.prepare("SELECT 1 FROM run_messages WHERE message_id=?").get(messageId) ??
       this.db.prepare("SELECT 1 FROM runs WHERE response_message_id=?").get(messageId) ??
-      this.db.prepare("SELECT 1 FROM proactive_deliveries WHERE message_id=?").get(messageId),
+      this.db.prepare("SELECT 1 FROM proactive_deliveries WHERE message_id=?").get(messageId) ??
+      this.db.prepare("SELECT 1 FROM control_messages WHERE message_id=?").get(messageId),
     );
+  }
+  markControlMessage(messageId: string, now = Date.now()): void {
+    this.db
+      .prepare("INSERT OR IGNORE INTO control_messages(message_id,created_at) VALUES(?,?)")
+      .run(messageId, now);
   }
   runningRuns(routeId: string): Array<{
     id: string;
@@ -362,6 +408,19 @@ export class Store {
       .get(routeId, threadKey, since) as { count: number };
     return Number(row.count);
   }
+  recordControlActivation(routeId: string, threadKey: string, now = Date.now()): void {
+    this.db
+      .prepare("INSERT INTO control_activations(route_id,thread_key,created_at) VALUES(?,?,?)")
+      .run(routeId, threadKey, now);
+  }
+  recentControlActivations(routeId: string, threadKey: string, since: number): number {
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM control_activations WHERE route_id=? AND thread_key=? AND created_at>=?",
+      )
+      .get(routeId, threadKey, since) as { count: number };
+    return Number(row.count);
+  }
   prune(before: number): void {
     this.db.prepare("DELETE FROM handled_messages WHERE handled_at < ?").run(before);
     this.db
@@ -384,6 +443,8 @@ export class Store {
       .run(before);
     this.db.prepare("DELETE FROM proactive_deliveries WHERE delivered_at < ?").run(before);
     this.db.prepare("DELETE FROM bridge_cursors WHERE updated_at < ?").run(before);
+    this.db.prepare("DELETE FROM control_messages WHERE created_at < ?").run(before);
+    this.db.prepare("DELETE FROM control_activations WHERE created_at < ?").run(before);
     this.db
       .prepare("DELETE FROM session_bindings WHERE state <> 'active' AND updated_at < ?")
       .run(before);
@@ -671,6 +732,53 @@ export class Store {
     `,
       )
       .run(runtime, JSON.stringify(capabilities), now);
+  }
+
+  conversationModel(threadKey: string, runtime?: AgentRuntime): ConversationModelState | undefined {
+    const row = this.db
+      .prepare(
+        runtime
+          ? "SELECT * FROM conversation_models WHERE thread_key=? AND runtime=?"
+          : "SELECT * FROM conversation_models WHERE thread_key=?",
+      )
+      .get(...(runtime ? [threadKey, runtime] : [threadKey])) as ConversationModelRow | undefined;
+    return row ? mapConversationModel(row) : undefined;
+  }
+
+  saveConversationModel(
+    input: Omit<ConversationModelState, "updatedAt">,
+    now = Date.now(),
+  ): ConversationModelState {
+    this.db
+      .prepare(
+        `INSERT INTO conversation_models(
+          thread_key,runtime,requested_model_id,use_default,applied_generation,applied_model_id,
+          default_model_id,catalog_json,updated_by,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(thread_key) DO UPDATE SET
+          runtime=excluded.runtime,
+          requested_model_id=excluded.requested_model_id,
+          use_default=excluded.use_default,
+          applied_generation=excluded.applied_generation,
+          applied_model_id=excluded.applied_model_id,
+          default_model_id=excluded.default_model_id,
+          catalog_json=excluded.catalog_json,
+          updated_by=excluded.updated_by,
+          updated_at=excluded.updated_at`,
+      )
+      .run(
+        input.threadKey,
+        input.runtime,
+        input.requestedModelId ?? null,
+        input.useDefault ? 1 : 0,
+        input.appliedGeneration ?? null,
+        input.appliedModelId ?? null,
+        input.defaultModelId ?? null,
+        JSON.stringify(input.catalog),
+        input.updatedBy ?? null,
+        now,
+      );
+    return this.conversationModel(input.threadKey)!;
   }
 
   createOutputCycle(
@@ -1078,6 +1186,19 @@ interface SessionBindingRow {
   updated_at: number;
 }
 
+interface ConversationModelRow {
+  thread_key: string;
+  runtime: AgentRuntime;
+  requested_model_id: string | null;
+  use_default: number;
+  applied_generation: number | null;
+  applied_model_id: string | null;
+  default_model_id: string | null;
+  catalog_json: string;
+  updated_by: string | null;
+  updated_at: number;
+}
+
 interface OutputCycleRow {
   cycle_id: string;
   thread_key: string;
@@ -1132,6 +1253,23 @@ function mapSessionBinding(row: SessionBindingRow | undefined): SessionBinding |
     ...(row.event_cursor ? { eventCursor: row.event_cursor } : {}),
     state: row.state,
     createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function mapConversationModel(row: ConversationModelRow): ConversationModelState {
+  return {
+    threadKey: row.thread_key,
+    runtime: row.runtime,
+    ...(row.requested_model_id ? { requestedModelId: row.requested_model_id } : {}),
+    ...(row.use_default ? { useDefault: true } : {}),
+    ...(row.applied_generation === null
+      ? {}
+      : { appliedGeneration: Number(row.applied_generation) }),
+    ...(row.applied_model_id ? { appliedModelId: row.applied_model_id } : {}),
+    ...(row.default_model_id ? { defaultModelId: row.default_model_id } : {}),
+    catalog: parseJson<ConversationModelState["catalog"]>(row.catalog_json),
+    ...(row.updated_by ? { updatedBy: row.updated_by } : {}),
     updatedAt: Number(row.updated_at),
   };
 }

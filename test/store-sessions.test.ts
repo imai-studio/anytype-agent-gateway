@@ -25,7 +25,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(3);
+    expect(store.schemaVersion()).toBe(5);
     expect(store.cursor("route")).toBe("order-7");
     expect(
       (
@@ -39,6 +39,40 @@ describe("session persistence", () => {
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_bindings'")
         .get(),
     ).toBeDefined();
+    store.close();
+  });
+
+  it("upgrades the released v4 model table with generation tracking", () => {
+    const directory = mkdtempSync(join(tmpdir(), "aag-store-v4-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE conversation_models (
+        thread_key TEXT PRIMARY KEY,
+        runtime TEXT NOT NULL,
+        requested_model_id TEXT,
+        use_default INTEGER NOT NULL DEFAULT 0,
+        applied_model_id TEXT,
+        default_model_id TEXT,
+        catalog_json TEXT NOT NULL DEFAULT '[]',
+        updated_by TEXT,
+        updated_at INTEGER NOT NULL
+      );
+      PRAGMA user_version = 4;
+    `);
+    legacy.close();
+
+    const store = new Store(path);
+    expect(store.schemaVersion()).toBe(5);
+    expect(
+      (
+        store.db.prepare("PRAGMA table_info(conversation_models)").all() as Array<{ name: string }>
+      ).map((column) => column.name),
+    ).toContain("applied_generation");
+    expect(
+      store.db.prepare("SELECT name FROM sqlite_master WHERE name='control_activations'").get(),
+    ).toBeTruthy();
     store.close();
   });
 
@@ -98,6 +132,47 @@ describe("session persistence", () => {
       sessionEvents: true,
       protocol: "channel-v1",
     });
+    store.close();
+  });
+
+  it("persists an independent model preference and catalog for each conversation", () => {
+    const store = new Store(":memory:");
+    store.saveConversationModel(
+      {
+        threadKey: "chat:one",
+        runtime: "codex-acp",
+        requestedModelId: "gpt-5.6-sol",
+        appliedModelId: "gpt-5.6-sol",
+        defaultModelId: "gpt-5.6-terra",
+        catalog: [{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol" }],
+        updatedBy: "raj",
+      },
+      42,
+    );
+    expect(store.conversationModel("chat:one")).toEqual({
+      threadKey: "chat:one",
+      runtime: "codex-acp",
+      requestedModelId: "gpt-5.6-sol",
+      appliedModelId: "gpt-5.6-sol",
+      defaultModelId: "gpt-5.6-terra",
+      catalog: [{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol" }],
+      updatedBy: "raj",
+      updatedAt: 42,
+    });
+    store.close();
+  });
+
+  it("persists a pending reset to the harness default model", () => {
+    const store = new Store(":memory:");
+    store.saveConversationModel({
+      threadKey: "chat:reset",
+      runtime: "openclaw",
+      useDefault: true,
+      appliedModelId: "provider/custom",
+      catalog: [],
+    });
+    expect(store.conversationModel("chat:reset")).toMatchObject({ useDefault: true });
+    expect(store.conversationModel("chat:reset")).not.toHaveProperty("requestedModelId");
     store.close();
   });
 

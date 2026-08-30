@@ -21,6 +21,7 @@ import { runMcpServer } from "./mcp.js";
 import type { RuntimeDriver } from "./types.js";
 import { VERSION } from "./version.js";
 import { runInitOnboarding } from "./onboarding.js";
+import { modelAllowed } from "./model-command.js";
 
 const program = new Command().name("aag").description("Anytype Agent Gateway").version(VERSION);
 
@@ -172,6 +173,74 @@ config
       `Updated ${options.routeId} participant access. ${allowedUsers.length} participant(s) are now allowed. The running gateway will apply it to the next message.`,
     );
   });
+config
+  .command("models")
+  .description("List cached native harness models for one conversation")
+  .requiredOption("-c, --config <path>")
+  .requiredOption("--thread-key <key>")
+  .action(async (options) => {
+    const loaded = await loadConfig(options.config);
+    if (!loaded.models.enabled) throw new Error("Model selection is disabled");
+    const store = new Store(loaded.state.path);
+    try {
+      const runtime = loaded.runtime.kind === "openclaw" ? "openclaw" : "codex-acp";
+      const state = store.conversationModel(options.threadKey, runtime);
+      if (!state?.catalog.length) {
+        console.log(
+          "No model catalog is cached yet. Send /models in the Anytype conversation first.",
+        );
+        return;
+      }
+      for (const model of state.catalog)
+        console.log(
+          `${model.id}${model.id === state.appliedModelId ? " (current)" : ""} — ${model.name}`,
+        );
+    } finally {
+      store.close();
+    }
+  });
+config
+  .command("model")
+  .description("Select a cached native harness model for one conversation")
+  .requiredOption("-c, --config <path>")
+  .requiredOption("--thread-key <key>")
+  .requiredOption("--model <id>")
+  .action(async (options) => {
+    const loaded = await loadConfig(options.config);
+    if (!loaded.models.enabled) throw new Error("Model selection is disabled");
+    if (!loaded.management.allowModelChanges) throw new Error("Model changes are disabled");
+    const store = new Store(loaded.state.path);
+    try {
+      const runtime = loaded.runtime.kind === "openclaw" ? "openclaw" : "codex-acp";
+      const current = store.conversationModel(options.threadKey, runtime);
+      const reset = /^(?:default|reset)$/i.test(options.model);
+      const model = reset
+        ? undefined
+        : current?.catalog.find((entry) => entry.id === options.model)?.id;
+      if (!reset && !model)
+        throw new Error("Use an exact cached model ID from `aag config models`");
+      if (model && !modelAllowed(model, loaded.models.allowed))
+        throw new Error("That model is not allowed by the agent configuration");
+      store.saveConversationModel({
+        threadKey: options.threadKey,
+        runtime: loaded.runtime.kind === "openclaw" ? "openclaw" : "codex-acp",
+        ...(model ? { requestedModelId: model } : {}),
+        useDefault: reset,
+        ...(current?.appliedGeneration === undefined
+          ? {}
+          : { appliedGeneration: current.appliedGeneration }),
+        ...(current?.appliedModelId ? { appliedModelId: current.appliedModelId } : {}),
+        ...(current?.defaultModelId ? { defaultModelId: current.defaultModelId } : {}),
+        catalog: current?.catalog ?? [],
+        updatedBy: "cli-operator",
+      });
+      console.log(
+        `${model ? `Selected ${model}` : "Selected the harness default"}. The running gateway applies it on the next turn.`,
+      );
+    } finally {
+      store.close();
+    }
+  });
 
 program
   .command("mcp")
@@ -268,11 +337,16 @@ function makeRuntime(
   store?: Store,
   configPath?: string,
 ): RuntimeDriver {
-  if (config.runtime.kind === "openclaw") return new OpenClawDriver(config.runtime);
+  if (config.runtime.kind === "openclaw")
+    return new OpenClawDriver(config.runtime, undefined, config.models.enabled);
   const executable = resolve(process.argv[1]!);
   const mcpServer =
     config.tools.anytype.enabled && configPath
-      ? { command: resolve(process.execPath), args: [executable, "mcp", "--config", configPath] }
+      ? {
+          command: resolve(process.execPath),
+          args: [executable, "mcp", "--config", configPath],
+          actorDirectory: join(dirname(config.state.path), "actors"),
+        }
       : undefined;
   return new CodexAcpDriver(config.runtime, store, mcpServer, config.agent.name);
 }
