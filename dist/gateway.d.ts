@@ -24,7 +24,7 @@ export declare class Gateway {
     private readonly directMessageMembership;
     private resolveTerminal;
     private rejectTerminal;
-    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string, actorId: string) => string, enrollChat?: ((spaceId: string, spaceName: string, chatId: string, chatName: string, wake: WakeConfig) => Promise<"enrolled" | "existing" | "disabled">) | undefined);
+    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string) => string, enrollChat?: ((spaceId: string, spaceName: string, chatId: string, chatName: string, wake: WakeConfig) => Promise<"enrolled" | "existing" | "disabled">) | undefined);
     start(): Promise<void>;
     stop(options?: {
         drain?: boolean;

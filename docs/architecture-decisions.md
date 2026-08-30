@@ -1,5 +1,8 @@
 # Architecture decisions and design history
 
+See [`knot-roadmap.md`](knot-roadmap.md) for the product model, staged compatibility migration, and
+future workflow-runtime architecture built on these decisions.
+
 This document records the trade-offs considered before implementation. It complements [ARCHITECTURE.md](../ARCHITECTURE.md), which describes the resulting system in detail.
 
 ## One Anytype member per agent

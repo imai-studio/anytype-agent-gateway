@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { resolveProductEnvironment } from "./compatibility.js";
 export async function createCodexDesktopThread(input) {
     const project = await prepareCodexDesktopProject(input);
     if (!project)
@@ -30,7 +31,7 @@ export async function createCodexDesktopThread(input) {
                 return threadId;
         }
         catch (error) {
-            if (process.env.AAG_DEBUG_CODEX_DESKTOP === "1")
+            if (resolveProductEnvironment("DEBUG_CODEX_DESKTOP") === "1")
                 process.stderr.write(`[aag codex-desktop] app-tools pipe ${pipePath} failed: ${error instanceof Error ? error.message : String(error)}\n`);
         }
     }
@@ -38,7 +39,7 @@ export async function createCodexDesktopThread(input) {
 }
 export async function hydrateCodexDesktopTask(input) {
     const debug = (message) => {
-        if (process.env.AAG_DEBUG_CODEX_DESKTOP === "1")
+        if (resolveProductEnvironment("DEBUG_CODEX_DESKTOP") === "1")
             process.stderr.write(`[aag codex-desktop] ${message}\n`);
     };
     // Codex Desktop runs on macOS in production. An explicit pipe is also a
@@ -177,7 +178,11 @@ async function runCodexAppToolsHelper(input) {
     });
     return new Promise((resolveResult, rejectResult) => {
         const child = spawn(codexNodePath, [...(input.nodeArguments ?? []), "--input-type=module", "-e", helperSource], {
-            env: { ...process.env, AAG_CODEX_APP_TOOLS_INPUT: helperInput },
+            env: {
+                ...process.env,
+                AAG_CODEX_APP_TOOLS_INPUT: helperInput,
+                KNOT_CODEX_APP_TOOLS_INPUT: helperInput,
+            },
             stdio: ["ignore", "pipe", "pipe"],
         });
         let stdout = "";

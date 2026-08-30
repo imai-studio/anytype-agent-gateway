@@ -1,10 +1,13 @@
 import type { AgentConfig, WakeConfig } from "./config.js";
 import type { ChatMessage } from "./types.js";
+import { type AnytypePrincipal } from "./principal.js";
+export { sameIdentity } from "./principal.js";
 export type WakeDecision = {
     wake: boolean;
     reason: string;
     isAgent: boolean;
     directMention: boolean;
+    actor?: AnytypePrincipal;
 };
 export type WakeOverride = {
     humans: string;
@@ -17,4 +20,3 @@ export declare function decideWake(message: ChatMessage, wake: WakeConfig, confi
     replyToAgent: boolean;
     selfParticipantId?: string;
 }): WakeDecision;
-export declare function sameIdentity(left: string, right: string): boolean;

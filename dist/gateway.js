@@ -1,6 +1,7 @@
 import { AgentController, messageFingerprint } from "./controller.js";
 import { DiscussionAnytypePort } from "./discussions.js";
 import { decideWake, mergeWakeOverride, sameIdentity } from "./wake.js";
+import { principalAuditFields, principalFromMessage, principalFromParticipantId, } from "./principal.js";
 const INTERRUPTED_RUN_RECOVERY_GRACE_MS = 60 * 60 * 1000;
 const DIRECT_MESSAGE_DISCOVERY_MARKER = "system:aag:direct-message-discovery";
 const directMessageSpaceMarker = (spaceId) => `system:aag:direct-message-space:${spaceId}`;
@@ -245,7 +246,7 @@ export class Gateway {
                 enrollment.complete = true;
                 this.log(result === "enrolled" ? "chat_auto_enrolled" : "chat_auto_enrollment_complete", {
                     routeId: route.conversation.routeId,
-                    actorId: message.creator,
+                    ...principalAuditFields(principalFromMessage(message)),
                     result,
                 });
             }
@@ -254,7 +255,7 @@ export class Gateway {
                 enrollment.nextAttemptAt = Date.now() + Math.min(2 ** enrollment.failures * 1_000, 60_000);
                 this.log("chat_auto_enrollment_failed", {
                     routeId: route.conversation.routeId,
-                    actorId: message.creator,
+                    ...principalAuditFields(principalFromMessage(message)),
                     retryAt: enrollment.nextAttemptAt,
                     error: error instanceof Error ? error.message : String(error),
                 });
@@ -425,7 +426,10 @@ export class Gateway {
                             const created = await this.discussions.ensureDirectMessage(identity, this.abort.signal);
                             this.store.initialize(directMessageBootstrapMarker(identity));
                             this.directMessageBootstrapFailures.delete(identity);
-                            this.log("direct_message_created", { identity, ...created });
+                            this.log("direct_message_created", {
+                                ...principalAuditFields(principalFromParticipantId(identity)),
+                                ...created,
+                            });
                         }
                         catch (error) {
                             if (this.abort.signal.aborted)
@@ -437,7 +441,7 @@ export class Gateway {
                                 nextAttemptAt: Date.now() + retryInSeconds * 1000,
                             });
                             this.log("direct_message_create_failed", {
-                                identity,
+                                ...principalAuditFields(principalFromParticipantId(identity)),
                                 failures,
                                 retryInSeconds,
                                 error: error instanceof Error ? error.message : String(error),

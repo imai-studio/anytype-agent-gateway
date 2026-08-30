@@ -9,7 +9,8 @@ import { setRouteAccess, setRouteWake } from "./management.js";
 import { modelAllowed } from "./model-command.js";
 import { Store } from "./store.js";
 import { VERSION } from "./version.js";
-import { sameIdentity } from "./wake.js";
+import { resolveProductEnvironment } from "./compatibility.js";
+import { principalAllowed, principalFromActorRecord, principalFromParticipantId, } from "./principal.js";
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const propertyValueFields = [
     "text",
@@ -38,12 +39,14 @@ export async function runMcpServer(configPath, context = {}) {
     if (!config.tools.anytype.enabled && !config.tools.codex.enabled)
         throw new Error("All AAG tools are disabled in this configuration");
     const anytype = await AnytypeClient.create(config);
-    const routeId = context.routeId ?? process.env.AAG_ROUTE_ID;
-    const configuredActorId = context.actorId ?? process.env.AAG_ACTOR_ID;
-    const actorFile = process.env.AAG_ACTOR_FILE;
-    const discussionRootId = process.env.AAG_DISCUSSION_ROOT_ID;
+    const routeId = context.routeId ?? resolveProductEnvironment("ROUTE_ID");
+    // Resolve legacy/new direct actor variables for compatibility diagnostics,
+    // but never treat caller-controlled process input as native provenance.
+    resolveProductEnvironment("ACTOR_ID");
+    const actorFile = resolveProductEnvironment("ACTOR_FILE");
+    const discussionRootId = resolveProductEnvironment("DISCUSSION_ROOT_ID");
     const defaultSpaceId = context.spaceId ??
-        process.env.AAG_SPACE_ID ??
+        resolveProductEnvironment("SPACE_ID") ??
         spaceFromRoute(routeId) ??
         soleAllowedSpace(config);
     const tools = toolDefinitions(config);
@@ -74,7 +77,7 @@ export async function runMcpServer(configPath, context = {}) {
                 result = { tools };
             else if (request.method === "tools/call") {
                 try {
-                    const actorId = await currentActorId(configuredActorId, actorFile);
+                    const actorId = await currentActorId(actorFile);
                     const value = await callTool(anytype, config, configPath, routeId, defaultSpaceId, String(request.params?.name ?? ""), request.params?.arguments ?? {}, actorId, discussionRootId);
                     result = { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
                 }
@@ -101,12 +104,11 @@ export async function runMcpServer(configPath, context = {}) {
         }
     }
 }
-async function currentActorId(configuredActorId, actorFile) {
+async function currentActorId(actorFile) {
     if (!actorFile)
-        return configuredActorId;
+        return undefined;
     try {
-        const value = JSON.parse(await readFile(actorFile, "utf8"));
-        return typeof value.actorId === "string" && value.actorId ? value.actorId : undefined;
+        return principalFromActorRecord(JSON.parse(await readFile(actorFile, "utf8")))?.participantId;
     }
     catch {
         return undefined;
@@ -224,14 +226,13 @@ export function toolDefinitions(config) {
                     description: "Add or remove native Anytype participant IDs from this route's sender allowlist. Only a configured access admin can authorize the change.",
                     inputSchema: objectSchema({
                         route_id: stringSchema("chat:<space-id>:<chat-id> or discussion:<space-id>:<discussion-id>"),
-                        actor_id: stringSchema("Native participant ID of the user requesting the change"),
                         operation: { type: "string", enum: ["add", "remove", "replace"] },
                         participant_ids: {
                             type: "array",
                             items: { type: "string" },
                             minItems: 1,
                         },
-                    }, ["actor_id", "operation", "participant_ids"]),
+                    }, ["operation", "participant_ids"]),
                 },
             ]
             : []),
@@ -420,8 +421,8 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
                 };
             if (!config.management.allowModelChanges)
                 throw new Error("Model changes are disabled");
-            if (!boundActorId ||
-                !config.management.modelAdmins.some((admin) => sameIdentity(admin, boundActorId)))
+            const boundPrincipal = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
+            if (!principalAllowed(boundPrincipal, config.management.modelAdmins))
                 throw new Error("The current Anytype sender is not allowed to change models");
             const requested = required(input, "model_id");
             const reset = /^(?:default|reset)$/i.test(requested);
@@ -444,7 +445,7 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
                 ...(current?.appliedModelId ? { appliedModelId: current.appliedModelId } : {}),
                 ...(current?.defaultModelId ? { defaultModelId: current.defaultModelId } : {}),
                 catalog: current?.catalog ?? [],
-                updatedBy: boundActorId,
+                ...(boundActorId ? { updatedBy: boundActorId } : {}),
             });
             return {
                 thread_key: threadKey,
@@ -465,10 +466,14 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
         if (!routeSpaceId)
             throw new Error("route_id does not contain a valid Anytype space");
         assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
+        const boundPrincipal = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
+        if (!boundPrincipal)
+            throw new Error("The current Anytype sender could not be verified");
         await setRouteWake({
             configPath,
             routeId: effectiveRouteId,
             humans: String(input.humans),
+            actor: boundPrincipal,
             ...(input.prefix ? { prefix: String(input.prefix) } : {}),
         });
         return { route_id: effectiveRouteId, humans: input.humans };
@@ -482,15 +487,13 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
         if (!routeSpaceId)
             throw new Error("route_id does not contain a valid Anytype space");
         assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
-        const requestedActorId = required(input, "actor_id");
-        if (!boundActorId)
+        const boundPrincipal = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
+        if (!boundPrincipal)
             throw new Error("The current Anytype sender could not be verified");
-        if (requestedActorId !== boundActorId)
-            throw new Error("actor_id must match the current Anytype sender");
         const allowedUsers = await setRouteAccess({
             configPath,
             routeId: effectiveRouteId,
-            actorId: boundActorId,
+            actor: boundPrincipal,
             operation: String(input.operation),
             participantIds: requiredArray(input, "participant_ids"),
         });

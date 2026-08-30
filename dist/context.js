@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { principalFromMessage } from "./principal.js";
 export async function buildContext(anytype, config, conversation, trigger, options = {}) {
     let history = !options.newSession && config.context.historyMessages
         ? await anytype.listMessages(conversation.spaceId, conversation.chatId, config.context.historyMessages)
@@ -61,9 +62,11 @@ export async function buildContext(anytype, config, conversation, trigger, optio
         }
         : trigger;
     const attachments = await materializeAttachments(anytype, config, conversation, [contextualTrigger, ...history, ...replyAncestry], referencedObjects);
+    const actor = principalFromMessage(trigger);
     return {
         conversation,
         trigger: contextualTrigger,
+        ...(actor ? { actor } : {}),
         ...(options.newSession ? { newSession: true } : {}),
         history,
         replyAncestry,
@@ -87,7 +90,7 @@ export function formatPrompt(bundle, config, managementCommand, workspaceContext
     const boundary = `AAG_UNTRUSTED_${crypto.randomUUID()}`;
     const payload = {
         conversation: bundle.conversation,
-        sender: { participantId: bundle.trigger.creator, displayName: bundle.trigger.creator_name },
+        sender: bundle.actor ?? principalFromMessage(bundle.trigger) ?? { provenance: "unavailable" },
         currentMessage: bundle.trigger.content?.text ?? "",
         replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
         recentChannelContext: bundle.history.map(renderMessage),
@@ -143,18 +146,18 @@ export function formatPrompt(bundle, config, managementCommand, workspaceContext
             managementCommand
             ? [
                 "The operator has enabled constrained AAG self-management for this route.",
-                `Available constrained commands:\n${managementCommand}`,
+                `Available constrained tools:\n${managementCommand}`,
                 ...(config.management.allowWakeChanges
                     ? [
-                        "For an explicit wake-behavior request, run the wake command with one of mention, mention-or-reply, every-message, prefix, or disabled.",
+                        "For an explicit wake-behavior request, call the wake tool with one of mention, mention-or-reply, every-message, prefix, or disabled.",
                     ]
                     : []),
                 ...(config.management.allowAccessChanges
                     ? [
-                        "For an explicit participant-access request from a configured access admin, use the access command with the person's native participant ID from mentionableParticipants. Use add to authorize another participant while preserving existing access; never substitute a display name.",
+                        "For an explicit participant-access request from a configured access admin, use the access tool with the person's native participant ID from mentionableParticipants. Use add to authorize another participant while preserving existing access; never substitute a display name.",
                     ]
                     : []),
-                "Do not edit the AAG configuration by any other means. Do not claim a change succeeded unless the command completed successfully; report its error if it failed.",
+                "Do not edit the AAG configuration by any other means. Do not claim a change succeeded unless the tool completed successfully; report its error if it failed.",
             ]
             : []),
         ...(bundle.newSession
@@ -210,7 +213,7 @@ export async function preparePrompt(bundle, config, sessionKey, managementComman
     }
     const payload = {
         conversation: bundle.conversation,
-        sender: { participantId: bundle.trigger.creator, displayName: bundle.trigger.creator_name },
+        sender: bundle.actor ?? principalFromMessage(bundle.trigger) ?? { provenance: "unavailable" },
         currentMessage: bundle.trigger.content?.text ?? "",
         replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
         recentChannelContext: bundle.history.map(renderMessage),

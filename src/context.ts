@@ -3,6 +3,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AgentConfig } from "./config.js";
 import type { AnytypePort, ChatMessage, ContextBundle, ConversationRef } from "./types.js";
+import { principalFromMessage } from "./principal.js";
 
 export async function buildContext(
   anytype: AnytypePort,
@@ -85,9 +86,11 @@ export async function buildContext(
     [contextualTrigger, ...history, ...replyAncestry],
     referencedObjects,
   );
+  const actor = principalFromMessage(trigger);
   return {
     conversation,
     trigger: contextualTrigger,
+    ...(actor ? { actor } : {}),
     ...(options.newSession ? { newSession: true } : {}),
     history,
     replyAncestry,
@@ -119,7 +122,7 @@ export function formatPrompt(
   const boundary = `AAG_UNTRUSTED_${crypto.randomUUID()}`;
   const payload = {
     conversation: bundle.conversation,
-    sender: { participantId: bundle.trigger.creator, displayName: bundle.trigger.creator_name },
+    sender: bundle.actor ?? principalFromMessage(bundle.trigger) ?? { provenance: "unavailable" },
     currentMessage: bundle.trigger.content?.text ?? "",
     replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
     recentChannelContext: bundle.history.map(renderMessage),
@@ -179,18 +182,18 @@ export function formatPrompt(
     managementCommand
       ? [
           "The operator has enabled constrained AAG self-management for this route.",
-          `Available constrained commands:\n${managementCommand}`,
+          `Available constrained tools:\n${managementCommand}`,
           ...(config.management.allowWakeChanges
             ? [
-                "For an explicit wake-behavior request, run the wake command with one of mention, mention-or-reply, every-message, prefix, or disabled.",
+                "For an explicit wake-behavior request, call the wake tool with one of mention, mention-or-reply, every-message, prefix, or disabled.",
               ]
             : []),
           ...(config.management.allowAccessChanges
             ? [
-                "For an explicit participant-access request from a configured access admin, use the access command with the person's native participant ID from mentionableParticipants. Use add to authorize another participant while preserving existing access; never substitute a display name.",
+                "For an explicit participant-access request from a configured access admin, use the access tool with the person's native participant ID from mentionableParticipants. Use add to authorize another participant while preserving existing access; never substitute a display name.",
               ]
             : []),
-          "Do not edit the AAG configuration by any other means. Do not claim a change succeeded unless the command completed successfully; report its error if it failed.",
+          "Do not edit the AAG configuration by any other means. Do not claim a change succeeded unless the tool completed successfully; report its error if it failed.",
         ]
       : []),
     ...(bundle.newSession
@@ -254,7 +257,7 @@ export async function preparePrompt(
 
   const payload = {
     conversation: bundle.conversation,
-    sender: { participantId: bundle.trigger.creator, displayName: bundle.trigger.creator_name },
+    sender: bundle.actor ?? principalFromMessage(bundle.trigger) ?? { provenance: "unavailable" },
     currentMessage: bundle.trigger.content?.text ?? "",
     replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
     recentChannelContext: bundle.history.map(renderMessage),

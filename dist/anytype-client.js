@@ -2,6 +2,7 @@ import { openAsBlob } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { runProcess } from "./process.js";
+import { sameIdentity } from "./principal.js";
 export class AnytypeClient {
     base;
     headers;
@@ -441,9 +442,4 @@ export function parseSseBlock(block) {
     if (!value || typeof value !== "object" || typeof value.type !== "string")
         throw new Error("Anytype event stream returned an invalid event envelope");
     return value;
-}
-function sameIdentity(left, right) {
-    if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`))
-        return true;
-    return left.split("_").at(-1) === right.split("_").at(-1);
 }

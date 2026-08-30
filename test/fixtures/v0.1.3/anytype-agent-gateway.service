@@ -1,0 +1,9 @@
+[Unit]
+Description=Sanitized v0.1.3 Anytype Agent Gateway fixture
+
+[Service]
+ExecStart=/fixture/bin/aag run --config /fixture/config/agent.yaml
+EnvironmentFile=/fixture/config/environment.env
+
+[Install]
+WantedBy=default.target

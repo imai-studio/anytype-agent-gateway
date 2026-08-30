@@ -7,9 +7,10 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
 import { runProcess } from "./process.js";
+import { logNamespace, PRODUCT } from "./compatibility.js";
 
-const systemdServiceName = "anytype-agent-gateway.service";
-const launchdServiceLabel = "com.anytype.anytype-agent-gateway";
+const systemdServiceName = PRODUCT.services.linux[0];
+const launchdServiceLabel = PRODUCT.services.darwin[0];
 const anytypeLaunchAgentName = "anytype.plist";
 
 interface LaunchdPlistOptions {
@@ -92,7 +93,7 @@ async function installLaunchdService(configPath: string): Promise<void> {
   ]);
 
   const launchAgentsDirectory = join(home, "Library", "LaunchAgents");
-  const logsDirectory = join(home, "Library", "Logs", "AnytypeAgentGateway");
+  const logsDirectory = join(home, "Library", "Logs", logNamespace());
   const stdoutPath = join(logsDirectory, "gateway.log");
   const stderrPath = join(logsDirectory, "gateway.error.log");
   const target = join(launchAgentsDirectory, `${launchdServiceLabel}.plist`);
@@ -156,7 +157,7 @@ async function launchdCommand(command: "status" | "restart" | "stop" | "logs"): 
   const domain = launchdDomain();
   const serviceTarget = `${domain}/${launchdServiceLabel}`;
   const plistPath = join(home, "Library", "LaunchAgents", `${launchdServiceLabel}.plist`);
-  const logsDirectory = join(home, "Library", "Logs", "AnytypeAgentGateway");
+  const logsDirectory = join(home, "Library", "Logs", logNamespace());
 
   if (command === "status") {
     await spawnInherited("/bin/launchctl", ["print", serviceTarget], command);

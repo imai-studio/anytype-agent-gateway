@@ -1,4 +1,5 @@
 import { type WakeConfig } from "./config.js";
+import { type AnytypePrincipal } from "./principal.js";
 export declare function enrollChatRoute(input: {
     configPath: string;
     spaceId: string;
@@ -12,11 +13,12 @@ export declare function setRouteWake(input: {
     routeId: string;
     humans: string;
     prefix?: string;
+    actor?: AnytypePrincipal;
 }): Promise<void>;
 export declare function setRouteAccess(input: {
     configPath: string;
     routeId: string;
-    actorId: string;
+    actor?: AnytypePrincipal;
     operation: string;
     participantIds: string[];
 }): Promise<string[]>;

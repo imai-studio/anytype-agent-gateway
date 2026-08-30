@@ -31,7 +31,12 @@ export function runProcess(command, args, options = {}) {
 }
 function externalProcessEnvironment() {
     const environment = { ...process.env };
-    for (const key of ["OPENCLAW_GATEWAY_TOKEN", "ANYTYPE_API_KEY", "AAG_ANYTYPE_API_KEY"])
+    for (const key of [
+        "OPENCLAW_GATEWAY_TOKEN",
+        "ANYTYPE_API_KEY",
+        "AAG_ANYTYPE_API_KEY",
+        "KNOT_ANYTYPE_API_KEY",
+    ])
         delete environment[key];
     return environment;
 }

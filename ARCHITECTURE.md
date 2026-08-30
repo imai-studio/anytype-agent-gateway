@@ -1,5 +1,8 @@
 # Architecture
 
+The product evolution, compatibility contract, and Phase 1/Phase 2 delivery graph are maintained in
+[`docs/knot-roadmap.md`](docs/knot-roadmap.md).
+
 For the alternatives considered and the reasoning behind these boundaries, see [docs/architecture-decisions.md](docs/architecture-decisions.md).
 
 ## Deployment invariant

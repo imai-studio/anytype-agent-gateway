@@ -598,11 +598,17 @@ function mcpEnvironment(configured, turn, actorFile) {
     }
     if (turn) {
         environment.AAG_ROUTE_ID = turn.conversation.routeId;
+        environment.KNOT_ROUTE_ID = turn.conversation.routeId;
         environment.AAG_SPACE_ID = turn.conversation.spaceId;
-        if (actorFile)
+        environment.KNOT_SPACE_ID = turn.conversation.spaceId;
+        if (actorFile) {
             environment.AAG_ACTOR_FILE = actorFile;
-        if (turn.conversation.discussionRootId)
+            environment.KNOT_ACTOR_FILE = actorFile;
+        }
+        if (turn.conversation.discussionRootId) {
             environment.AAG_DISCUSSION_ROOT_ID = turn.conversation.discussionRootId;
+            environment.KNOT_DISCUSSION_ROOT_ID = turn.conversation.discussionRootId;
+        }
     }
     return Object.entries(environment).map(([name, value]) => ({ name, value }));
 }
@@ -615,7 +621,7 @@ async function writeActorContext(actorDirectory, sessionKey, actorId) {
 async function writeActorFile(path, actorId) {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
-    await writeFile(temporary, `${JSON.stringify({ actorId: actorId ?? "" })}\n`, { mode: 0o600 });
+    await writeFile(temporary, `${JSON.stringify({ actorId: actorId ?? "", participantId: actorId ?? "", provenance: actorId ? "anytype-native" : "unavailable" })}\n`, { mode: 0o600 });
     await rename(temporary, path);
 }
 function findModelConfig(configOptions) {

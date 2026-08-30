@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { commandExists, runProcess } from "../process.js";
+import { parseSilenceMarker } from "../protocol-markers.js";
+import { resolveEnvironmentPair } from "../compatibility.js";
 import { VERSION } from "../version.js";
 const GATEWAY_RECONNECT_TIMEOUT_MS = 120_000;
 const RECOVERED_RUN_HISTORY_TIMEOUT_MS = 120_000;
@@ -520,7 +522,7 @@ export class OpenClawDriver {
             throw new Error(`OpenClaw Anytype channel batch acknowledgement returned HTTP ${response.status}`);
     }
     async bridgeToken() {
-        const token = process.env[this.config.channelBridge.tokenEnv] ??
+        const token = compatibleConfiguredEnvironment(this.config.channelBridge.tokenEnv) ??
             (this.config.channelBridge.tokenFile
                 ? (await readFile(this.config.channelBridge.tokenFile, "utf8")).trim()
                 : undefined);
@@ -771,7 +773,7 @@ export class OpenClawDriver {
         return candidates;
     }
     async readToken() {
-        const fromEnvironment = process.env[this.config.gateway.tokenEnv];
+        const fromEnvironment = compatibleConfiguredEnvironment(this.config.gateway.tokenEnv);
         if (fromEnvironment)
             return fromEnvironment;
         const raw = JSON.parse(await readFile(this.config.gateway.configFile, "utf8"));
@@ -1000,6 +1002,13 @@ function normalizeOwnedText(text) {
     return text.normalize("NFKC").replace(/\s+/gu, "");
 }
 export function parseSilence(text) {
-    const match = text.trim().match(/^\[\[AAG_STAY_SILENT(?::\s*(.*?))?\]\]$/s);
-    return match ? { text: "", silent: true, ...(match[1] ? { reason: match[1] } : {}) } : { text };
+    const marker = parseSilenceMarker(text);
+    return marker ? { text: "", silent: true, ...marker } : { text };
+}
+function compatibleConfiguredEnvironment(name) {
+    if (name.startsWith("AAG_"))
+        return resolveEnvironmentPair(`KNOT_${name.slice(4)}`, name);
+    if (name.startsWith("KNOT_"))
+        return resolveEnvironmentPair(name, `AAG_${name.slice(5)}`);
+    return process.env[name];
 }

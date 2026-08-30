@@ -7,6 +7,7 @@ import { configSchema, loadConfig, type AgentConfig, type WakeConfig } from "./c
 import { acquireProcessLock } from "./process-lock.js";
 import { Store } from "./store.js";
 import { sameIdentity } from "./wake.js";
+import { principalAllowed, type AnytypePrincipal } from "./principal.js";
 
 const humanModes = ["mention", "mention-or-reply", "every-message", "prefix", "disabled"] as const;
 type HumanMode = (typeof humanModes)[number];
@@ -45,6 +46,7 @@ export async function setRouteWake(input: {
   routeId: string;
   humans: string;
   prefix?: string;
+  actor?: AnytypePrincipal;
 }): Promise<void> {
   if (!humanModes.includes(input.humans as HumanMode))
     throw new Error(`Invalid human wake mode: ${input.humans}`);
@@ -55,6 +57,8 @@ export async function setRouteWake(input: {
     const route = await resolveRouteConfig(input.configPath, input.routeId, spaceName);
     if (!route.parsed.management.allowWakeChanges)
       throw new Error("management.allowWakeChanges is disabled");
+    if (input.actor && !principalAllowed(input.actor, route.base.allowedUsers))
+      throw new Error("The current Anytype sender is not allowed to change this route");
     const wake: WakeConfig = { ...route.base, humans: input.humans as HumanMode };
     if (input.humans === "prefix") wake.prefix = input.prefix;
     else delete wake.prefix;
@@ -65,7 +69,7 @@ export async function setRouteWake(input: {
 export async function setRouteAccess(input: {
   configPath: string;
   routeId: string;
-  actorId: string;
+  actor?: AnytypePrincipal;
   operation: string;
   participantIds: string[];
 }): Promise<string[]> {
@@ -84,11 +88,7 @@ export async function setRouteAccess(input: {
     const route = await resolveRouteConfig(input.configPath, input.routeId, spaceName);
     if (!route.parsed.management.allowAccessChanges)
       throw new Error("management.allowAccessChanges is disabled");
-    if (
-      !route.parsed.management.accessAdmins.some((participant) =>
-        sameIdentity(input.actorId, participant),
-      )
-    )
+    if (input.actor && !principalAllowed(input.actor, route.parsed.management.accessAdmins))
       throw new Error("Only a configured access admin may change the route allowlist");
     const admins = route.parsed.management.accessAdmins;
     let allowedUsers: string[];

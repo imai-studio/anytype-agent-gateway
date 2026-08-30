@@ -23,6 +23,12 @@ import type {
   RuntimeSessionOutput,
 } from "./types.js";
 import { decideWake, mergeWakeOverride } from "./wake.js";
+import {
+  principalAllowed,
+  principalAuditFields,
+  principalFromMessage,
+  principalFromParticipantId,
+} from "./principal.js";
 
 type ActiveRun = {
   id: string;
@@ -51,7 +57,7 @@ export class AgentController {
     private readonly store: Store,
     private readonly log: (event: string, fields?: Record<string, unknown>) => void,
     private readonly discussionAnytype: AnytypePort = anytype,
-    private readonly managementCommand?: (routeId: string, actorId: string) => string,
+    private readonly managementCommand?: (routeId: string) => string,
   ) {
     this.store.saveRuntimeCapabilities(this.runtimeName(), this.runtime.capabilities);
     const outbox = this.store.outboundStatusCounts();
@@ -122,9 +128,15 @@ export class AgentController {
         routeId: conversation.routeId,
         messageId: message.id,
         reason: decision.reason,
+        ...principalAuditFields(decision.actor),
       });
       return;
     }
+    this.log("message_actor_authenticated", {
+      routeId: conversation.routeId,
+      messageId: message.id,
+      ...principalAuditFields(decision.actor),
+    });
     const thread = await this.thread(conversation, message);
     const threadConversation: ConversationRef =
       conversation.kind === "discussion"
@@ -268,6 +280,7 @@ export class AgentController {
         await active.handle.steer(this.steerPrompt(message), {
           conversation: threadConversation,
           message,
+          ...(decision.actor ? { actor: decision.actor } : {}),
           replyTargetId,
           ...(message.mentioned === undefined ? {} : { wasMentioned: message.mentioned }),
         });
@@ -492,13 +505,15 @@ export class AgentController {
         sessionKey,
         conversation.managementEnabled === false
           ? undefined
-          : this.managementCommand?.(conversation.routeId, message.creator ?? ""),
+          : decisionActorCommand(this.managementCommand, conversation.routeId, message),
         { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId },
       );
       const workspacePath = this.store.sessionWorkspace(threadKey);
+      const actor = principalFromMessage(message);
       const turn = {
         conversation,
         message,
+        ...(actor ? { actor } : {}),
         replyTargetId,
         ...(message.mentioned === undefined ? {} : { wasMentioned: message.mentioned }),
         ...(workspacePath ? { workspacePath } : {}),
@@ -939,18 +954,18 @@ export class AgentController {
   }
 
   private canChangeProject(actorId?: string): boolean {
+    const principal = principalFromParticipantId(actorId);
     return Boolean(
-      actorId &&
       this.config.management.allowProjectChanges &&
-      this.config.management.projectAdmins.some((admin) => sameParticipant(actorId, admin)),
+      principalAllowed(principal, this.config.management.projectAdmins),
     );
   }
 
   private canChangeModel(actorId?: string): boolean {
+    const principal = principalFromParticipantId(actorId);
     return Boolean(
-      actorId &&
       this.config.management.allowModelChanges &&
-      this.config.management.modelAdmins.some((admin) => sameParticipant(actorId, admin)),
+      principalAllowed(principal, this.config.management.modelAdmins),
     );
   }
 
@@ -1438,6 +1453,15 @@ function mentionTargetsFrom(message: ChatMessage): Array<{ name: string; partici
     if (name) targets.push({ name, participantId: mark.param });
   }
   return targets;
+}
+
+function decisionActorCommand(
+  managementCommand: ((routeId: string) => string) | undefined,
+  routeId: string,
+  message: ChatMessage,
+): string | undefined {
+  const actor = principalFromMessage(message);
+  return actor ? managementCommand?.(routeId) : undefined;
 }
 
 function isTurnAlreadyCompleted(error: unknown): boolean {

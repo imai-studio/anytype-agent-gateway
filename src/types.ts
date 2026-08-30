@@ -15,6 +15,8 @@ export type ChatMessage = {
   mentioned?: boolean;
 };
 
+export type { AnytypePrincipal } from "./principal.js";
+
 export type ConversationRef = {
   routeId: string;
   spaceId: string;
@@ -31,6 +33,7 @@ export type ConversationRef = {
 export type ContextBundle = {
   conversation: ConversationRef;
   trigger: ChatMessage;
+  actor?: import("./principal.js").AnytypePrincipal;
   newSession?: boolean;
   history: ChatMessage[];
   replyAncestry: ChatMessage[];
@@ -93,6 +96,7 @@ export type RuntimeSessionObserver = { readonly cursor?: string; close(): Promis
 export type RuntimeTurn = {
   conversation: ConversationRef;
   message: ChatMessage;
+  actor?: import("./principal.js").AnytypePrincipal;
   replyTargetId: string;
   wasMentioned?: boolean;
   workspacePath?: string;
