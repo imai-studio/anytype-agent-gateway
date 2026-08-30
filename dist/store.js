@@ -1,24 +1,36 @@
-import { mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-const SCHEMA_VERSION = 6;
+import { evaluateWorkflowPolicy } from "./automation/policy.js";
+import { canonicalJson, canonicalWorkflowDefinition, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowVersionHash, } from "./automation/workflow.js";
+const SCHEMA_VERSION = 7;
 export class Store {
+    reportMigration;
     db;
-    constructor(path) {
+    _migrationBackupPath;
+    constructor(path, reportMigration = (message) => console.warn(message)) {
+        this.reportMigration = reportMigration;
+        const existed = path !== ":memory:" && existsSync(path);
         if (path !== ":memory:")
             mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
         this.db = new DatabaseSync(path);
         this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-        this.migrate();
+        this.migrate(path, existed);
+    }
+    get migrationBackupPath() {
+        return this._migrationBackupPath;
     }
     schemaVersion() {
         return Number(this.db.prepare("PRAGMA user_version").get().user_version);
     }
-    migrate() {
+    migrate(path, existed) {
         const current = this.schemaVersion();
         if (current > SCHEMA_VERSION) {
             throw new Error(`State database schema ${current} is newer than supported schema ${SCHEMA_VERSION}`);
         }
+        if (existed && path !== ":memory:" && current < SCHEMA_VERSION && this.hasUserTables())
+            this._migrationBackupPath = this.backupBeforeMigration(path, current);
         this.db.exec("BEGIN IMMEDIATE");
         try {
             if (current < 1)
@@ -33,11 +45,37 @@ export class Store {
                 this.migrateToVersion5();
             if (current < 6)
                 this.migrateToVersion6();
+            if (current < 7)
+                this.migrateToVersion7();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
             this.db.exec("ROLLBACK");
+            if (this._migrationBackupPath)
+                throw new Error(`State migration failed; backup preserved at ${this._migrationBackupPath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
             throw error;
+        }
+        if (this._migrationBackupPath)
+            this.reportMigration(`Knot upgraded the state database from schema ${current} to ${SCHEMA_VERSION}. Backup: ${this._migrationBackupPath}`);
+    }
+    hasUserTables() {
+        return Boolean(this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1")
+            .get());
+    }
+    backupBeforeMigration(path, current) {
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const backup = `${path}.pre-v${current}.${stamp}.${randomUUID()}.bak`;
+        const temporaryDirectory = mkdtempSync(`${dirname(path)}/.knot-migration-`);
+        const temporaryBackup = `${temporaryDirectory}/state.sqlite`;
+        try {
+            this.db.prepare("VACUUM INTO ?").run(temporaryBackup);
+            chmodSync(temporaryBackup, 0o600);
+            renameSync(temporaryBackup, backup);
+            return backup;
+        }
+        finally {
+            rmSync(temporaryDirectory, { recursive: true, force: true });
         }
     }
     migrateToVersion1() {
@@ -215,6 +253,116 @@ export class Store {
         workspace_path TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
+    `);
+    }
+    migrateToVersion7() {
+        this.db.exec(`
+      CREATE TABLE workflow_definitions (
+        workflow_id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'discovered'
+          CHECK(state IN ('discovered','valid','invalid','archived')),
+        active_version_hash TEXT,
+        source_modified_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        validation_errors_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(validation_errors_json)),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(space_id,object_id),
+        FOREIGN KEY(workflow_id,active_version_hash)
+          REFERENCES workflow_versions(workflow_id,version_hash)
+          ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+      );
+      CREATE INDEX idx_workflow_definitions_state
+        ON workflow_definitions(state,updated_at,workflow_id);
+      CREATE INDEX idx_workflow_definitions_space
+        ON workflow_definitions(space_id,last_seen_at,workflow_id);
+
+      CREATE TABLE workflow_approval_subjects (
+        workflow_id TEXT NOT NULL REFERENCES workflow_definitions(workflow_id) ON DELETE RESTRICT,
+        approval_hash TEXT NOT NULL,
+        canonical_approval_json TEXT NOT NULL CHECK(json_valid(canonical_approval_json)),
+        risk_tier TEXT NOT NULL CHECK(risk_tier IN ('T0','T1','T2')),
+        required_capabilities_json TEXT NOT NULL DEFAULT '[]'
+          CHECK(json_valid(required_capabilities_json)),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(workflow_id,approval_hash)
+      );
+
+      CREATE TABLE workflow_versions (
+        workflow_id TEXT NOT NULL REFERENCES workflow_definitions(workflow_id) ON DELETE RESTRICT,
+        space_id TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        version_hash TEXT NOT NULL,
+        approval_hash TEXT NOT NULL,
+        schema_version INTEGER NOT NULL CHECK(schema_version > 0),
+        canonical_definition_json TEXT NOT NULL CHECK(json_valid(canonical_definition_json)),
+        source_text TEXT NOT NULL,
+        risk_tier TEXT NOT NULL CHECK(risk_tier IN ('T0','T1','T2')),
+        required_capabilities_json TEXT NOT NULL DEFAULT '[]'
+          CHECK(json_valid(required_capabilities_json)),
+        source_modified_at INTEGER NOT NULL,
+        author_principal_digest TEXT,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(workflow_id,version_hash),
+        FOREIGN KEY(workflow_id,approval_hash)
+          REFERENCES workflow_approval_subjects(workflow_id,approval_hash) ON DELETE RESTRICT
+      );
+      CREATE INDEX idx_workflow_versions_approval
+        ON workflow_versions(workflow_id,approval_hash,created_at);
+
+      CREATE TABLE workflow_approval_decisions (
+        decision_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        decision_id TEXT NOT NULL UNIQUE,
+        workflow_id TEXT NOT NULL,
+        approval_hash TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK(decision IN ('approved','rejected','revoked')),
+        mode TEXT NOT NULL CHECK(mode IN ('manual','automatic')),
+        authority_hash TEXT NOT NULL,
+        actor_principal_digest TEXT NOT NULL,
+        reason TEXT,
+        decided_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        supersedes_decision_id TEXT REFERENCES workflow_approval_decisions(decision_id)
+          ON DELETE RESTRICT,
+        UNIQUE(workflow_id,approval_hash,decision_id),
+        FOREIGN KEY(workflow_id,approval_hash)
+          REFERENCES workflow_approval_subjects(workflow_id,approval_hash) ON DELETE RESTRICT,
+        FOREIGN KEY(workflow_id,approval_hash,supersedes_decision_id)
+          REFERENCES workflow_approval_decisions(workflow_id,approval_hash,decision_id)
+          ON DELETE RESTRICT
+      );
+      CREATE INDEX idx_workflow_decisions_current
+        ON workflow_approval_decisions(workflow_id,approval_hash,decision_sequence DESC);
+      CREATE INDEX idx_workflow_decisions_expiry
+        ON workflow_approval_decisions(expires_at) WHERE decision='approved';
+
+      CREATE TABLE normalized_events (
+        event_id TEXT PRIMARY KEY,
+        dedupe_key TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL,
+        source TEXT NOT NULL,
+        source_event_id TEXT,
+        space_id TEXT NOT NULL,
+        object_id TEXT,
+        observed_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(payload_json)),
+        diff_json TEXT CHECK(diff_json IS NULL OR json_valid(diff_json)),
+        causation_run_id TEXT,
+        causal_depth INTEGER NOT NULL DEFAULT 0 CHECK(causal_depth >= 0),
+        origin_effect_key TEXT,
+        recorded_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_normalized_events_observed ON normalized_events(observed_at,event_id);
+      CREATE INDEX idx_normalized_events_space
+        ON normalized_events(space_id,observed_at,event_id);
+      CREATE INDEX idx_normalized_events_object
+        ON normalized_events(space_id,object_id,observed_at,event_id) WHERE object_id IS NOT NULL;
+      CREATE INDEX idx_normalized_events_kind
+        ON normalized_events(kind,observed_at,event_id);
     `);
     }
     isInitialized(routeId) {
@@ -830,6 +978,157 @@ export class Store {
     `)
             .run(bridgeId, streamKey, cursor, now);
     }
+    saveWorkflowVersion(input) {
+        const definition = workflowDefinitionSchema.parse(JSON.parse(input.canonicalDefinitionJson));
+        const canonicalDefinitionJson = canonicalWorkflowDefinition(definition);
+        const canonicalApprovalJson = canonicalJson(workflowApprovalMaterial(definition));
+        const policy = evaluateWorkflowPolicy(definition, { sourceSpaceId: input.spaceId });
+        const requiredCapabilitiesJson = JSON.stringify(policy.requiredCapabilities);
+        if (input.canonicalDefinitionJson !== canonicalDefinitionJson ||
+            input.versionHash !== workflowVersionHash(definition) ||
+            input.canonicalApprovalJson !== canonicalApprovalJson ||
+            input.approvalHash !== workflowApprovalHash(definition) ||
+            input.name !== definition.metadata.name ||
+            input.riskTier !== policy.riskTier ||
+            JSON.stringify([...new Set(input.requiredCapabilities)].sort()) !==
+                requiredCapabilitiesJson ||
+            policy.missingCapabilities.length > 0)
+            throw new Error("Workflow version record does not match its canonical definition and policy");
+        if (input.authorPrincipalDigest !== undefined && input.authorPrincipalDigest.length === 0)
+            throw new Error("Workflow author principal digest must not be empty");
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const existingSource = this.db
+                .prepare("SELECT workflow_id FROM workflow_definitions WHERE space_id=? AND object_id=?")
+                .get(input.spaceId, input.objectId);
+            if (existingSource && existingSource.workflow_id !== input.workflowId)
+                throw new Error("Anytype workflow object is already bound to another workflow ID");
+            this.db
+                .prepare(`INSERT INTO workflow_definitions(
+            workflow_id,space_id,object_id,name,state,active_version_hash,source_modified_at,
+            last_seen_at,validation_errors_json,created_at,updated_at
+          ) VALUES(?,?,?,?,'valid',NULL,?,?,'[]',?,?)
+          ON CONFLICT(workflow_id) DO UPDATE SET
+            space_id=excluded.space_id,object_id=excluded.object_id,name=excluded.name,state='valid',
+            active_version_hash=NULL,
+            source_modified_at=excluded.source_modified_at,last_seen_at=excluded.last_seen_at,
+            validation_errors_json='[]',updated_at=excluded.updated_at
+          WHERE excluded.source_modified_at > workflow_definitions.source_modified_at`)
+                .run(input.workflowId, input.spaceId, input.objectId, input.name, input.sourceModifiedAt, input.createdAt, input.createdAt, input.createdAt);
+            this.db
+                .prepare(`INSERT OR IGNORE INTO workflow_approval_subjects(
+            workflow_id,approval_hash,canonical_approval_json,risk_tier,
+            required_capabilities_json,created_at
+          ) VALUES(?,?,?,?,?,?)`)
+                .run(input.workflowId, input.approvalHash, canonicalApprovalJson, input.riskTier, requiredCapabilitiesJson, input.createdAt);
+            const subject = this.db
+                .prepare(`SELECT canonical_approval_json,risk_tier,required_capabilities_json
+           FROM workflow_approval_subjects WHERE workflow_id=? AND approval_hash=?`)
+                .get(input.workflowId, input.approvalHash);
+            if (!subject ||
+                subject.canonical_approval_json !== canonicalApprovalJson ||
+                subject.risk_tier !== input.riskTier ||
+                subject.required_capabilities_json !== requiredCapabilitiesJson)
+                throw new Error("Workflow approval hash collision or divergent approval material");
+            this.db
+                .prepare(`INSERT OR IGNORE INTO workflow_versions(
+            workflow_id,space_id,object_id,name,version_hash,approval_hash,schema_version,
+            canonical_definition_json,source_text,risk_tier,required_capabilities_json,source_modified_at,
+            author_principal_digest,created_at
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+                .run(input.workflowId, input.spaceId, input.objectId, input.name, input.versionHash, input.approvalHash, input.schemaVersion, canonicalDefinitionJson, input.sourceText, input.riskTier, requiredCapabilitiesJson, input.sourceModifiedAt, input.authorPrincipalDigest ?? null, input.createdAt);
+            const stored = this.workflowVersion(input.workflowId, input.versionHash);
+            if (!stored ||
+                stored.spaceId !== input.spaceId ||
+                stored.objectId !== input.objectId ||
+                stored.name !== input.name ||
+                stored.approvalHash !== input.approvalHash ||
+                stored.schemaVersion !== input.schemaVersion ||
+                stored.canonicalDefinitionJson !== canonicalDefinitionJson ||
+                stored.canonicalApprovalJson !== canonicalApprovalJson ||
+                stored.sourceText !== input.sourceText ||
+                stored.riskTier !== input.riskTier ||
+                JSON.stringify(stored.requiredCapabilities) !== requiredCapabilitiesJson ||
+                stored.sourceModifiedAt !== input.sourceModifiedAt ||
+                stored.authorPrincipalDigest !== input.authorPrincipalDigest)
+                throw new Error("Workflow version hash collision or divergent immutable version");
+            this.db
+                .prepare(`UPDATE workflow_definitions SET active_version_hash=?,updated_at=?
+           WHERE workflow_id=? AND (
+             active_version_hash=? OR (active_version_hash IS NULL AND source_modified_at=?)
+           )`)
+                .run(input.versionHash, input.createdAt, input.workflowId, input.versionHash, input.sourceModifiedAt);
+            this.db.exec("COMMIT");
+            return stored;
+        }
+        catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+        }
+    }
+    workflowVersion(workflowId, versionHash) {
+        const row = this.db
+            .prepare(`SELECT v.*,s.canonical_approval_json
+         FROM workflow_versions v
+         JOIN workflow_approval_subjects s
+           ON s.workflow_id=v.workflow_id AND s.approval_hash=v.approval_hash
+         WHERE v.workflow_id=? AND v.version_hash=?`)
+            .get(workflowId, versionHash);
+        return row ? mapWorkflowVersion(row) : undefined;
+    }
+    recordWorkflowApproval(input) {
+        const subject = this.db
+            .prepare("SELECT risk_tier FROM workflow_approval_subjects WHERE workflow_id=? AND approval_hash=?")
+            .get(input.workflowId, input.approvalHash);
+        if (!subject)
+            throw new Error("Unknown workflow approval subject");
+        if (subject.risk_tier === "T2" && input.decision === "approved" && input.mode !== "manual")
+            throw new Error("T2 workflows require explicit manual approval");
+        const result = this.db
+            .prepare(`INSERT INTO workflow_approval_decisions(
+          decision_id,workflow_id,approval_hash,decision,mode,authority_hash,
+          actor_principal_digest,reason,decided_at,expires_at,supersedes_decision_id
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(input.decisionId, input.workflowId, input.approvalHash, input.decision, input.mode, input.authorityHash, input.actorPrincipalDigest, input.reason ?? null, input.decidedAt, input.expiresAt ?? null, input.supersedesDecisionId ?? null);
+        return this.workflowApprovalBySequence(Number(result.lastInsertRowid));
+    }
+    currentWorkflowApproval(workflowId, approvalHash, authorityHash, now = Date.now()) {
+        const row = this.db
+            .prepare(`SELECT * FROM workflow_approval_decisions
+         WHERE workflow_id=? AND approval_hash=?
+         ORDER BY decision_sequence DESC LIMIT 1`)
+            .get(workflowId, approvalHash);
+        const decision = row ? mapWorkflowApprovalDecision(row) : undefined;
+        if (!decision ||
+            decision.decision !== "approved" ||
+            decision.authorityHash !== authorityHash ||
+            (decision.expiresAt !== undefined && decision.expiresAt <= now))
+            return undefined;
+        return decision;
+    }
+    recordNormalizedEvent(input) {
+        this.db
+            .prepare(`INSERT OR IGNORE INTO normalized_events(
+          event_id,dedupe_key,kind,source,source_event_id,space_id,object_id,observed_at,
+          payload_json,diff_json,causation_run_id,causal_depth,origin_effect_key,recorded_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(input.eventId, input.dedupeKey, input.kind, input.source, input.sourceEventId ?? null, input.spaceId, input.objectId ?? null, input.observedAt, input.payloadJson, input.diffJson ?? null, input.causationRunId ?? null, input.causalDepth, input.originEffectKey ?? null, input.recordedAt);
+        const row = this.db
+            .prepare("SELECT * FROM normalized_events WHERE dedupe_key=?")
+            .get(input.dedupeKey);
+        if (!row)
+            throw new Error("Normalized event ID collision or divergent dedupe key");
+        const stored = mapNormalizedEvent(row);
+        if (!sameNormalizedEvent(stored, input))
+            throw new Error("Normalized event dedupe key collision or divergent immutable event");
+        return stored;
+    }
+    workflowApprovalBySequence(sequence) {
+        const row = this.db
+            .prepare("SELECT * FROM workflow_approval_decisions WHERE decision_sequence=?")
+            .get(sequence);
+        return row ? mapWorkflowApprovalDecision(row) : undefined;
+    }
     close() {
         this.db.close();
     }
@@ -913,6 +1212,78 @@ function mapOutbound(row) {
         updatedAt: Number(row.updated_at),
         ...(row.delivered_at === null ? {} : { deliveredAt: Number(row.delivered_at) }),
     };
+}
+function mapWorkflowVersion(row) {
+    return {
+        workflowId: row.workflow_id,
+        spaceId: row.space_id,
+        objectId: row.object_id,
+        name: row.name,
+        versionHash: row.version_hash,
+        approvalHash: row.approval_hash,
+        schemaVersion: Number(row.schema_version),
+        canonicalDefinitionJson: row.canonical_definition_json,
+        canonicalApprovalJson: row.canonical_approval_json,
+        sourceText: row.source_text,
+        riskTier: row.risk_tier,
+        requiredCapabilities: parseJson(row.required_capabilities_json),
+        sourceModifiedAt: Number(row.source_modified_at),
+        ...(row.author_principal_digest === null
+            ? {}
+            : { authorPrincipalDigest: row.author_principal_digest }),
+        createdAt: Number(row.created_at),
+    };
+}
+function mapWorkflowApprovalDecision(row) {
+    return {
+        sequence: Number(row.decision_sequence),
+        decisionId: row.decision_id,
+        workflowId: row.workflow_id,
+        approvalHash: row.approval_hash,
+        decision: row.decision,
+        mode: row.mode,
+        authorityHash: row.authority_hash,
+        actorPrincipalDigest: row.actor_principal_digest,
+        ...(row.reason === null ? {} : { reason: row.reason }),
+        decidedAt: Number(row.decided_at),
+        ...(row.expires_at === null ? {} : { expiresAt: Number(row.expires_at) }),
+        ...(row.supersedes_decision_id === null
+            ? {}
+            : { supersedesDecisionId: row.supersedes_decision_id }),
+    };
+}
+function mapNormalizedEvent(row) {
+    return {
+        eventId: row.event_id,
+        dedupeKey: row.dedupe_key,
+        kind: row.kind,
+        source: row.source,
+        ...(row.source_event_id === null ? {} : { sourceEventId: row.source_event_id }),
+        spaceId: row.space_id,
+        ...(row.object_id === null ? {} : { objectId: row.object_id }),
+        observedAt: Number(row.observed_at),
+        payloadJson: row.payload_json,
+        ...(row.diff_json === null ? {} : { diffJson: row.diff_json }),
+        ...(row.causation_run_id === null ? {} : { causationRunId: row.causation_run_id }),
+        causalDepth: Number(row.causal_depth),
+        ...(row.origin_effect_key === null ? {} : { originEffectKey: row.origin_effect_key }),
+        recordedAt: Number(row.recorded_at),
+    };
+}
+function sameNormalizedEvent(left, right) {
+    return (left.eventId === right.eventId &&
+        left.dedupeKey === right.dedupeKey &&
+        left.kind === right.kind &&
+        left.source === right.source &&
+        left.sourceEventId === right.sourceEventId &&
+        left.spaceId === right.spaceId &&
+        left.objectId === right.objectId &&
+        left.observedAt === right.observedAt &&
+        left.payloadJson === right.payloadJson &&
+        left.diffJson === right.diffJson &&
+        left.causationRunId === right.causationRunId &&
+        left.causalDepth === right.causalDepth &&
+        left.originEffectKey === right.originEffectKey);
 }
 function parseJson(value) {
     return JSON.parse(value);
