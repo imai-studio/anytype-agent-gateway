@@ -62,7 +62,11 @@ export function principalAllowed(
 // ID or a space-scoped participant ID. Retain that released compatibility while
 // never consulting display names or message content.
 export function sameIdentity(left: string, right: string): boolean {
-  return left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`);
+  if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`)) return true;
+  const memberAndParticipant =
+    (left.startsWith("_member_") && right.startsWith("_participant_")) ||
+    (right.startsWith("_member_") && left.startsWith("_participant_"));
+  return memberAndParticipant && left.split("_").at(-1) === right.split("_").at(-1);
 }
 
 export function principalAuditFields(

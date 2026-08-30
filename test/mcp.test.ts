@@ -580,26 +580,12 @@ describe("AAG Anytype MCP policy", () => {
     ).rejects.toThrow("must match the current Anytype conversation");
   });
 
-  it("binds participant access changes to the current sender", async () => {
+  it("does not expose a caller-supplied actor identity for access changes", () => {
     const managed = config({
       management: { allowAccessChanges: true, accessAdmins: ["admin"] },
     });
-    await expect(
-      callTool(
-        client(),
-        managed,
-        "/config.yaml",
-        "chat:space-1:current-chat",
-        "space-1",
-        "aag_set_access",
-        {
-          actor_id: "forged-admin",
-          operation: "add",
-          participant_ids: ["member"],
-        },
-        "actual-sender",
-      ),
-    ).rejects.toThrow("must match the current Anytype sender");
+    const access = toolDefinitions(managed).find((tool) => tool.name === "aag_set_access");
+    expect(access?.inputSchema).not.toHaveProperty("properties.actor_id");
   });
 
   it("fails closed when participant access changes have no verified sender", async () => {
@@ -614,7 +600,7 @@ describe("AAG Anytype MCP policy", () => {
         "chat:space-1:current-chat",
         "space-1",
         "aag_set_access",
-        { actor_id: "admin", operation: "add", participant_ids: ["member"] },
+        { operation: "add", participant_ids: ["member"] },
       ),
     ).rejects.toThrow("could not be verified");
   });

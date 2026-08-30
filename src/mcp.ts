@@ -269,7 +269,6 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
                 route_id: stringSchema(
                   "chat:<space-id>:<chat-id> or discussion:<space-id>:<discussion-id>",
                 ),
-                actor_id: stringSchema("Native participant ID of the user requesting the change"),
                 operation: { type: "string", enum: ["add", "remove", "replace"] },
                 participant_ids: {
                   type: "array",
@@ -277,7 +276,7 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
                   minItems: 1,
                 },
               },
-              ["actor_id", "operation", "participant_ids"],
+              ["operation", "participant_ids"],
             ),
           },
         ]
@@ -587,14 +586,12 @@ export async function callTool(
     const routeSpaceId = spaceFromRoute(effectiveRouteId);
     if (!routeSpaceId) throw new Error("route_id does not contain a valid Anytype space");
     assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
-    const requestedActorId = required(input, "actor_id");
-    if (!boundActorId) throw new Error("The current Anytype sender could not be verified");
-    if (requestedActorId !== boundActorId)
-      throw new Error("actor_id must match the current Anytype sender");
+    const boundPrincipal = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
+    if (!boundPrincipal) throw new Error("The current Anytype sender could not be verified");
     const allowedUsers = await setRouteAccess({
       configPath,
       routeId: effectiveRouteId,
-      actor: principalFromParticipantId(boundActorId)!,
+      actor: boundPrincipal,
       operation: String(input.operation),
       participantIds: requiredArray(input, "participant_ids"),
     });

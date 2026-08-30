@@ -5,6 +5,7 @@ import {
   principalAuditFields,
   principalFromActorRecord,
   principalFromMessage,
+  sameIdentity,
 } from "../src/principal.js";
 import { decideWake } from "../src/wake.js";
 import type { ChatMessage } from "../src/types.js";
@@ -48,6 +49,13 @@ describe("authenticated Anytype principals", () => {
         },
       });
     }
+  });
+
+  it("preserves released global and space-scoped immutable ID equivalence", () => {
+    expect(sameIdentity("identity01", "_participant_space1_identity01")).toBe(true);
+    expect(sameIdentity("_member_identity01", "_participant_space1_identity01")).toBe(true);
+    expect(sameIdentity("_member_identity01", "_participant_space1_identity02")).toBe(false);
+    expect(sameIdentity("_participant_operator_01", "_participant_agent_01")).toBe(false);
   });
 
   it("fails closed when native identity is missing or malformed", () => {
