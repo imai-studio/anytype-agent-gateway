@@ -19,6 +19,15 @@ export function principalFromParticipantId(participantId, displayName) {
         provenance: "anytype-native",
     };
 }
+export function principalFromActorRecord(value) {
+    if (!value || typeof value !== "object")
+        return undefined;
+    const record = value;
+    if (record.provenance !== "anytype-native")
+        return undefined;
+    const participantId = record.participantId ?? record.actorId;
+    return typeof participantId === "string" ? principalFromParticipantId(participantId) : undefined;
+}
 export function principalAllowed(principal, configuredParticipantIds) {
     return Boolean(principal &&
         configuredParticipantIds.some((configured) => configured === "*" || sameIdentity(principal.participantId, configured)));

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { configSchema } from "../src/config.js";
-import { principalAllowed, principalAuditFields, principalFromMessage } from "../src/principal.js";
+import {
+  principalAllowed,
+  principalAuditFields,
+  principalFromActorRecord,
+  principalFromMessage,
+} from "../src/principal.js";
 import { decideWake } from "../src/wake.js";
 import type { ChatMessage } from "../src/types.js";
 
@@ -57,6 +62,27 @@ describe("authenticated Anytype principals", () => {
         }),
       ).toMatchObject({ wake: false, reason: "identity-unavailable" });
     }
+  });
+
+  it("accepts actor records only with explicit native provenance", () => {
+    expect(
+      principalFromActorRecord({
+        participantId: "_participant_operator_01",
+        provenance: "anytype-native",
+      }),
+    ).toMatchObject({
+      participantId: "_participant_operator_01",
+      provenance: "anytype-native",
+    });
+    for (const record of [
+      undefined,
+      {},
+      { participantId: "_participant_operator_01" },
+      { participantId: "_participant_operator_01", provenance: "unavailable" },
+      { participantId: "operator id", provenance: "anytype-native" },
+      { participantId: 42, provenance: "anytype-native" },
+    ])
+      expect(principalFromActorRecord(record)).toBeUndefined();
   });
 
   it("ignores forwarded, replied, and mentioned claims of operator identity", () => {

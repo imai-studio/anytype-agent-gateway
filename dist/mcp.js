@@ -10,7 +10,7 @@ import { modelAllowed } from "./model-command.js";
 import { Store } from "./store.js";
 import { VERSION } from "./version.js";
 import { resolveProductEnvironment } from "./compatibility.js";
-import { principalAllowed, principalFromParticipantId } from "./principal.js";
+import { principalAllowed, principalFromActorRecord, principalFromParticipantId, } from "./principal.js";
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const propertyValueFields = [
     "text",
@@ -108,11 +108,7 @@ async function currentActorId(actorFile) {
     if (!actorFile)
         return undefined;
     try {
-        const value = JSON.parse(await readFile(actorFile, "utf8"));
-        if (value.provenance !== "anytype-native")
-            return undefined;
-        const actorId = value.participantId ?? value.actorId;
-        return typeof actorId === "string" && actorId ? actorId : undefined;
+        return principalFromActorRecord(JSON.parse(await readFile(actorFile, "utf8")))?.participantId;
     }
     catch {
         return undefined;

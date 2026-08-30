@@ -34,6 +34,18 @@ export function principalFromParticipantId(
   };
 }
 
+export function principalFromActorRecord(value: unknown): AnytypePrincipal | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as {
+    actorId?: unknown;
+    participantId?: unknown;
+    provenance?: unknown;
+  };
+  if (record.provenance !== "anytype-native") return undefined;
+  const participantId = record.participantId ?? record.actorId;
+  return typeof participantId === "string" ? principalFromParticipantId(participantId) : undefined;
+}
+
 export function principalAllowed(
   principal: AnytypePrincipal | undefined,
   configuredParticipantIds: readonly string[],

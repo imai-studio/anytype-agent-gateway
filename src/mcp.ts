@@ -10,7 +10,11 @@ import { modelAllowed } from "./model-command.js";
 import { Store } from "./store.js";
 import { VERSION } from "./version.js";
 import { resolveProductEnvironment } from "./compatibility.js";
-import { principalAllowed, principalFromParticipantId } from "./principal.js";
+import {
+  principalAllowed,
+  principalFromActorRecord,
+  principalFromParticipantId,
+} from "./principal.js";
 
 type Request = {
   jsonrpc?: string;
@@ -123,14 +127,7 @@ export async function runMcpServer(
 async function currentActorId(actorFile: string | undefined): Promise<string | undefined> {
   if (!actorFile) return undefined;
   try {
-    const value = JSON.parse(await readFile(actorFile, "utf8")) as {
-      actorId?: unknown;
-      participantId?: unknown;
-      provenance?: unknown;
-    };
-    if (value.provenance !== "anytype-native") return undefined;
-    const actorId = value.participantId ?? value.actorId;
-    return typeof actorId === "string" && actorId ? actorId : undefined;
+    return principalFromActorRecord(JSON.parse(await readFile(actorFile, "utf8")))?.participantId;
   } catch {
     return undefined;
   }
