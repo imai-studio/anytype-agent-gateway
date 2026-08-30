@@ -46,14 +46,16 @@ const reservedPropertyKeys = new Set([
 
 export async function runMcpServer(
   configPath: string,
-  context: { routeId?: string; spaceId?: string; actorId?: string } = {},
+  context: { routeId?: string; spaceId?: string } = {},
 ): Promise<void> {
   const config = await loadConfig(configPath);
   if (!config.tools.anytype.enabled && !config.tools.codex.enabled)
     throw new Error("All AAG tools are disabled in this configuration");
   const anytype = await AnytypeClient.create(config);
   const routeId = context.routeId ?? resolveProductEnvironment("ROUTE_ID");
-  const configuredActorId = context.actorId ?? resolveProductEnvironment("ACTOR_ID");
+  // Resolve legacy/new direct actor variables for compatibility diagnostics,
+  // but never treat caller-controlled process input as native provenance.
+  resolveProductEnvironment("ACTOR_ID");
   const actorFile = resolveProductEnvironment("ACTOR_FILE");
   const discussionRootId = resolveProductEnvironment("DISCUSSION_ROOT_ID");
   const defaultSpaceId =
@@ -84,7 +86,7 @@ export async function runMcpServer(
       else if (request.method === "tools/list") result = { tools };
       else if (request.method === "tools/call") {
         try {
-          const actorId = await currentActorId(configuredActorId, actorFile);
+          const actorId = await currentActorId(actorFile);
           const value = await callTool(
             anytype,
             config,
@@ -118,18 +120,15 @@ export async function runMcpServer(
   }
 }
 
-async function currentActorId(
-  configuredActorId: string | undefined,
-  actorFile: string | undefined,
-): Promise<string | undefined> {
-  if (!actorFile) return configuredActorId;
+async function currentActorId(actorFile: string | undefined): Promise<string | undefined> {
+  if (!actorFile) return undefined;
   try {
     const value = JSON.parse(await readFile(actorFile, "utf8")) as {
       actorId?: unknown;
       participantId?: unknown;
       provenance?: unknown;
     };
-    if (value.provenance !== undefined && value.provenance !== "anytype-native") return undefined;
+    if (value.provenance !== "anytype-native") return undefined;
     const actorId = value.participantId ?? value.actorId;
     return typeof actorId === "string" && actorId ? actorId : undefined;
   } catch {

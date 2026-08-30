@@ -40,7 +40,9 @@ export async function runMcpServer(configPath, context = {}) {
         throw new Error("All AAG tools are disabled in this configuration");
     const anytype = await AnytypeClient.create(config);
     const routeId = context.routeId ?? resolveProductEnvironment("ROUTE_ID");
-    const configuredActorId = context.actorId ?? resolveProductEnvironment("ACTOR_ID");
+    // Resolve legacy/new direct actor variables for compatibility diagnostics,
+    // but never treat caller-controlled process input as native provenance.
+    resolveProductEnvironment("ACTOR_ID");
     const actorFile = resolveProductEnvironment("ACTOR_FILE");
     const discussionRootId = resolveProductEnvironment("DISCUSSION_ROOT_ID");
     const defaultSpaceId = context.spaceId ??
@@ -75,7 +77,7 @@ export async function runMcpServer(configPath, context = {}) {
                 result = { tools };
             else if (request.method === "tools/call") {
                 try {
-                    const actorId = await currentActorId(configuredActorId, actorFile);
+                    const actorId = await currentActorId(actorFile);
                     const value = await callTool(anytype, config, configPath, routeId, defaultSpaceId, String(request.params?.name ?? ""), request.params?.arguments ?? {}, actorId, discussionRootId);
                     result = { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
                 }
@@ -102,12 +104,12 @@ export async function runMcpServer(configPath, context = {}) {
         }
     }
 }
-async function currentActorId(configuredActorId, actorFile) {
+async function currentActorId(actorFile) {
     if (!actorFile)
-        return configuredActorId;
+        return undefined;
     try {
         const value = JSON.parse(await readFile(actorFile, "utf8"));
-        if (value.provenance !== undefined && value.provenance !== "anytype-native")
+        if (value.provenance !== "anytype-native")
             return undefined;
         const actorId = value.participantId ?? value.actorId;
         return typeof actorId === "string" && actorId ? actorId : undefined;

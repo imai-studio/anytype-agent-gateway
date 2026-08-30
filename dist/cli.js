@@ -247,11 +247,9 @@ program
     .requiredOption("-c, --config <path>")
     .option("--route-id <id>")
     .option("--space-id <id>")
-    .option("--actor-id <id>")
     .action(async (options) => runMcpServer(resolve(options.config), {
     ...(options.routeId ? { routeId: options.routeId } : {}),
     ...(options.spaceId ? { spaceId: options.spaceId } : {}),
-    ...(options.actorId ? { actorId: options.actorId } : {}),
 }));
 const identity = program
     .command("identity")

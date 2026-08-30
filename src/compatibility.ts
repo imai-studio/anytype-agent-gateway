@@ -89,12 +89,12 @@ export function resolveConfigPath(
     warn?: (message: string) => void;
   } = {},
 ): string {
-  if (options.explicit) return normalizePath(options.explicit, options.home);
   const configured = resolveProductEnvironment("CONFIG", {
     ...(options.environment ? { environment: options.environment } : {}),
     normalize: (value) => normalizePath(value, options.home),
     ...(options.warn ? { warn: options.warn } : {}),
   });
+  if (options.explicit) return normalizePath(options.explicit, options.home);
   return configured
     ? normalizePath(configured, options.home)
     : join(options.home ?? homedir(), ".config", "aag", "agent.yaml");
@@ -108,12 +108,12 @@ export function resolveStatePath(
     warn?: (message: string) => void;
   } = {},
 ): string {
-  if (options.explicit) return normalizePath(options.explicit, options.home);
   const configured = resolveProductEnvironment("STATE_PATH", {
     ...(options.environment ? { environment: options.environment } : {}),
     normalize: (value) => normalizePath(value, options.home),
     ...(options.warn ? { warn: options.warn } : {}),
   });
+  if (options.explicit) return normalizePath(options.explicit, options.home);
   return configured
     ? normalizePath(configured, options.home)
     : join(options.home ?? homedir(), ".local", "state", "aag", "state.sqlite");

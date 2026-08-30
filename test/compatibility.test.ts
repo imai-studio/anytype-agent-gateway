@@ -81,7 +81,7 @@ describe("Knot compatibility foundation", () => {
     expect(
       resolveConfigPath({
         explicit: "/operator/agent.yaml",
-        environment: { KNOT_CONFIG: "/ignored/new", AAG_CONFIG: "/ignored/old" },
+        environment: { KNOT_CONFIG: "/ignored", AAG_CONFIG: "/ignored" },
       }),
     ).toBe("/operator/agent.yaml");
     expect(
@@ -93,6 +93,12 @@ describe("Knot compatibility foundation", () => {
         },
       }),
     ).toBe("/home/fixture/.state.sqlite");
+    expect(() =>
+      resolveConfigPath({
+        explicit: "/operator/agent.yaml",
+        environment: { KNOT_CONFIG: "/conflict/new", AAG_CONFIG: "/conflict/old" },
+      }),
+    ).toThrow("Conflicting compatibility variables");
   });
 
   it("discovers either Heart binary and preserves explicit commands", async () => {
