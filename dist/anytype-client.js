@@ -274,7 +274,25 @@ export class AnytypeClient {
         return json.property ?? json;
     }
     async listPropertyTags(spaceId, propertyId) {
-        return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/properties/${encodeURIComponent(propertyId)}/tags`);
+        const tags = await this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/properties/${encodeURIComponent(propertyId)}/tags`);
+        return tags.map((tag) => ({
+            id: String(tag.id),
+            name: String(tag.name),
+            ...(tag.key ? { key: String(tag.key) } : {}),
+            ...(tag.color ? { color: String(tag.color) } : {}),
+        }));
+    }
+    async createPropertyTag(spaceId, propertyId, input) {
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/properties/${encodeURIComponent(propertyId)}/tags`, { method: "POST", body: JSON.stringify(input) })).json());
+        const tag = json.tag ?? json;
+        if (!tag.id || !tag.name)
+            throw new Error("Anytype returned an incomplete project tag");
+        return {
+            id: String(tag.id),
+            name: String(tag.name),
+            ...(tag.key ? { key: String(tag.key) } : {}),
+            ...(tag.color ? { color: String(tag.color) } : {}),
+        };
     }
     async listTemplates(spaceId, typeId) {
         return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/types/${encodeURIComponent(typeId)}/templates`);

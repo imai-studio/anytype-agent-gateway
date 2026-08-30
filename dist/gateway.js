@@ -4,6 +4,7 @@ import { decideWake, mergeWakeOverride, sameIdentity } from "./wake.js";
 const INTERRUPTED_RUN_RECOVERY_GRACE_MS = 60 * 60 * 1000;
 const DIRECT_MESSAGE_DISCOVERY_MARKER = "system:aag:direct-message-discovery";
 const directMessageSpaceMarker = (spaceId) => `system:aag:direct-message-space:${spaceId}`;
+const directMessageBootstrapMarker = (identity) => `system:aag:direct-message-bootstrap:${identity}`;
 export class Gateway {
     anytype;
     runtime;
@@ -22,6 +23,7 @@ export class Gateway {
     drainOnStop = false;
     reportedUnknownSpaceKinds = new Set();
     initialDirectMessageScanComplete = false;
+    directMessageBootstrapFailures = new Map();
     directMessageMembership = new Map();
     resolveTerminal;
     rejectTerminal;
@@ -338,10 +340,14 @@ export class Gateway {
                     this.initialDirectMessageScanComplete = true;
                 }
                 let chatsDiscovered = 0;
+                const authorizedPeerIdentities = new Set();
+                let membershipScanClean = true;
                 for (const space of spaces) {
                     try {
                         const now = Date.now();
                         let membership = this.directMessageMembership.get(space.id);
+                        if (membership?.authorized && membership.peerIdentity)
+                            authorizedPeerIdentities.add(membership.peerIdentity);
                         const refreshAfter = membership?.authorized || membership?.reason === "unauthorized-peer"
                             ? 5 * 60 * 1000
                             : discovery.discoveryIntervalSeconds * 1000;
@@ -367,6 +373,9 @@ export class Gateway {
                                 ...(reason ? { reason } : {}),
                                 ...(self ? { selfParticipantId: self.id } : {}),
                                 ...(authorizedPeer ? { peerName: authorizedPeer.name } : {}),
+                                ...(authorizedPeer
+                                    ? { peerIdentity: authorizedPeer.identity ?? authorizedPeer.id }
+                                    : {}),
                             };
                             this.directMessageMembership.set(space.id, membership);
                             if (reason && reason !== previousReason)
@@ -374,6 +383,8 @@ export class Gateway {
                         }
                         if (!membership.authorized || !membership.selfParticipantId)
                             continue;
+                        if (membership.peerIdentity)
+                            authorizedPeerIdentities.add(membership.peerIdentity);
                         const chats = await this.anytype.listChats(space.id);
                         for (const chat of chats) {
                             chatsDiscovered += 1;
@@ -393,10 +404,45 @@ export class Gateway {
                         }
                     }
                     catch (error) {
+                        membershipScanClean = false;
                         this.log("direct_message_space_discovery_failed", {
                             spaceId: space.id,
                             error: error instanceof Error ? error.message : String(error),
                         });
+                    }
+                }
+                if (discovery.createMissing && membershipScanClean) {
+                    for (const allowed of discovery.wake.allowedUsers) {
+                        if (this.abort.signal.aborted)
+                            break;
+                        const identity = allowed.split("_").at(-1);
+                        const retry = this.directMessageBootstrapFailures.get(identity);
+                        if ([...authorizedPeerIdentities].some((observed) => sameIdentity(observed, identity)) ||
+                            this.store.isInitialized(directMessageBootstrapMarker(identity)) ||
+                            (retry && retry.nextAttemptAt > Date.now()))
+                            continue;
+                        try {
+                            const created = await this.discussions.ensureDirectMessage(identity, this.abort.signal);
+                            this.store.initialize(directMessageBootstrapMarker(identity));
+                            this.directMessageBootstrapFailures.delete(identity);
+                            this.log("direct_message_created", { identity, ...created });
+                        }
+                        catch (error) {
+                            if (this.abort.signal.aborted)
+                                break;
+                            const failures = (retry?.failures ?? 0) + 1;
+                            const retryInSeconds = Math.min(3600, 30 * 2 ** Math.min(failures - 1, 7));
+                            this.directMessageBootstrapFailures.set(identity, {
+                                failures,
+                                nextAttemptAt: Date.now() + retryInSeconds * 1000,
+                            });
+                            this.log("direct_message_create_failed", {
+                                identity,
+                                failures,
+                                retryInSeconds,
+                                error: error instanceof Error ? error.message : String(error),
+                            });
+                        }
                     }
                 }
                 this.log("direct_message_discovery_complete", {

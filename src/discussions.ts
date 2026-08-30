@@ -5,12 +5,14 @@ import type {
   AnytypeMember,
   AnytypePort,
   AnytypeSpace,
+  AnytypeTag,
   ChatAttachment,
   ChatMessage,
   TextMark,
 } from "./types.js";
 
 export type DiscussionResolution = { objectId: string; discussionId?: string; error?: string };
+export type DirectMessageResolution = { spaceId: string; chatId: string };
 
 export class HeartDiscussionAdapter {
   constructor(private readonly config: AgentConfig) {}
@@ -38,6 +40,25 @@ export class HeartDiscussionAdapter {
     });
     const result = JSON.parse(stdout) as { discussions: DiscussionResolution[] };
     return result.discussions;
+  }
+
+  async ensureDirectMessage(
+    identity: string,
+    signal?: AbortSignal,
+  ): Promise<DirectMessageResolution> {
+    const { command, grpcAddress } = this.config.anytype.heartAdapter;
+    const args = ["ensure-dm", "--grpc-address", grpcAddress];
+    if (this.config.anytype.cli.configPath)
+      args.push("--config", this.config.anytype.cli.configPath);
+    const { stdout } = await runProcess(command, args, {
+      stdin: `${JSON.stringify({ identity })}\n`,
+      timeoutMs: 35_000,
+      ...(signal ? { signal } : {}),
+    });
+    const result = JSON.parse(stdout) as DirectMessageResolution;
+    if (!result.spaceId || !result.chatId)
+      throw new Error("Heart returned no direct-message space or chat ID");
+    return result;
   }
 
   async hydrateMessages(chatId: string, messages: ChatMessage[]): Promise<ChatMessage[]> {
@@ -216,6 +237,23 @@ export class DiscussionAnytypePort implements AnytypePort {
     objectId: string,
   ): Promise<{ id: string; name?: string; markdown?: string }> {
     return this.base.getObject(spaceId, objectId);
+  }
+  async listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]> {
+    return this.base.listPropertyTags(spaceId, propertyId);
+  }
+  async createPropertyTag(
+    spaceId: string,
+    propertyId: string,
+    input: { name: string; color: string },
+  ): Promise<AnytypeTag> {
+    return this.base.createPropertyTag(spaceId, propertyId, input);
+  }
+  async updateObject(
+    spaceId: string,
+    objectId: string,
+    input: { properties: Array<{ key: string; multi_select: string[] }> },
+  ): Promise<Record<string, unknown>> {
+    return this.base.updateObject(spaceId, objectId, input);
   }
   async downloadFile(
     spaceId: string,

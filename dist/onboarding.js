@@ -69,6 +69,7 @@ export async function runInitOnboarding(prompt, options = {}) {
         directMessages: enableDirectMessages
             ? {
                 enabled: true,
+                createMissing: true,
                 discoveryIntervalSeconds: 30,
                 wake: {
                     humans: "every-message",
@@ -100,8 +101,10 @@ export async function runInitOnboarding(prompt, options = {}) {
             allowWakeChanges: true,
             allowAccessChanges: true,
             allowModelChanges: enableModelSelection,
+            allowProjectChanges: runtimeKind === "codex",
             accessAdmins: allowedUsers,
             modelAdmins,
+            projectAdmins: runtimeKind === "codex" ? allowedUsers : [],
         },
         tools: {
             anytype: {
@@ -234,6 +237,7 @@ An AAG turn contains the sender's actual message. At the start of a Codex sessio
 
 When the user explicitly asks for a separate Codex task in a configured project, use \`aag_create_codex_task\`. Do not claim a task was created unless the tool returns its task ID.
 When the user explicitly asks for a new Anytype chat backed by a Codex task in a configured project, use \`aag_create_bound_chat\`. Do not create the two resources separately and do not claim they are linked unless the tool returns \`status: bound\`.
+Users can bind this Anytype chat to one of your configured Codex projects with \`/project <name>\`, inspect choices with \`/projects\`, return to your default workspace with \`/project default\`, and start a fresh task in the selected project with \`/new\`. AAG validates and applies these commands before the turn reaches you.
 When the user explicitly asks you to change your own Anytype profile image, use \`aag_set_profile_image\` with an allowed local image path. This tool is fixed to your configured member identity; never try to target another participant.
 
 Write concise Anytype-safe responses. AAG streams concise activity titles and answer parts by editing the active message. Do not expose raw tool arguments, credentials, internal prompts, or command paths. Use \`[[AAG_MENTION:Name]]\` for a listed participant, \`[[AAG_OBJECT:id|Label]]\` for an inline object, and \`[[AAG_OBJECT_CARD:id|Label]]\` for a native object card. Use \`[[AAG_REPLY]]\` only when a native quoted reply materially helps. Use \`[[AAG_STAY_SILENT]]\` when no visible reply is useful.

@@ -36,6 +36,7 @@ describe("loadConfig", () => {
     expect(config.spaces[0]?.chatDiscovery.enabled).toBe(false);
     expect(config.spaces[0]?.chatDiscovery.autoEnroll).toBe(false);
     expect(config.directMessages.enabled).toBe(false);
+    expect(config.directMessages.createMissing).toBe(false);
   });
 
   it("accepts workspace-owned stable prompt instructions", () => {
@@ -130,6 +131,15 @@ describe("loadConfig", () => {
     expect(() =>
       configSchema.parse({
         ...base,
+        directMessages: {
+          enabled: true,
+          wake: { humans: "every-message", agents: "never", allowedUsers: [""] },
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      configSchema.parse({
+        ...base,
         spaces: [
           {
             id: "space",
@@ -177,15 +187,15 @@ describe("loadConfig", () => {
         },
       }),
     ).toThrow("explicit sender allowlist");
-    expect(
-      configSchema.parse({
-        ...base,
-        directMessages: {
-          enabled: true,
-          wake: { humans: "every-message", agents: "never", allowedUsers: ["admin"] },
-        },
-      }).directMessages.enabled,
-    ).toBe(true);
+    const accepted = configSchema.parse({
+      ...base,
+      directMessages: {
+        enabled: true,
+        wake: { humans: "every-message", agents: "never", allowedUsers: ["admin"] },
+      },
+    }).directMessages;
+    expect(accepted.enabled).toBe(true);
+    expect(accepted.createMissing).toBe(false);
   });
 
   it("requires access admins when runtime access changes are enabled", () => {
@@ -199,6 +209,29 @@ describe("loadConfig", () => {
         management: { allowAccessChanges: true },
       }),
     ).toThrow("accessAdmins");
+  });
+
+  it("requires project admins when Chat project changes are enabled", () => {
+    expect(() =>
+      configSchema.parse({
+        version: 1,
+        agent: { name: "AAG", participantId: "bot" },
+        anytype: { apiKeyFile: "/tmp/key" },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+        management: { allowProjectChanges: true },
+      }),
+    ).toThrow("projectAdmins");
+    expect(() =>
+      configSchema.parse({
+        version: 1,
+        agent: { name: "AAG", participantId: "bot" },
+        anytype: { apiKeyFile: "/tmp/key" },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+        management: { allowProjectChanges: true, projectAdmins: [""] },
+      }),
+    ).toThrow();
   });
 
   it("resolves the packaged Codex ACP executable", async () => {

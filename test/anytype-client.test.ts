@@ -215,6 +215,13 @@ describe("Anytype object REST client", () => {
             data: url.searchParams.get("offset") === "0" ? [{ id: "tag-open", name: "Open" }] : [],
           }),
         );
+      else if (
+        request.method === "POST" &&
+        url.pathname.endsWith("/properties/property-status/tags")
+      )
+        response.end(
+          JSON.stringify({ tag: { id: "tag-project", name: "klee:imai", color: "blue" } }),
+        );
       else if (request.method === "GET" && url.pathname.endsWith("/types/type-page/templates"))
         response.end(
           JSON.stringify({
@@ -306,6 +313,9 @@ describe("Anytype object REST client", () => {
     await expect(client.listPropertyTags("space", "property-status")).resolves.toEqual([
       { id: "tag-open", name: "Open" },
     ]);
+    await expect(
+      client.createPropertyTag("space", "property-status", { name: "klee:imai", color: "blue" }),
+    ).resolves.toEqual({ id: "tag-project", name: "klee:imai", color: "blue" });
     await expect(client.listTemplates("space", "type-page")).resolves.toEqual([
       { id: "template-daily", name: "Daily" },
     ]);
@@ -337,6 +347,7 @@ describe("Anytype object REST client", () => {
       ["GET", "/v1/spaces/space/properties/property-status"],
       ["GET", "/v1/spaces/space/properties/property-status/tags?offset=0&limit=100"],
       ["GET", "/v1/spaces/space/properties/property-status/tags?offset=1&limit=100"],
+      ["POST", "/v1/spaces/space/properties/property-status/tags"],
       ["GET", "/v1/spaces/space/types/type-page/templates?offset=0&limit=100"],
       ["GET", "/v1/spaces/space/types/type-page/templates?offset=1&limit=100"],
       ["POST", "/v1/spaces/space/objects"],
@@ -350,11 +361,12 @@ describe("Anytype object REST client", () => {
       ["POST", "/v1/spaces/space/files"],
     ]);
     expect(JSON.parse(calls[0]!.body)).toEqual({ query: "roadmap", types: ["page"] });
-    expect(JSON.parse(calls[12]!.body)).toEqual({ type_key: "page", name: "Plan", body: "Body" });
-    expect(JSON.parse(calls[13]!.body)).toEqual({ name: "Updated", markdown: "Text" });
-    expect(JSON.parse(calls[15]!.body)).toEqual({ objects: ["one", "two"] });
-    expect(calls[20]!.contentType).toMatch(/^multipart\/form-data; boundary=/u);
-    expect(calls[20]!.body).toContain("asset body");
+    expect(JSON.parse(calls[10]!.body)).toEqual({ name: "klee:imai", color: "blue" });
+    expect(JSON.parse(calls[13]!.body)).toEqual({ type_key: "page", name: "Plan", body: "Body" });
+    expect(JSON.parse(calls[14]!.body)).toEqual({ name: "Updated", markdown: "Text" });
+    expect(JSON.parse(calls[16]!.body)).toEqual({ objects: ["one", "two"] });
+    expect(calls[21]!.contentType).toMatch(/^multipart\/form-data; boundary=/u);
+    expect(calls[21]!.body).toContain("asset body");
     expect(
       calls.every(
         (call) => call.authorization === "Bearer secret-key" && call.version === "2025-11-08",

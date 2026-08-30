@@ -55,6 +55,7 @@ describe("aag init", () => {
     expect(config.spaces[0].chatDiscovery).toMatchObject({ enabled: true, autoEnroll: true });
     expect(config.directMessages).toMatchObject({
       enabled: true,
+      createMissing: true,
       wake: { humans: "every-message", allowedUsers: ["participant-raj"] },
     });
     expect(await readFile(result.agentsFile!, "utf8")).toContain(

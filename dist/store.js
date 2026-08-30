@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 export class Store {
     db;
     constructor(path) {
@@ -31,6 +31,8 @@ export class Store {
                 this.migrateToVersion4();
             if (current < 5)
                 this.migrateToVersion5();
+            if (current < 6)
+                this.migrateToVersion6();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -194,6 +196,27 @@ export class Store {
         ON control_activations(route_id,thread_key,created_at);
     `);
     }
+    migrateToVersion6() {
+        const workspaceTableExists = Boolean(this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_workspaces'")
+            .get());
+        if (!workspaceTableExists) {
+            this.db.exec(`
+        CREATE TABLE session_workspaces (
+          thread_key TEXT PRIMARY KEY REFERENCES session_bindings(thread_key) ON DELETE CASCADE,
+          workspace_path TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+        }
+        this.db.exec(`
+      CREATE TABLE session_workspace_overrides (
+        thread_key TEXT PRIMARY KEY,
+        workspace_path TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    }
     isInitialized(routeId) {
         return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));
     }
@@ -351,6 +374,9 @@ export class Store {
         this.db
             .prepare("DELETE FROM session_bindings WHERE state <> 'active' AND updated_at < ?")
             .run(before);
+        this.db
+            .prepare("DELETE FROM session_workspace_overrides WHERE updated_at < ? AND thread_key NOT IN (SELECT thread_key FROM session_bindings)")
+            .run(before);
     }
     cacheDiscussion(value) {
         this.db
@@ -498,18 +524,64 @@ export class Store {
         }, now);
     }
     deleteSessionBinding(threadKey) {
-        return (this.db.prepare("DELETE FROM session_bindings WHERE thread_key=?").run(threadKey).changes > 0);
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            this.db.prepare("DELETE FROM session_workspace_overrides WHERE thread_key=?").run(threadKey);
+            const deleted = this.db.prepare("DELETE FROM session_bindings WHERE thread_key=?").run(threadKey).changes >
+                0;
+            this.db.exec("COMMIT");
+            return deleted;
+        }
+        catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+        }
     }
     sessionWorkspace(threadKey) {
+        return this.db
+            .prepare(`SELECT workspace_path FROM session_workspace_overrides WHERE thread_key=?
+           UNION ALL
+           SELECT workspace_path FROM session_workspaces WHERE thread_key=?
+           LIMIT 1`)
+            .get(threadKey, threadKey)?.workspace_path;
+    }
+    explicitSessionWorkspace(threadKey) {
         return this.db
             .prepare("SELECT workspace_path FROM session_workspaces WHERE thread_key=?")
             .get(threadKey)?.workspace_path;
     }
-    saveSessionWorkspace(threadKey, workspacePath, now = Date.now()) {
+    sessionWorkspaceSource(threadKey) {
+        if (this.db.prepare("SELECT 1 FROM session_workspace_overrides WHERE thread_key=?").get(threadKey))
+            return "chat-tag";
+        return this.explicitSessionWorkspace(threadKey) ? "explicit" : undefined;
+    }
+    saveSessionWorkspace(threadKey, workspacePath, now = Date.now(), source = "explicit") {
+        const table = source === "chat-tag" ? "session_workspace_overrides" : "session_workspaces";
         this.db
-            .prepare(`INSERT INTO session_workspaces(thread_key,workspace_path,updated_at) VALUES(?,?,?)
+            .prepare(`INSERT INTO ${table}(thread_key,workspace_path,updated_at) VALUES(?,?,?)
          ON CONFLICT(thread_key) DO UPDATE SET workspace_path=excluded.workspace_path,updated_at=excluded.updated_at`)
             .run(threadKey, workspacePath, now);
+    }
+    clearChatTagWorkspace(threadKey) {
+        return (this.db.prepare("DELETE FROM session_workspace_overrides WHERE thread_key=?").run(threadKey)
+            .changes > 0);
+    }
+    deleteSessionWorkspace(threadKey) {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const overrides = this.db
+                .prepare("DELETE FROM session_workspace_overrides WHERE thread_key=?")
+                .run(threadKey).changes;
+            const explicit = this.db
+                .prepare("DELETE FROM session_workspaces WHERE thread_key=?")
+                .run(threadKey).changes;
+            this.db.exec("COMMIT");
+            return Number(overrides) + Number(explicit) > 0;
+        }
+        catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+        }
     }
     runtimeCapabilities(runtime) {
         const row = this.db

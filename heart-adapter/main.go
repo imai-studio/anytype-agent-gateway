@@ -95,10 +95,17 @@ type approveRequest struct {
 	Identity   string `json:"identity"`
 	Permission string `json:"permission"`
 }
+type ensureDirectMessageRequest struct {
+	Identity string `json:"identity"`
+}
+type ensureDirectMessageResponse struct {
+	SpaceID string `json:"spaceId"`
+	ChatID  string `json:"chatId"`
+}
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve> [flags]"))
+		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve|ensure-dm> [flags]"))
 	}
 	switch os.Args[1] {
 	case "resolve":
@@ -113,9 +120,50 @@ func main() {
 		runProfileImage(os.Args[2:])
 	case "space-approve":
 		runSpaceApprove(os.Args[2:])
+	case "ensure-dm":
+		runEnsureDirectMessage(os.Args[2:])
 	default:
-		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve> [flags]"))
+		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve|ensure-dm> [flags]"))
 	}
+}
+
+func runEnsureDirectMessage(args []string) {
+	flags := flag.NewFlagSet("ensure-dm", flag.ExitOnError)
+	address := flags.String("grpc-address", "127.0.0.1:31010", "Anytype Heart gRPC address")
+	configPath := flags.String("config", defaultConfigPath(), "Anytype CLI config file")
+	allowUnauthenticated := flags.Bool("allow-unauthenticated", false, "allow a loopback Heart connection when the config has no session token")
+	_ = flags.Parse(args)
+	var input ensureDirectMessageRequest
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		fatal(fmt.Errorf("decode request: %w", err))
+	}
+	input.Identity = strings.TrimSpace(input.Identity)
+	if input.Identity == "" || strings.Contains(input.Identity, "_") {
+		fatal(errors.New("identity must be a stable Anytype identity, not a participant ID"))
+	}
+	client, ctx, closeClient := heartClientWithTimeout(*address, *configPath, *allowUnauthenticated, 30*time.Second)
+	defer closeClient()
+	created, err := client.WorkspaceCreate(ctx, &pb.RpcWorkspaceCreateRequest{
+		Details: &types.Struct{Fields: map[string]*types.Value{
+			"spaceType":        numberValue(float64(model.SpaceType_SpaceTypeOneToOne)),
+			"homepage":         stringValue("chat"),
+			"oneToOneIdentity": stringValue(input.Identity),
+		}},
+		WithChat: true,
+	})
+	if err != nil {
+		fatal(fmt.Errorf("create direct message: %w", err))
+	}
+	if created.GetError().GetCode() != pb.RpcWorkspaceCreateResponseError_NULL {
+		fatal(errors.New(created.GetError().GetDescription()))
+	}
+	if created.GetSpaceId() == "" || created.GetStartingObjectId() == "" {
+		fatal(errors.New("Heart returned no direct-message space or chat ID"))
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(ensureDirectMessageResponse{
+		SpaceID: created.GetSpaceId(),
+		ChatID:  created.GetStartingObjectId(),
+	})
 }
 
 func runProfileImage(args []string) {
@@ -270,6 +318,10 @@ func heartClientWithTimeout(address, configPath string, allowUnauthenticated boo
 
 func stringValue(value string) *types.Value {
 	return &types.Value{Kind: &types.Value_StringValue{StringValue: value}}
+}
+
+func numberValue(value float64) *types.Value {
+	return &types.Value{Kind: &types.Value_NumberValue{NumberValue: value}}
 }
 
 func runMutation(action string, args []string) {

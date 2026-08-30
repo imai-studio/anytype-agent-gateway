@@ -177,6 +177,12 @@ export type AnytypeMember = {
     identity?: string;
     status?: string;
 };
+export type AnytypeTag = {
+    id: string;
+    name: string;
+    key?: string;
+    color?: string;
+};
 export interface AnytypePort {
     getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage>;
     listMessages(spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]>;
@@ -214,7 +220,18 @@ export interface AnytypePort {
         id: string;
         name?: string;
         markdown?: string;
-    }>;
+    } & Record<string, unknown>>;
+    listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]>;
+    createPropertyTag(spaceId: string, propertyId: string, input: {
+        name: string;
+        color: string;
+    }): Promise<AnytypeTag>;
+    updateObject(spaceId: string, objectId: string, input: {
+        properties: Array<{
+            key: string;
+            multi_select: string[];
+        }>;
+    }): Promise<Record<string, unknown>>;
     searchObjects(spaceId: string, offset: number, limit: number): Promise<Array<{
         id: string;
         name?: string;

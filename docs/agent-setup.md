@@ -86,6 +86,7 @@ anytype:
   apiKeyFile: ~/.config/aag/anytype-api-key
 directMessages:
   enabled: true
+  createMissing: true
   discoveryIntervalSeconds: 30
   wake:
     humans: every-message
@@ -145,7 +146,7 @@ For object work, tell the agent to call `aag_context`, discover the space's type
 
 One configuration should describe one identity and one runtime agent. Use explicit routes or an explicit `chatDiscovery` policy; space membership alone must not turn on every conversation. When discovery is enabled, keep its wake policy mention-based and its sender allowlist narrow. Set `chatDiscovery.autoEnroll: true` when a trusted sender's first direct mention should persist that chat as an explicit route; other senders cannot enroll it. Managed updates serialize the live YAML file, so keep long-form annotations in a separate operator document rather than YAML comments.
 
-Enable `directMessages` only with explicit stable Anytype identity IDs. AAG scans for `anytype.onetoone` spaces, verifies both the configured agent and an allowed peer are active members, and listens to every message in that DM without requiring a mention. Wildcards and mention-only DM policies are rejected. Shared spaces and group chats remain governed by their own configured routes.
+Enable `directMessages` only with explicit stable Anytype identity IDs. AAG scans for `anytype.onetoone` spaces, verifies both the configured agent and an allowed peer are active members, and listens to every message in that DM without requiring a mention. The default `createMissing: false` is scan-only. Opt in to `createMissing: true` when the local Heart adapter should initialize an absent authorized pairwise DM and send its one-to-one inbox invitation. Successful initialization is persisted; failures use exponential backoff and do not block ordinary DM discovery indefinitely. Wildcards and mention-only DM policies are rejected. Shared spaces and group chats remain governed by their own configured routes.
 
 DM routes inherit the response and harness behavior but not route self-management: change their sender allowlist and wake policy in `directMessages` operator configuration. Anytype object tools remain limited to `tools.anytype.allowedSpaceIds`. When that list is empty, the current DM backing space is the turn's default Anytype space and is therefore accessible. Configure an explicit list of shared-space IDs to prevent object access to DM backing spaces; discovering a DM never widens an explicit list.
 
@@ -201,6 +202,8 @@ This installs a user-level launchd service on macOS or systemd user service on L
 - The foreground test covers mentions, silence, progress edits, final replies, and steering.
 - Thinking is replaced by the following text in one message; later distinct text parts appear as new streamed messages.
 - A `/new` message resets the native harness context without changing the Anytype route.
+- A Codex-backed chat can select its project with an Anytype Chat `Tag` named `agent-name:project-name`, such as `klee:imai`. AAG validates the tag against `runtime.defaultProject` and `runtime.allowedProjects` on every `/new`; invalid or ambiguous tags fail closed instead of falling back to another workspace.
+- `/projects`, `/project <name>`, and `/project default` list, set, and remove the current agent's Chat project tag. Enable writes with `management.allowProjectChanges` and explicit `projectAdmins`.
 - `/models`, `/model <id>`, `/model default`, and `/new --model <id>` use the harness's native model controls. Enable changes with `management.allowModelChanges` and explicit `modelAdmins`; restrict the live catalog with `models.allowed`.
 - Allowed Anytype object operations work and denied spaces, archive, and upload paths fail closed.
 - OpenClaw's native channel is installed, its exact operator session is bound, and native scheduled/background output returns after an AAG restart.

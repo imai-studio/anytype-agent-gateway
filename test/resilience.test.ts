@@ -258,6 +258,7 @@ describe("failure containment", () => {
       anytype: { apiKeyFile: "/tmp/key" },
       directMessages: {
         enabled: true,
+        createMissing: true,
         discoveryIntervalSeconds: 10,
         wake: {
           humans: "every-message",
@@ -302,6 +303,198 @@ describe("failure containment", () => {
       event: "direct_message_space_discovery_failed",
       fields: { spaceId: "failed-dm", error: "space is still syncing" },
     });
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("does not create a DM when creation is disabled", async () => {
+    class NoDirectMessagesAnytype extends FakeAnytype {
+      override async listSpaces() {
+        return [{ id: "shared", name: "Shared", object: "anytype.space" }];
+      }
+    }
+    const created: string[] = [];
+    const adapter = {
+      async ensureDirectMessage(identity: string) {
+        created.push(identity);
+        return { spaceId: "direct-space", chatId: "direct-chat" };
+      },
+    } as unknown as HeartDiscussionAdapter;
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      directMessages: {
+        enabled: true,
+        createMissing: false,
+        discoveryIntervalSeconds: 10,
+        wake: {
+          humans: "every-message",
+          agents: "never",
+          allowedUsers: ["authorized"],
+        },
+      },
+      spaces: [{ id: "shared" }],
+      runtime: { kind: "openclaw" },
+    });
+    config.directMessages.discoveryIntervalSeconds = 0.01;
+    const store = new Store(":memory:");
+    const gateway = new Gateway(
+      new NoDirectMessagesAnytype(),
+      new FakeRuntime(),
+      config,
+      store,
+      adapter,
+      () => undefined,
+    );
+    const running = gateway.start();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(created).toEqual([]);
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("does not create a replacement DM when membership inspection is transiently unavailable", async () => {
+    class UnavailableMembershipAnytype extends FakeAnytype {
+      override async listSpaces() {
+        return [{ id: "direct", name: "Raj", object: "anytype.onetoone" }];
+      }
+      override async listMembers(): Promise<never> {
+        throw new Error("membership still syncing");
+      }
+    }
+    const created: string[] = [];
+    const adapter = {
+      async ensureDirectMessage(identity: string) {
+        created.push(identity);
+        return { spaceId: "replacement", chatId: "replacement-chat" };
+      },
+    } as unknown as HeartDiscussionAdapter;
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      directMessages: {
+        enabled: true,
+        createMissing: true,
+        discoveryIntervalSeconds: 10,
+        wake: {
+          humans: "every-message",
+          agents: "never",
+          allowedUsers: ["authorized"],
+        },
+      },
+      spaces: [{ id: "shared" }],
+      runtime: { kind: "openclaw" },
+    });
+    config.directMessages.discoveryIntervalSeconds = 0.01;
+    const store = new Store(":memory:");
+    const gateway = new Gateway(
+      new UnavailableMembershipAnytype(),
+      new FakeRuntime(),
+      config,
+      store,
+      adapter,
+      () => undefined,
+    );
+    const running = gateway.start();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(created).toEqual([]);
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("creates a missing direct-message space once for each authorized identity", async () => {
+    class NoDirectMessagesAnytype extends FakeAnytype {
+      override async listSpaces() {
+        return [{ id: "shared", name: "Shared", object: "anytype.space" }];
+      }
+    }
+    const anytype = new NoDirectMessagesAnytype();
+    const runtime = new FakeRuntime();
+    const created: string[] = [];
+    const adapter = {
+      async ensureDirectMessage(identity: string) {
+        created.push(identity);
+        return { spaceId: "direct-space", chatId: "direct-chat" };
+      },
+    } as unknown as HeartDiscussionAdapter;
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      directMessages: {
+        enabled: true,
+        createMissing: true,
+        discoveryIntervalSeconds: 10,
+        wake: {
+          humans: "every-message",
+          agents: "never",
+          allowedUsers: ["_participant_shared_authorized"],
+        },
+      },
+      spaces: [{ id: "shared" }],
+      runtime: { kind: "openclaw" },
+    });
+    config.directMessages.discoveryIntervalSeconds = 0.01;
+    const store = new Store(":memory:");
+    const gateway = new Gateway(anytype, runtime, config, store, adapter, () => undefined);
+    const running = gateway.start();
+    await eventually(() => expect(created).toEqual(["authorized"]));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(created).toEqual(["authorized"]);
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("backs off after a direct-message creation failure", async () => {
+    class NoDirectMessagesAnytype extends FakeAnytype {
+      override async listSpaces() {
+        return [{ id: "shared", name: "Shared", object: "anytype.space" }];
+      }
+    }
+    const attempts: string[] = [];
+    const adapter = {
+      async ensureDirectMessage(identity: string) {
+        attempts.push(identity);
+        throw new Error("identity profile is not available yet");
+      },
+    } as unknown as HeartDiscussionAdapter;
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      directMessages: {
+        enabled: true,
+        createMissing: true,
+        discoveryIntervalSeconds: 10,
+        wake: {
+          humans: "every-message",
+          agents: "never",
+          allowedUsers: ["authorized"],
+        },
+      },
+      spaces: [{ id: "shared" }],
+      runtime: { kind: "openclaw" },
+    });
+    config.directMessages.discoveryIntervalSeconds = 0.01;
+    const store = new Store(":memory:");
+    const gateway = new Gateway(
+      new NoDirectMessagesAnytype(),
+      new FakeRuntime(),
+      config,
+      store,
+      adapter,
+      () => undefined,
+    );
+    const running = gateway.start();
+    await eventually(() => expect(attempts).toEqual(["authorized"]));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(attempts).toEqual(["authorized"]);
     gateway.stop();
     await running;
     store.close();

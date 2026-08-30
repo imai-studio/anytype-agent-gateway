@@ -25,6 +25,21 @@ export class HeartDiscussionAdapter {
         const result = JSON.parse(stdout);
         return result.discussions;
     }
+    async ensureDirectMessage(identity, signal) {
+        const { command, grpcAddress } = this.config.anytype.heartAdapter;
+        const args = ["ensure-dm", "--grpc-address", grpcAddress];
+        if (this.config.anytype.cli.configPath)
+            args.push("--config", this.config.anytype.cli.configPath);
+        const { stdout } = await runProcess(command, args, {
+            stdin: `${JSON.stringify({ identity })}\n`,
+            timeoutMs: 35_000,
+            ...(signal ? { signal } : {}),
+        });
+        const result = JSON.parse(stdout);
+        if (!result.spaceId || !result.chatId)
+            throw new Error("Heart returned no direct-message space or chat ID");
+        return result;
+    }
     async hydrateMessages(chatId, messages) {
         const pending = messages.filter((message) => !message.content?.text);
         if (!pending.length)
@@ -142,6 +157,15 @@ export class DiscussionAnytypePort {
     }
     async getObject(spaceId, objectId) {
         return this.base.getObject(spaceId, objectId);
+    }
+    async listPropertyTags(spaceId, propertyId) {
+        return this.base.listPropertyTags(spaceId, propertyId);
+    }
+    async createPropertyTag(spaceId, propertyId, input) {
+        return this.base.createPropertyTag(spaceId, propertyId, input);
+    }
+    async updateObject(spaceId, objectId, input) {
+        return this.base.updateObject(spaceId, objectId, input);
     }
     async downloadFile(spaceId, fileId, maxBytes) {
         if (!this.base.downloadFile)

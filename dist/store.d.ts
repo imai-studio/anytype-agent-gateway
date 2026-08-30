@@ -10,6 +10,7 @@ export declare class Store {
     private migrateToVersion3;
     private migrateToVersion4;
     private migrateToVersion5;
+    private migrateToVersion6;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;
@@ -87,7 +88,11 @@ export declare class Store {
     }, now?: number): SessionBinding | undefined;
     deleteSessionBinding(threadKey: string): boolean;
     sessionWorkspace(threadKey: string): string | undefined;
-    saveSessionWorkspace(threadKey: string, workspacePath: string, now?: number): void;
+    explicitSessionWorkspace(threadKey: string): string | undefined;
+    sessionWorkspaceSource(threadKey: string): "explicit" | "chat-tag" | undefined;
+    saveSessionWorkspace(threadKey: string, workspacePath: string, now?: number, source?: "explicit" | "chat-tag"): void;
+    clearChatTagWorkspace(threadKey: string): boolean;
+    deleteSessionWorkspace(threadKey: string): boolean;
     runtimeCapabilities(runtime: AgentRuntime): RuntimeCapabilities | undefined;
     saveRuntimeCapabilities(runtime: AgentRuntime, capabilities: RuntimeCapabilities, now?: number): void;
     conversationModel(threadKey: string, runtime?: AgentRuntime): ConversationModelState | undefined;

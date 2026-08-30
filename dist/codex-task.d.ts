@@ -8,3 +8,7 @@ export declare function createCodexTask(config: AgentConfig, input: {
     status: "running";
 }>;
 export declare function resolveConfiguredProject(config: AgentConfig, requested: string): Promise<string>;
+export declare function configuredCodexProjects(config: AgentConfig): Promise<Array<{
+    name: string;
+    path: string;
+}>>;

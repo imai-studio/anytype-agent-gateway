@@ -38,6 +38,7 @@ export declare const configSchema: z.ZodObject<{
     }, z.core.$strip>;
     directMessages: z.ZodDefault<z.ZodPipe<z.ZodObject<{
         enabled: z.ZodDefault<z.ZodBoolean>;
+        createMissing: z.ZodDefault<z.ZodBoolean>;
         discoveryIntervalSeconds: z.ZodDefault<z.ZodNumber>;
         wake: z.ZodOptional<z.ZodObject<{
             humans: z.ZodDefault<z.ZodEnum<{
@@ -67,9 +68,11 @@ export declare const configSchema: z.ZodObject<{
             allowedUsers: string[];
         };
         enabled: boolean;
+        createMissing: boolean;
         discoveryIntervalSeconds: number;
     }, {
         enabled: boolean;
+        createMissing: boolean;
         discoveryIntervalSeconds: number;
         wake?: {
             humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";
@@ -286,8 +289,10 @@ export declare const configSchema: z.ZodObject<{
         allowWakeChanges: z.ZodDefault<z.ZodBoolean>;
         allowAccessChanges: z.ZodDefault<z.ZodBoolean>;
         allowModelChanges: z.ZodDefault<z.ZodBoolean>;
+        allowProjectChanges: z.ZodDefault<z.ZodBoolean>;
         accessAdmins: z.ZodDefault<z.ZodArray<z.ZodString>>;
         modelAdmins: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        projectAdmins: z.ZodDefault<z.ZodArray<z.ZodString>>;
     }, z.core.$strip>>;
     tools: z.ZodDefault<z.ZodObject<{
         anytype: z.ZodDefault<z.ZodObject<{

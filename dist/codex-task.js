@@ -36,17 +36,25 @@ export async function createCodexTask(config, input) {
     return { thread_id: state.threadId, project, status: "running" };
 }
 export async function resolveConfiguredProject(config, requested) {
+    const projects = await configuredCodexProjects(config);
+    const requestedValue = requested.trim();
+    const requestedPath = resolve(requestedValue);
+    const exact = await realpath(requestedPath).catch(() => requestedPath);
+    const exactProject = projects.find((project) => project.path === exact);
+    if (exactProject)
+        return exactProject.path;
+    const named = projects.filter((project) => project.name === requestedValue);
+    if (named.length === 1)
+        return named[0].path;
+    const folded = projects.filter((project) => project.name.toLocaleLowerCase() === requestedValue.toLocaleLowerCase());
+    if (folded.length === 1)
+        return folded[0].path;
+    throw new Error(`Project must match one configured Codex project: ${projects.map((project) => project.name).join(", ")}`);
+}
+export async function configuredCodexProjects(config) {
     const configured = [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter(Boolean);
     const canonical = await Promise.all(configured.map(async (path) => await realpath(resolve(path)).catch(() => resolve(path))));
-    const requestedPath = resolve(requested);
-    const exact = await realpath(requestedPath).catch(() => requestedPath);
-    const exactIndex = canonical.indexOf(exact);
-    if (exactIndex >= 0)
-        return canonical[exactIndex];
-    const named = canonical.filter((path) => path.split("/").at(-1) === requested);
-    if (named.length === 1)
-        return named[0];
-    throw new Error(`Project must be one of the configured Codex projects: ${canonical.join(", ")}`);
+    return [...new Set(canonical)].map((path) => ({ name: path.split("/").at(-1) ?? path, path }));
 }
 async function waitForThread(statePath) {
     const deadline = Date.now() + 20_000;

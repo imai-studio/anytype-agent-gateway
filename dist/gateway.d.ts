@@ -20,6 +20,7 @@ export declare class Gateway {
     private drainOnStop;
     private readonly reportedUnknownSpaceKinds;
     private initialDirectMessageScanComplete;
+    private readonly directMessageBootstrapFailures;
     private readonly directMessageMembership;
     private resolveTerminal;
     private rejectTerminal;

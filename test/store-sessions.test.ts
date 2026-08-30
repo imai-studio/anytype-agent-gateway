@@ -25,7 +25,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(5);
+    expect(store.schemaVersion()).toBe(6);
     expect(store.cursor("route")).toBe("order-7");
     expect(
       (
@@ -64,7 +64,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(5);
+    expect(store.schemaVersion()).toBe(6);
     expect(
       (
         store.db.prepare("PRAGMA table_info(conversation_models)").all() as Array<{ name: string }>
@@ -73,6 +73,51 @@ describe("session persistence", () => {
     expect(
       store.db.prepare("SELECT name FROM sqlite_master WHERE name='control_activations'").get(),
     ).toBeTruthy();
+    store.close();
+  });
+
+  it("preserves explicit session workspaces when upgrading the released v5 schema", () => {
+    const path = temporaryDatabase();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE session_bindings (
+        thread_key TEXT PRIMARY KEY,
+        route_id TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        discussion_root_id TEXT,
+        runtime TEXT NOT NULL,
+        native_session_key TEXT NOT NULL,
+        native_session_id TEXT,
+        generation INTEGER NOT NULL DEFAULT 0,
+        event_cursor TEXT,
+        state TEXT NOT NULL DEFAULT 'active',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE session_workspaces (
+        thread_key TEXT PRIMARY KEY REFERENCES session_bindings(thread_key) ON DELETE CASCADE,
+        workspace_path TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO session_bindings VALUES (
+        'chat:space:chat','chat:space:chat','space','chat',NULL,'codex-acp','native',NULL,0,NULL,'active',1,1
+      );
+      INSERT INTO session_workspaces VALUES ('chat:space:chat','/projects/imai',2);
+      PRAGMA user_version = 5;
+    `);
+    legacy.close();
+
+    const store = new Store(path);
+    expect(store.schemaVersion()).toBe(6);
+    expect(store.sessionWorkspace("chat:space:chat")).toBe("/projects/imai");
+    expect(store.sessionWorkspaceSource("chat:space:chat")).toBe("explicit");
+    expect(store.db.prepare("PRAGMA foreign_key_list(session_workspaces)").all()).not.toHaveLength(
+      0,
+    );
+    store.deleteSessionBinding("chat:space:chat");
+    expect(store.sessionWorkspace("chat:space:chat")).toBeUndefined();
     store.close();
   });
 

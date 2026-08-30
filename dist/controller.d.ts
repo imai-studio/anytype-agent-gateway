@@ -29,6 +29,8 @@ export declare class AgentController {
     private start;
     private replaceActiveSession;
     private handleModelCommand;
+    private handleProjectCommand;
+    private canChangeProject;
     private canChangeModel;
     private allowedModels;
     private resolveModel;

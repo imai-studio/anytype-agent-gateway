@@ -8,6 +8,7 @@ import type {
   AnytypeMember,
   AnytypePort,
   AnytypeSpace,
+  AnytypeTag,
   ChatAttachment,
   ChatMessage,
   TextMark,
@@ -378,10 +379,37 @@ export class AnytypeClient implements AnytypePort {
     return json.property ?? json;
   }
 
-  async listPropertyTags(spaceId: string, propertyId: string): Promise<JsonRecord[]> {
-    return this.listPages(
+  async listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]> {
+    const tags = await this.listPages(
       `/v1/spaces/${encodeURIComponent(spaceId)}/properties/${encodeURIComponent(propertyId)}/tags`,
     );
+    return tags.map((tag) => ({
+      id: String(tag.id),
+      name: String(tag.name),
+      ...(tag.key ? { key: String(tag.key) } : {}),
+      ...(tag.color ? { color: String(tag.color) } : {}),
+    }));
+  }
+
+  async createPropertyTag(
+    spaceId: string,
+    propertyId: string,
+    input: { name: string; color: string },
+  ): Promise<AnytypeTag> {
+    const json = (await (
+      await this.request(
+        `/v1/spaces/${encodeURIComponent(spaceId)}/properties/${encodeURIComponent(propertyId)}/tags`,
+        { method: "POST", body: JSON.stringify(input) },
+      )
+    ).json()) as JsonRecord;
+    const tag = json.tag ?? json;
+    if (!tag.id || !tag.name) throw new Error("Anytype returned an incomplete project tag");
+    return {
+      id: String(tag.id),
+      name: String(tag.name),
+      ...(tag.key ? { key: String(tag.key) } : {}),
+      ...(tag.color ? { color: String(tag.color) } : {}),
+    };
   }
 
   async listTemplates(spaceId: string, typeId: string): Promise<JsonRecord[]> {

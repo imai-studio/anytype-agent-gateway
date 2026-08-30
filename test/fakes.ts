@@ -4,6 +4,7 @@ import type {
   AnytypeMember,
   AnytypePort,
   AnytypeSpace,
+  AnytypeTag,
   ChatAttachment,
   ChatMessage,
   RuntimeDriver,
@@ -20,6 +21,8 @@ export class FakeAnytype implements AnytypePort {
   deleted: string[] = [];
   reactions: Array<{ id: string; emoji: string; present: boolean }> = [];
   reactionParticipants: Array<string | undefined> = [];
+  objects = new Map<string, Record<string, unknown>>();
+  propertyTags: AnytypeTag[] = [];
   private nextId = 1;
 
   async getMessage(_spaceId: string, _chatId: string, messageId: string): Promise<ChatMessage> {
@@ -108,8 +111,43 @@ export class FakeAnytype implements AnytypePort {
   async getObject(
     _spaceId: string,
     objectId: string,
-  ): Promise<{ id: string; name?: string; markdown?: string }> {
-    return { id: objectId, name: "Object", markdown: "Object context" };
+  ): Promise<{ id: string; name?: string; markdown?: string } & Record<string, unknown>> {
+    return {
+      id: objectId,
+      name: "Object",
+      markdown: "Object context",
+      ...this.objects.get(objectId),
+    };
+  }
+  async listPropertyTags(_spaceId: string, _propertyId: string): Promise<AnytypeTag[]> {
+    return this.propertyTags;
+  }
+  async createPropertyTag(
+    _spaceId: string,
+    _propertyId: string,
+    input: { name: string; color: string },
+  ): Promise<AnytypeTag> {
+    const tag = { id: `tag-${this.propertyTags.length + 1}`, ...input };
+    this.propertyTags.push(tag);
+    return tag;
+  }
+  async updateObject(
+    _spaceId: string,
+    objectId: string,
+    input: { properties: Array<{ key: string; multi_select: string[] }> },
+  ): Promise<Record<string, unknown>> {
+    const selected = input.properties[0]?.multi_select ?? [];
+    const tags = selected.flatMap((id) => {
+      const tag = this.propertyTags.find(
+        (candidate) => candidate.id === id || candidate.key === id,
+      );
+      return tag ? [tag] : [];
+    });
+    this.objects.set(objectId, {
+      ...(this.objects.get(objectId) ?? {}),
+      properties: [{ id: "property-tag", key: "tag", format: "multi_select", multi_select: tags }],
+    });
+    return { id: objectId, ...this.objects.get(objectId) };
   }
   async searchObjects(): Promise<Array<{ id: string; name?: string; type?: string }>> {
     return [];
@@ -142,7 +180,7 @@ export class FakeRuntime implements RuntimeDriver {
     nativeScheduling: false,
     modelSelection: true,
   } as const;
-  starts: Array<{ sessionKey: string; prompt: string }> = [];
+  starts: Array<{ sessionKey: string; prompt: string; workspacePath?: string }> = [];
   steers: string[] = [];
   events?: (event: RuntimeEvent) => void;
   current = deferred();
@@ -152,11 +190,20 @@ export class FakeRuntime implements RuntimeDriver {
     return ["fake"];
   }
   async start(
-    input: { sessionKey: string; prompt: string; modelId?: string | null },
+    input: {
+      sessionKey: string;
+      prompt: string;
+      modelId?: string | null;
+      turn?: { workspacePath?: string };
+    },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<ActiveRuntime> {
     this.current = deferred();
-    this.starts.push(input);
+    this.starts.push({
+      sessionKey: input.sessionKey,
+      prompt: input.prompt,
+      ...(input.turn?.workspacePath ? { workspacePath: input.turn.workspacePath } : {}),
+    });
     if (input.modelId !== undefined) {
       this.modelConfigurations.push(input.modelId);
       this.model = input.modelId ?? "default-model";

@@ -1,9 +1,13 @@
 import type { AgentConfig } from "./config.js";
-import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, ChatAttachment, ChatMessage, TextMark } from "./types.js";
+import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, AnytypeTag, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 export type DiscussionResolution = {
     objectId: string;
     discussionId?: string;
     error?: string;
+};
+export type DirectMessageResolution = {
+    spaceId: string;
+    chatId: string;
 };
 export declare class HeartDiscussionAdapter {
     private readonly config;
@@ -11,6 +15,7 @@ export declare class HeartDiscussionAdapter {
     resolve(spaceId: string, objects: Array<{
         id: string;
     }>, createMissing: boolean): Promise<DiscussionResolution[]>;
+    ensureDirectMessage(identity: string, signal?: AbortSignal): Promise<DirectMessageResolution>;
     hydrateMessages(chatId: string, messages: ChatMessage[]): Promise<ChatMessage[]>;
     sendMessage(chatId: string, input: {
         text: string;
@@ -63,6 +68,17 @@ export declare class DiscussionAnytypePort implements AnytypePort {
         name?: string;
         markdown?: string;
     }>;
+    listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]>;
+    createPropertyTag(spaceId: string, propertyId: string, input: {
+        name: string;
+        color: string;
+    }): Promise<AnytypeTag>;
+    updateObject(spaceId: string, objectId: string, input: {
+        properties: Array<{
+            key: string;
+            multi_select: string[];
+        }>;
+    }): Promise<Record<string, unknown>>;
     downloadFile(spaceId: string, fileId: string, maxBytes: number): Promise<{
         bytes: Uint8Array;
         contentType?: string;

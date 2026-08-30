@@ -13,7 +13,7 @@ const wakeSchema = z
         .default("mention"),
     agents: z.enum(["never", "direct-mention", "every-message"]).default("direct-mention"),
     prefix: z.string().optional(),
-    allowedUsers: z.array(z.string()).min(1),
+    allowedUsers: z.array(z.string().min(1)).min(1),
 })
     .refine((value) => value.humans !== "prefix" || value.prefix, "wake.prefix is required for prefix mode");
 const disabledWake = {
@@ -92,6 +92,7 @@ const chatDiscoverySchema = z
 const directMessagesSchema = z
     .object({
     enabled: z.boolean().default(false),
+    createMissing: z.boolean().default(false),
     discoveryIntervalSeconds: z.number().int().min(10).default(30),
     wake: wakeSchema.optional(),
 })
@@ -217,7 +218,7 @@ const runtimeSchema = z.discriminatedUnion("kind", [
 export const configSchema = z.object({
     version: z.literal(1),
     agent: z.object({
-        name: z.string().min(1),
+        name: z.string().trim().min(1),
         participantId: z.string().min(1),
         aliases: z.array(z.string()).default([]),
     }),
@@ -241,6 +242,7 @@ export const configSchema = z.object({
     }),
     directMessages: directMessagesSchema.default({
         enabled: false,
+        createMissing: false,
         discoveryIntervalSeconds: 30,
         wake: disabledWake,
     }),
@@ -257,8 +259,10 @@ export const configSchema = z.object({
         allowWakeChanges: z.boolean().default(false),
         allowAccessChanges: z.boolean().default(false),
         allowModelChanges: z.boolean().default(false),
-        accessAdmins: z.array(z.string()).default([]),
-        modelAdmins: z.array(z.string()).default([]),
+        allowProjectChanges: z.boolean().default(false),
+        accessAdmins: z.array(z.string().min(1)).default([]),
+        modelAdmins: z.array(z.string().min(1)).default([]),
+        projectAdmins: z.array(z.string().min(1)).default([]),
     })
         .superRefine((value, context) => {
         if (value.allowAccessChanges && value.accessAdmins.length === 0)
@@ -273,13 +277,21 @@ export const configSchema = z.object({
                 path: ["modelAdmins"],
                 message: "management.modelAdmins is required when model changes are enabled",
             });
+        if (value.allowProjectChanges && value.projectAdmins.length === 0)
+            context.addIssue({
+                code: "custom",
+                path: ["projectAdmins"],
+                message: "management.projectAdmins is required when project changes are enabled",
+            });
     })
         .default({
         allowWakeChanges: false,
         allowAccessChanges: false,
         allowModelChanges: false,
+        allowProjectChanges: false,
         accessAdmins: [],
         modelAdmins: [],
+        projectAdmins: [],
     }),
     tools: z
         .object({

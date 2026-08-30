@@ -8,6 +8,7 @@ anytype:
   apiKeyFile: ~/.config/aag/anytype-api-key
 directMessages:
   enabled: true
+  createMissing: true
   discoveryIntervalSeconds: 30
   wake:
     humans: every-message

@@ -1,5 +1,7 @@
 import { inactivityTimeoutSeconds, type AgentConfig, type WakeConfig } from "./config.js";
 import { createHash } from "node:crypto";
+import { resolveChatProjectBinding, setChatProjectBindingTag } from "./chat-project-binding.js";
+import { configuredCodexProjects, resolveConfiguredProject } from "./codex-task.js";
 import {
   buildContext,
   isNewSessionCommand,
@@ -8,6 +10,7 @@ import {
 } from "./context.js";
 import { renderForAnytype, RunProjection, type ProjectionCycleSnapshot } from "./projection.js";
 import { modelAllowed, parseModelCommand, type ModelCommand } from "./model-command.js";
+import { parseProjectCommand, type ProjectCommand } from "./project-command.js";
 import { Store } from "./store.js";
 import type { AgentRuntime } from "./session-types.js";
 import type {
@@ -135,13 +138,87 @@ export class AgentController {
       this.log("hop_limit", { routeId: conversation.routeId, hop });
       return;
     }
-    const modelCommand = parseModelCommand(
-      modelCommandText(
-        message,
-        [this.config.agent.name, ...this.config.agent.aliases],
-        conversation.selfParticipantId ?? this.config.agent.participantId,
-      ),
+    const commandText = modelCommandText(
+      message,
+      [this.config.agent.name, ...this.config.agent.aliases],
+      conversation.selfParticipantId ?? this.config.agent.participantId,
     );
+    const projectCommand = parseProjectCommand(commandText);
+    if (projectCommand) {
+      const since = Date.now() - this.config.coordination.windowSeconds * 1000;
+      const recent =
+        this.store.recentActivations(conversation.routeId, threadKey, since) +
+        this.store.recentControlActivations(conversation.routeId, threadKey, since);
+      if (recent >= this.config.coordination.maxActivationsPerThread) {
+        this.log("activation_circuit_open", { routeId: conversation.routeId, recent });
+        return;
+      }
+      try {
+        await this.handleProjectCommand(
+          threadConversation,
+          message,
+          threadKey,
+          replyTargetId,
+          projectCommand,
+        );
+      } catch (error) {
+        await this.sendControlMessage(
+          threadConversation,
+          replyTargetId,
+          `Could not change this chat's Codex project: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      this.store.recordControlActivation(conversation.routeId, threadKey);
+      return;
+    }
+    const newSession = isNewSessionCommand(message.content?.text ?? "");
+    if (newSession) {
+      const since = Date.now() - this.config.coordination.windowSeconds * 1000;
+      const recent =
+        this.store.recentActivations(conversation.routeId, threadKey, since) +
+        this.store.recentControlActivations(conversation.routeId, threadKey, since);
+      if (recent >= this.config.coordination.maxActivationsPerThread) {
+        this.log("activation_circuit_open", { routeId: conversation.routeId, recent });
+        return;
+      }
+      try {
+        const binding = await resolveChatProjectBinding(
+          this.port(threadConversation),
+          this.config,
+          threadConversation,
+        );
+        if (binding.kind === "invalid") {
+          await this.sendControlMessage(threadConversation, replyTargetId, binding.message);
+          this.store.recordControlActivation(conversation.routeId, threadKey);
+          return;
+        }
+        if (binding.kind === "bound") {
+          this.store.saveSessionWorkspace(threadKey, binding.workspacePath, Date.now(), "chat-tag");
+          this.log("chat_project_bound", {
+            routeId: conversation.routeId,
+            threadKey,
+            tag: binding.tag,
+            project: binding.projectName,
+            workspacePath: binding.workspacePath,
+          });
+        } else if (this.store.sessionWorkspaceSource(threadKey) === "chat-tag") {
+          this.store.clearChatTagWorkspace(threadKey);
+          this.log("chat_project_binding_removed", {
+            routeId: conversation.routeId,
+            threadKey,
+          });
+        }
+      } catch (error) {
+        await this.sendControlMessage(
+          threadConversation,
+          replyTargetId,
+          `Could not validate this chat's Codex project tag, so /new was not started: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        this.store.recordControlActivation(conversation.routeId, threadKey);
+        return;
+      }
+    }
+    const modelCommand = parseModelCommand(commandText);
     if (modelCommand) {
       const since = Date.now() - this.config.coordination.windowSeconds * 1000;
       const recent =
@@ -173,7 +250,6 @@ export class AgentController {
         return;
       }
     }
-    const newSession = isNewSessionCommand(message.content?.text ?? "");
     const active = this.active.get(threadKey);
     if (active) {
       if (newSession) {
@@ -788,6 +864,86 @@ export class AgentController {
         : `The harness default model will apply to the next turn${active ? " after the current run" : ""}.`,
     );
     return true;
+  }
+
+  private async handleProjectCommand(
+    conversation: ConversationRef,
+    message: ChatMessage,
+    _threadKey: string,
+    replyTargetId: string,
+    command: ProjectCommand,
+  ): Promise<void> {
+    if (this.config.runtime.kind !== "codex") {
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        "Project selection is available only for Codex-backed agents.",
+      );
+      return;
+    }
+    if (conversation.kind !== "chat" || conversation.managementEnabled === false) {
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        "Project selection is available only on an Anytype Chat object.",
+      );
+      return;
+    }
+    const anytype = this.port(conversation);
+    if (!this.canChangeProject(message.creator)) {
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        "You are not allowed to inspect or change this agent's Codex project.",
+      );
+      return;
+    }
+    if (command.kind === "list" || command.kind === "status") {
+      const projects = await configuredCodexProjects(this.config);
+      const binding = await resolveChatProjectBinding(anytype, this.config, conversation);
+      const current =
+        binding.kind === "bound"
+          ? `${binding.projectName} (${binding.tag})`
+          : binding.kind === "invalid"
+            ? `invalid — ${binding.message}`
+            : `${projects[0]?.name ?? "runtime default"} (default)`;
+      const lines = projects.map((project, index) => `${index + 1}. ${project.name}`);
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        command.kind === "status"
+          ? `Current Codex project: ${current}`
+          : `Current Codex project: ${current}\nAvailable projects:\n${lines.join("\n") || "None"}\nUse /project <name> to select one or /project default to remove this agent's tag.`,
+      );
+      return;
+    }
+    if (command.kind === "reset") {
+      await setChatProjectBindingTag(anytype, this.config, conversation);
+      await this.sendControlMessage(
+        conversation,
+        replyTargetId,
+        `Removed ${this.config.agent.name.toLocaleLowerCase()}'s project tag. /new will use the agent's default workspace.`,
+      );
+      return;
+    }
+    const workspacePath = await resolveConfiguredProject(this.config, command.project);
+    const projects = await configuredCodexProjects(this.config);
+    const projectName = projects.find((project) => project.path === workspacePath)?.name;
+    if (!projectName) throw new Error("The selected project is not in the configured catalog");
+    const tag = await setChatProjectBindingTag(anytype, this.config, conversation, projectName);
+    await this.sendControlMessage(
+      conversation,
+      replyTargetId,
+      `Project tag set to ${tag}. Use /new to start a fresh Codex task in ${projectName}.`,
+    );
+  }
+
+  private canChangeProject(actorId?: string): boolean {
+    return Boolean(
+      actorId &&
+      this.config.management.allowProjectChanges &&
+      this.config.management.projectAdmins.some((admin) => sameParticipant(actorId, admin)),
+    );
   }
 
   private canChangeModel(actorId?: string): boolean {
