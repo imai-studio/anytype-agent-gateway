@@ -1,17 +1,17 @@
 {
-  "name": "@imai/aag",
-  "version": "0.1.3",
-  "description": "Run an OpenClaw or Codex agent as a first-class Anytype member.",
+  "name": "@imai/knot",
+  "version": "0.2.0",
+  "description": "Run an OpenClaw or Codex agent as a first-class Anytype member with Knot.",
   "license": "Apache-2.0",
   "author": "IMAI Studio",
   "packageManager": "pnpm@11.22.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/imai-studio/anytype-agent-gateway.git"
+    "url": "git+https://github.com/imai-studio/knot.git"
   },
-  "homepage": "https://github.com/imai-studio/anytype-agent-gateway#readme",
+  "homepage": "https://github.com/imai-studio/knot#readme",
   "bugs": {
-    "url": "https://github.com/imai-studio/anytype-agent-gateway/issues"
+    "url": "https://github.com/imai-studio/knot/issues"
   },
   "keywords": [
     "anytype",
@@ -23,6 +23,7 @@
   ],
   "type": "module",
   "bin": {
+    "knot": "dist/cli.js",
     "aag": "dist/cli.js"
   },
   "files": [
@@ -36,8 +37,8 @@
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
     "docs",
-    "deploy/anytype-agent-gateway.service",
-    "deploy/openclaw-aag-gateway.service",
+    "deploy/knot.service",
+    "deploy/openclaw-knot-gateway.service",
     "examples",
     "heart-adapter/go.mod",
     "heart-adapter/go.sum",

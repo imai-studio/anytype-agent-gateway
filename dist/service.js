@@ -7,9 +7,9 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
 import { runProcess } from "./process.js";
-import { logNamespace, PRODUCT } from "./compatibility.js";
-const systemdServiceName = PRODUCT.services.linux[0];
-const launchdServiceLabel = PRODUCT.services.darwin[0];
+import { detectServices, logNamespace, PRODUCT } from "./compatibility.js";
+export const systemdServiceName = PRODUCT.services.linux.current;
+export const launchdServiceLabel = PRODUCT.services.darwin.current;
 const anytypeLaunchAgentName = "anytype.plist";
 export async function installService(configPath) {
     if (process.platform === "linux")
@@ -27,6 +27,9 @@ export async function serviceCommand(command) {
 }
 async function installSystemdService(configPath) {
     const home = homedir();
+    const existing = await resolveInstalledService("linux", home);
+    if (existing?.generation === "aag")
+        throw new Error(`Existing AAG service ${existing.identity} is already installed; manage it in place with \`knot service\`. Service migration arrives in a later release.`);
     const config = await loadConfig(configPath);
     const localAnytype = usesLocalHeadlessAnytype(config.anytype.apiBase);
     const executable = resolve(dirname(fileURLToPath(import.meta.url)), "cli.js");
@@ -42,7 +45,7 @@ async function installSystemdService(configPath) {
         ? " network-online.target anytype.service"
         : " network-online.target";
     const pathEnvironment = servicePathEnvironment(process.execPath);
-    const unit = `[Unit]\nDescription=Anytype Agent Gateway\nAfter=${dependencies.trim()}\nWants=${dependencies.trim()}\n\n[Service]\nType=simple\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(executable)} run --config ${systemdQuote(resolve(configPath))}\nEnvironment=${systemdQuote(`PATH=${pathEnvironment}`)}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
+    const unit = `[Unit]\nDescription=Knot\nAfter=${dependencies.trim()}\nWants=${dependencies.trim()}\n\n[Service]\nType=simple\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(executable)} run --config ${systemdQuote(resolve(configPath))}\nEnvironment=${systemdQuote(`PATH=${pathEnvironment}`)}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, unit, { mode: 0o600 });
     await chmod(target, 0o600);
@@ -50,13 +53,18 @@ async function installSystemdService(configPath) {
     await runProcess("systemctl", ["--user", "enable", "--now", systemdServiceName]);
 }
 async function systemdCommand(command) {
+    const installed = await resolveInstalledService("linux", homedir());
+    const serviceName = installed?.identity ?? systemdServiceName;
     const args = command === "logs"
-        ? ["--user", "-u", systemdServiceName, "-f"]
-        : ["--user", ...(command === "status" ? ["--no-pager"] : []), command, systemdServiceName];
+        ? ["--user", "-u", serviceName, "-f"]
+        : ["--user", ...(command === "status" ? ["--no-pager"] : []), command, serviceName];
     await spawnInherited(command === "logs" ? "journalctl" : "systemctl", args, command);
 }
 async function installLaunchdService(configPath) {
     const home = homedir();
+    const existing = await resolveInstalledService("darwin", home);
+    if (existing?.generation === "aag")
+        throw new Error(`Existing AAG service ${existing.identity} is already installed; manage it in place with \`knot service\`. Service migration arrives in a later release.`);
     const config = await loadConfig(configPath);
     const absoluteConfigPath = resolve(configPath);
     const cliPath = resolve(dirname(fileURLToPath(import.meta.url)), "cli.js");
@@ -122,16 +130,19 @@ async function resolveLaunchdNodePath(runtime) {
 async function launchdCommand(command) {
     const home = homedir();
     const domain = launchdDomain();
-    const serviceTarget = `${domain}/${launchdServiceLabel}`;
-    const plistPath = join(home, "Library", "LaunchAgents", `${launchdServiceLabel}.plist`);
-    const logsDirectory = join(home, "Library", "Logs", logNamespace());
+    const installed = await resolveInstalledService("darwin", home);
+    const serviceLabel = installed?.identity ?? launchdServiceLabel;
+    const generation = installed?.generation ?? "knot";
+    const serviceTarget = `${domain}/${serviceLabel}`;
+    const plistPath = join(home, "Library", "LaunchAgents", `${serviceLabel}.plist`);
+    const logsDirectory = join(home, "Library", "Logs", logNamespace(generation));
     if (command === "status") {
         await spawnInherited("/bin/launchctl", ["print", serviceTarget], command);
         return;
     }
     if (command === "logs") {
         await access(plistPath, constants.R_OK).catch(() => {
-            throw new Error("AAG launch agent is not installed; run `aag service install --config <path>` first");
+            throw new Error("Knot launch agent is not installed; run `knot service install --config <path>` first");
         });
         await spawnInherited("/usr/bin/tail", [
             "-n",
@@ -150,7 +161,7 @@ async function launchdCommand(command) {
         return;
     }
     await access(plistPath, constants.R_OK).catch(() => {
-        throw new Error("AAG launch agent is not installed; run `aag service install --config <path>` first");
+        throw new Error("Knot launch agent is not installed; run `knot service install --config <path>` first");
     });
     const installedPlist = await readFile(plistPath, "utf8");
     if (installedPlist.includes("<key>OtherJobEnabled</key>")) {
@@ -161,6 +172,21 @@ async function launchdCommand(command) {
     if (!(await launchdJobIsLoaded(serviceTarget)))
         await bootstrapLaunchd(domain, plistPath, serviceTarget);
     await runProcess("/bin/launchctl", ["kickstart", "-k", serviceTarget]);
+}
+export async function resolveInstalledService(platform, home) {
+    const installations = await detectServices(platform, async (identity) => {
+        const path = platform === "linux"
+            ? join(home, ".config", "systemd", "user", identity)
+            : join(home, "Library", "LaunchAgents", `${identity}.plist`);
+        return access(path, constants.R_OK)
+            .then(() => true)
+            .catch(() => false);
+    });
+    const installedServices = installations.filter((candidate) => candidate.installed);
+    if (installedServices.length > 1)
+        throw new Error("Both AAG and Knot service definitions exist; refusing to choose one. Disable or remove one definition before managing the service.");
+    const installed = installedServices[0];
+    return installed ? { generation: installed.generation, identity: installed.identity } : undefined;
 }
 export function buildLaunchdPlist(options) {
     const dependency = options.dependencyLabel
@@ -354,7 +380,7 @@ async function installAnytypeUnitIfMissing(home, command, dataPath) {
         /* Create only when no operator-owned unit exists. */
     }
     const environment = dataPath ? `Environment=${systemdQuote(`DATA_PATH=${dataPath}`)}\n` : "";
-    const unit = `[Unit]\nDescription=Anytype headless service for AAG\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\n${environment}ExecStart=${systemdQuote(command)} serve --quiet\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
+    const unit = `[Unit]\nDescription=Anytype headless service for Knot\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\n${environment}ExecStart=${systemdQuote(command)} serve --quiet\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, unit, { mode: 0o600, flag: "wx" });
 }

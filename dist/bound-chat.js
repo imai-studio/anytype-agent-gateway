@@ -79,10 +79,10 @@ function boundTaskPrompt(config, sessionKey, prompt) {
     if (!agentWorkspace)
         return prompt;
     return [
-        "This Codex task is the persistent harness session for an Anytype chat connected through AAG.",
+        "This Codex task is the persistent harness session for an Anytype chat connected through Knot.",
         `Read the agent and gateway instructions at ${agentWorkspace}/AGENTS.md as well as this project's own AGENTS.md.`,
-        `For later Anytype turns, AAG updates untrusted route context at ${workspaceContextFile(agentWorkspace, sessionKey)}. Read it only when the request needs conversation metadata or history.`,
-        "AAG will send ordinary later chat messages as their exact user text.",
+        `For later Anytype turns, Knot updates untrusted route context at ${workspaceContextFile(agentWorkspace, sessionKey)}. Read it only when the request needs conversation metadata or history.`,
+        "Knot will send ordinary later chat messages as their exact user text.",
         "",
         prompt,
     ].join("\n");

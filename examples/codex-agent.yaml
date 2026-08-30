@@ -5,7 +5,7 @@ agent:
   aliases: [codex]
 anytype:
   apiBase: http://127.0.0.1:31012
-  apiKeyFile: ~/.config/aag/anytype-api-key
+  apiKeyFile: ~/.config/knot/anytype-api-key
 directMessages:
   enabled: true
   createMissing: true

@@ -4,7 +4,7 @@ This runbook tells a coding agent how to connect its Codex or OpenClaw runtime t
 
 ## Outcome
 
-One long-lived AAG process appears in Anytype as one dedicated, taggable member. A mention, reply, prefix, or configured every-message route wakes one Codex or OpenClaw runtime. AAG reacts to the triggering user message, posts an immediate reply, edits it while work progresses, handles same-thread follow-ups as steering, and removes the reaction when the run finishes.
+One long-lived Knot process appears in Anytype as one dedicated, taggable member. A mention, reply, prefix, or configured every-message route wakes one Codex or OpenClaw runtime. Knot reacts to the triggering user message, posts an immediate reply, edits it while work progresses, handles same-thread follow-ups as steering, and removes the reaction when the run finishes.
 
 ## 1. Verify prerequisites
 
@@ -14,15 +14,15 @@ One long-lived AAG process appears in Anytype as one dedicated, taggable member.
 - A working Codex installation, or an OpenClaw Gateway and its client module.
 - Absolute paths for every project the runtime should be told about.
 
-Install and verify AAG:
+Install and verify Knot:
 
 ```bash
-pnpm add --global github:imai-studio/anytype-agent-gateway
-aag --version
-aag --help
+pnpm add --global github:imai-studio/knot
+knot --version
+knot --help
 ```
 
-Do not continue if `aag --version` fails. Do not work around the failure by downloading unreviewed binaries or disabling package-manager security globally.
+Do not continue if `knot --version` fails. Do not work around the failure by downloading unreviewed binaries or disabling package-manager security globally.
 
 ## 2. Collect operator decisions
 
@@ -48,16 +48,16 @@ Never infer an invite link, participant ID, or project authorization from a disp
 For a new, independently taggable member, have the operator review the invite destinations and credential path, then run:
 
 ```bash
-mkdir -p ~/.config/aag
-aag identity create "AGENT_NAME" \
+mkdir -p ~/.config/knot
+knot identity create "AGENT_NAME" \
   --invite 'ANYTYPE_INVITE_URL' \
-  --api-key-file ~/.config/aag/anytype-api-key
+  --api-key-file ~/.config/knot/anytype-api-key
 ```
 
 This delegates identity and key creation to the official Anytype CLI and writes the key with restrictive permissions. If the existing dedicated identity needs another space:
 
 ```bash
-aag join 'ANYTYPE_INVITE_URL'
+knot join 'ANYTYPE_INVITE_URL'
 ```
 
 An API key copied from a human desktop session does not produce a separate taggable bot member. Use a dedicated identity when identity-level mentions and membership boundaries matter.
@@ -69,8 +69,8 @@ If the operator already provisioned an identity and key, reuse the protected key
 Start the interactive generator:
 
 ```bash
-mkdir -p ~/.config/aag
-aag init --output ~/.config/aag/agent.yaml
+mkdir -p ~/.config/knot
+knot init --output ~/.config/knot/agent.yaml
 ```
 
 Or copy `examples/codex-agent.yaml` / `examples/openclaw-agent.yaml` and replace every placeholder. The essential Codex shape is:
@@ -83,7 +83,7 @@ agent:
   aliases: [codex]
 anytype:
   apiBase: http://127.0.0.1:31009
-  apiKeyFile: ~/.config/aag/anytype-api-key
+  apiKeyFile: ~/.config/knot/anytype-api-key
 directMessages:
   enabled: true
   createMissing: true
@@ -126,51 +126,51 @@ context:
   historyMessages: 10
 ```
 
-The interactive `aag init` flow uses the directory where it is run as the default workspace and can install the stable gateway instructions into `AGENTS.md`. `desktopProject: auto` groups ACP-created tasks under the saved Codex Desktop project with that exact root. To let the agent explicitly create sibling Codex tasks, enable `tools.codex.enabled`; task creation remains limited to `defaultProject` and `allowedProjects`.
+The interactive `knot init` flow uses the directory where it is run as the default workspace and can install the stable gateway instructions into `AGENTS.md`. `desktopProject: auto` groups ACP-created tasks under the saved Codex Desktop project with that exact root. To let the agent explicitly create sibling Codex tasks, enable `tools.codex.enabled`; task creation remains limited to `defaultProject` and `allowedProjects`.
 
 The installed package resolves its bundled `codex-acp` executable automatically. For OpenClaw, use `examples/openclaw-agent.yaml`, provide the absolute Gateway client-module path, and keep the Gateway token in the configured environment variable or protected OpenClaw config file.
 
-For a Codex agent with a dedicated workspace, `context.promptMode: workspace` keeps AAG turns compact. Put the stable identity, gateway protocol, tool rules, and response conventions in `AGENTS.md` at `runtime.defaultProject`. AAG gives Codex the route-context file path once when the session starts, then sends only the user's message on ordinary turns. The same protected context file is updated for every turn and remains available when the agent needs history, reply ancestry, object references, participant IDs, attachments, or route metadata. Current message media and files embedded in referenced Anytype objects are downloaded beneath the private `.aag/attachments/` directory, and their local paths are included with the otherwise compact turn. Downloads are capped at 50 MiB each. The default `full` mode remains self-contained for runtimes without workspace instructions. `responses.mode: milestones` edits the live Anytype status message as a compact `Working…` feed of recent thinking and concise ACP tool titles; repeated tool updates replace the same item instead of growing the message. `workingReaction` marks the triggering user message as busy until the run finishes.
+For a Codex agent with a dedicated workspace, `context.promptMode: workspace` keeps Knot turns compact. Put the stable identity, gateway protocol, tool rules, and response conventions in `AGENTS.md` at `runtime.defaultProject`. Knot gives Codex the route-context file path once when the session starts, then sends only the user's message on ordinary turns. The same protected context file is updated for every turn and remains available when the agent needs history, reply ancestry, object references, participant IDs, attachments, or route metadata. Current message media and files embedded in referenced Anytype objects are downloaded beneath the private `.aag/attachments/` directory, and their local paths are included with the otherwise compact turn. Downloads are capped at 50 MiB each. The default `full` mode remains self-contained for runtimes without workspace instructions. `responses.mode: milestones` edits the live Anytype status message as a compact `Working…` feed of recent thinking and concise ACP tool titles; repeated tool updates replace the same item instead of growing the message. `workingReaction` marks the triggering user message as busy until the run finishes.
 
 Object writes are off unless the configuration explicitly sets `tools.anytype.allowWrite: true`. Keep `allowedSpaceIds` and `allowedFileRoots` narrow. Uploads require an explicit root, resolve symlinks, accept regular files only, and are capped at 50 MiB. The `aag_set_profile_image` tool uses those same boundaries and can update only the configured agent identity in the selected space. Archive is a separate permission.
 
 For OpenClaw, install the packaged native channel and configure its loopback bridge before validation:
 
 ```bash
-aag openclaw plugin install
+knot openclaw plugin install
 ```
 
-Generate one random token of at least 24 characters. Prefer a mode-`0600` file selected by `runtime.channelBridge.tokenFile`; the environment variable selected by `tokenEnv` is also supported. Configure the same value as OpenClaw's `channels.anytype.bridgeToken`. Add `aag mcp --config /absolute/path/to/agent.yaml` to OpenClaw's native `mcp.servers` configuration so the OpenClaw agent receives the same scoped Anytype object tools as Codex. Do not expose the bridge listener beyond loopback.
+Generate one random token of at least 24 characters. Prefer a mode-`0600` file selected by `runtime.channelBridge.tokenFile`; the environment variable selected by `tokenEnv` is also supported. Configure the same value as OpenClaw's `channels.anytype.bridgeToken`. Add `knot mcp --config /absolute/path/to/agent.yaml` to OpenClaw's native `mcp.servers` configuration so the OpenClaw agent receives the same scoped Anytype object tools as Codex. Do not expose the bridge listener beyond loopback.
 
 For object work, tell the agent to call `aag_context`, discover the space's types and properties, read the target object, and then mutate it. Select and multi-select values can be resolved through the property-tag tool, templates through the type-template tool, and collection membership through the view tools. Every found, created, or updated object returns an `object_ref` token for a compact clickable reference and an `object_card` token for a full native card attachment. The accompanying `anytype://` link is a fallback.
 
 One configuration should describe one identity and one runtime agent. Use explicit routes or an explicit `chatDiscovery` policy; space membership alone must not turn on every conversation. When discovery is enabled, keep its wake policy mention-based and its sender allowlist narrow. Set `chatDiscovery.autoEnroll: true` when a trusted sender's first direct mention should persist that chat as an explicit route; other senders cannot enroll it. Managed updates serialize the live YAML file, so keep long-form annotations in a separate operator document rather than YAML comments.
 
-Enable `directMessages` only with explicit stable Anytype identity IDs. AAG scans for `anytype.onetoone` spaces, verifies both the configured agent and an allowed peer are active members, and listens to every message in that DM without requiring a mention. The default `createMissing: false` is scan-only. Opt in to `createMissing: true` when the local Heart adapter should initialize an absent authorized pairwise DM and send its one-to-one inbox invitation. Successful initialization is persisted; failures use exponential backoff and do not block ordinary DM discovery indefinitely. Wildcards and mention-only DM policies are rejected. Shared spaces and group chats remain governed by their own configured routes.
+Enable `directMessages` only with explicit stable Anytype identity IDs. Knot scans for `anytype.onetoone` spaces, verifies both the configured agent and an allowed peer are active members, and listens to every message in that DM without requiring a mention. The default `createMissing: false` is scan-only. Opt in to `createMissing: true` when the local Heart adapter should initialize an absent authorized pairwise DM and send its one-to-one inbox invitation. Successful initialization is persisted; failures use exponential backoff and do not block ordinary DM discovery indefinitely. Wildcards and mention-only DM policies are rejected. Shared spaces and group chats remain governed by their own configured routes.
 
 DM routes inherit the response and harness behavior but not route self-management: change their sender allowlist and wake policy in `directMessages` operator configuration. Anytype object tools remain limited to `tools.anytype.allowedSpaceIds`. When that list is empty, the current DM backing space is the turn's default Anytype space and is therefore accessible. Configure an explicit list of shared-space IDs to prevent object access to DM backing spaces; discovering a DM never widens an explicit list.
 
 ## 5. Validate before connecting
 
 ```bash
-aag validate --config ~/.config/aag/agent.yaml
-aag doctor --config ~/.config/aag/agent.yaml
+knot validate --config ~/.config/knot/agent.yaml
+knot doctor --config ~/.config/knot/agent.yaml
 ```
 
 `validate` checks configuration structure. `doctor` checks Anytype connectivity, configured routes, runtime availability, adapter availability, and project paths. Resolve every relevant failure rather than weakening allowlists or exposing a listener publicly.
 
 ## 6. Prove the foreground workflow
 
-Run AAG in a terminal first:
+Run Knot in a terminal first:
 
 ```bash
-aag run --config ~/.config/aag/agent.yaml
+knot run --config ~/.config/knot/agent.yaml
 ```
 
 In a configured Anytype chat, verify this sequence:
 
 1. Mention the dedicated member from an allowed human account.
-2. Confirm AAG reacts to the user message and creates a reply promptly.
+2. Confirm Knot reacts to the user message and creates a reply promptly.
 3. Confirm progress edits the same reply and the final answer removes the reaction from the user message.
 4. During a run, send a same-chat follow-up. Confirm it steers the active runtime and produces a new response beneath the follow-up.
 5. Confirm an unmentioned message stays silent when the route uses `mention`.
@@ -184,16 +184,16 @@ Do not install the background service until the foreground flow succeeds. Stop t
 ## 7. Install the service
 
 ```bash
-aag service install --config ~/.config/aag/agent.yaml
-aag service status
-aag service logs
+knot service install --config ~/.config/knot/agent.yaml
+knot service status
+knot service logs
 ```
 
-This installs a user-level launchd service on macOS or systemd user service on Linux. Use `aag service restart`, `stop`, and `logs` for operation. Keep one service process per machine/user environment for the supported deployment model.
+This installs a user-level launchd service on macOS or systemd user service on Linux. Use `knot service restart`, `stop`, and `logs` for operation. Keep one service process per machine/user environment for the supported deployment model.
 
 ## 8. Completion checklist
 
-- `aag --version`, `validate`, and `doctor` succeed.
+- `knot --version`, `validate`, and `doctor` succeed.
 - Anytype shows a separate, taggable member in only the intended spaces.
 - API keys and tokens live outside the repository with restrictive permissions.
 - Chat/discussion routes and participant allowlists are explicit.
@@ -202,11 +202,11 @@ This installs a user-level launchd service on macOS or systemd user service on L
 - The foreground test covers mentions, silence, progress edits, final replies, and steering.
 - Thinking is replaced by the following text in one message; later distinct text parts appear as new streamed messages.
 - A `/new` message resets the native harness context without changing the Anytype route.
-- A Codex-backed chat can select its project with an Anytype Chat `Tag` named `agent-name:project-name`, such as `klee:imai`. AAG validates the tag against `runtime.defaultProject` and `runtime.allowedProjects` on every `/new`; invalid or ambiguous tags fail closed instead of falling back to another workspace.
+- A Codex-backed chat can select its project with an Anytype Chat `Tag` named `agent-name:project-name`, such as `klee:imai`. Knot validates the tag against `runtime.defaultProject` and `runtime.allowedProjects` on every `/new`; invalid or ambiguous tags fail closed instead of falling back to another workspace.
 - `/projects`, `/project <name>`, and `/project default` list, set, and remove the current agent's Chat project tag. Enable writes with `management.allowProjectChanges` and explicit `projectAdmins`.
 - `/models`, `/model <id>`, `/model default`, and `/new --model <id>` use the harness's native model controls. Enable changes with `management.allowModelChanges` and explicit `modelAdmins`; restrict the live catalog with `models.allowed`.
 - Allowed Anytype object operations work and denied spaces, archive, and upload paths fail closed.
-- OpenClaw's native channel is installed, its exact operator session is bound, and native scheduled/background output returns after an AAG restart.
+- OpenClaw's native channel is installed, its exact operator session is bound, and native scheduled/background output returns after a Knot restart.
 - Only one foreground/service process owns the configuration and SQLite state.
 
 For rationale behind these boundaries, read [`architecture-decisions.md`](architecture-decisions.md). For component-level design, read [`../ARCHITECTURE.md`](../ARCHITECTURE.md).

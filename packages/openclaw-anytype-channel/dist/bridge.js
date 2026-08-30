@@ -242,7 +242,7 @@ export class DeliveryWorker {
                         signal: AbortSignal.timeout(15_000),
                     });
                     if (!response.ok)
-                        throw new Error(`AAG returned HTTP ${response.status}`);
+                        throw new Error(`Knot returned HTTP ${response.status}`);
                     this.#options.store.acknowledgeDelivery(delivery.id);
                 }
                 catch (error) {

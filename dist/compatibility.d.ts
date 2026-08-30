@@ -1,25 +1,31 @@
 export declare const PRODUCT: {
     readonly current: {
-        readonly name: "Anytype Agent Gateway";
-        readonly shortName: "AAG";
-        readonly executable: "aag";
-        readonly packageName: "@imai/aag";
-    };
-    readonly next: {
         readonly name: "Knot";
         readonly shortName: "Knot";
         readonly executable: "knot";
         readonly packageName: "@imai/knot";
     };
-    readonly executables: readonly ["aag", "knot"];
-    readonly heartBinaries: readonly ["aag-heart-adapter", "knot-heart-adapter"];
+    readonly legacy: {
+        readonly name: "Anytype Agent Gateway";
+        readonly shortName: "AAG";
+        readonly executable: "aag";
+        readonly packageName: "@imai/aag";
+    };
+    readonly executables: readonly ["knot", "aag"];
+    readonly heartBinaries: readonly ["knot-heart-adapter", "aag-heart-adapter"];
     readonly services: {
-        readonly linux: readonly ["anytype-agent-gateway.service", "knot.service"];
-        readonly darwin: readonly ["com.anytype.anytype-agent-gateway", "com.imai.knot"];
+        readonly linux: {
+            readonly legacy: "anytype-agent-gateway.service";
+            readonly current: "knot.service";
+        };
+        readonly darwin: {
+            readonly legacy: "com.anytype.anytype-agent-gateway";
+            readonly current: "com.imai.knot";
+        };
     };
     readonly logs: {
-        readonly current: "AnytypeAgentGateway";
-        readonly next: "Knot";
+        readonly current: "Knot";
+        readonly legacy: "AnytypeAgentGateway";
     };
 };
 type Environment = Record<string, string | undefined>;

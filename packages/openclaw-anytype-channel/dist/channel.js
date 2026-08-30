@@ -43,11 +43,11 @@ export function createAnytypeChannel(params) {
             meta: {
                 id: CHANNEL_ID,
                 label: "Anytype",
-                selectionLabel: "Anytype (AAG bridge)",
+                selectionLabel: "Anytype (Knot bridge)",
                 docsPath: "/channels/anytype",
                 docsLabel: "anytype",
-                blurb: "Anytype chats and object discussions through AAG.",
-                aliases: ["aag"],
+                blurb: "Anytype chats and object discussions through Knot.",
+                aliases: ["knot", "aag"],
                 order: 80,
             },
             capabilities: {

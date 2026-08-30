@@ -1,10 +1,10 @@
 # Agent setup contract
 
-This repository builds and operates Anytype Agent Gateway (AAG). When a user gives an automation agent this repository and asks it to connect itself to Anytype, use the runbook in [`docs/agent-setup.md`](docs/agent-setup.md).
+This repository builds and operates Knot. When a user gives an automation agent this repository and asks it to connect itself to Anytype, use the runbook in [`docs/agent-setup.md`](docs/agent-setup.md).
 
 ## Invariants
 
-- One AAG process represents one runtime agent through one dedicated Anytype member.
+- One Knot process represents one runtime agent through one dedicated Anytype member.
 - Treat invite links, API keys, participant IDs, gateway tokens, and local project paths as sensitive operator input. Never invent them, print their values, or commit them.
 - Joining a space does not authorize every chat. Configure explicit routes or explicitly enable per-space chat discovery with a narrow wake rule and sender allowlist.
 - `allowedProjects` and `defaultProject` communicate intent to the runtime; they are not a filesystem sandbox. Enforce access in Codex/OpenClaw, the service account, or a container.
@@ -14,11 +14,11 @@ This repository builds and operates Anytype Agent Gateway (AAG). When a user giv
 ## Supported bootstrap
 
 ```bash
-pnpm add --global github:imai-studio/anytype-agent-gateway
-aag --version
+pnpm add --global github:imai-studio/knot
+knot --version
 ```
 
-Then ask the operator for the values the machine cannot discover safely: runtime (`codex` or `openclaw`), dedicated Anytype member name, invite link(s), selected chats and discussions, authorized participant IDs, project paths, and wake and permission policy. Follow `docs/agent-setup.md` to create or reuse the identity. Write configuration outside the repository, run `aag validate` and `aag doctor`, prove the foreground workflow, and only then install the service.
+Then ask the operator for the values the machine cannot discover safely: runtime (`codex` or `openclaw`), dedicated Anytype member name, invite link(s), selected chats and discussions, authorized participant IDs, project paths, and wake and permission policy. Follow `docs/agent-setup.md` to create or reuse the identity. Write configuration outside the repository, run `knot validate` and `knot doctor`, prove the foreground workflow, and only then install the service.
 
 ## Repository checks
 

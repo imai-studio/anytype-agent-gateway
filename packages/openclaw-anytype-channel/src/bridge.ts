@@ -276,7 +276,7 @@ export class DeliveryWorker {
             body: JSON.stringify(delivery),
             signal: AbortSignal.timeout(15_000),
           });
-          if (!response.ok) throw new Error(`AAG returned HTTP ${response.status}`);
+          if (!response.ok) throw new Error(`Knot returned HTTP ${response.status}`);
           this.#options.store.acknowledgeDelivery(delivery.id);
         } catch (error) {
           this.#options.store.retryDelivery(delivery.id, String(error));

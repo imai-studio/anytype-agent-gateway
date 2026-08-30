@@ -249,7 +249,7 @@ const channel = createAnytypeChannel({
 export default defineChannelPluginEntry({
   id: "anytype",
   name: "Anytype",
-  description: "Native Anytype channel backed by the authenticated AAG bridge.",
+  description: "Native Anytype channel backed by the authenticated Knot bridge.",
   plugin: channel,
   configSchema: anytypePluginConfigSchema,
   registerFull(api) {
@@ -260,7 +260,7 @@ export default defineChannelPluginEntry({
     setActiveRuntime(runtime);
     api.agent.events.registerAgentEventSubscription({
       id: "anytype-session-output",
-      description: "Streams bound Anytype session output to AAG, including scheduled runs.",
+      description: "Streams bound Anytype session output to Knot, including scheduled runs.",
       streams: ["assistant", "thinking", "tool", "lifecycle", "item"],
       handle(event) {
         runtime.observeAgentEvent(event);

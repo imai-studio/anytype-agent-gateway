@@ -42,10 +42,10 @@
     "channel": {
       "id": "anytype",
       "label": "Anytype",
-      "selectionLabel": "Anytype (AAG bridge)",
+      "selectionLabel": "Anytype (Knot bridge)",
       "docsPath": "/channels/anytype",
       "docsLabel": "anytype",
-      "blurb": "Anytype chats and object discussions through AAG."
+      "blurb": "Anytype chats and object discussions through Knot."
     },
     "install": {
       "npmSpec": "@imai/openclaw-anytype-channel",

@@ -215,7 +215,7 @@ const runtimeSchema = z.discriminatedUnion("kind", [
       .object({
         enabled: z.boolean().default(false),
         url: z.string().url().default("http://127.0.0.1:18791"),
-        tokenEnv: z.string().default("AAG_OPENCLAW_BRIDGE_TOKEN"),
+        tokenEnv: z.string().default("KNOT_OPENCLAW_BRIDGE_TOKEN"),
         tokenFile: z.string().optional(),
         accountId: z.string().default("default"),
         pollIntervalMilliseconds: z.number().int().min(100).max(10000).default(500),
@@ -223,7 +223,7 @@ const runtimeSchema = z.discriminatedUnion("kind", [
       .default({
         enabled: false,
         url: "http://127.0.0.1:18791",
-        tokenEnv: "AAG_OPENCLAW_BRIDGE_TOKEN",
+        tokenEnv: "KNOT_OPENCLAW_BRIDGE_TOKEN",
         accountId: "default",
         pollIntervalMilliseconds: 500,
       }),
@@ -258,10 +258,10 @@ export const configSchema = z.object({
       .default({ command: "anytype" }),
     heartAdapter: z
       .object({
-        command: z.string().default("aag-heart-adapter"),
+        command: z.string().default("knot-heart-adapter"),
         grpcAddress: z.string().default("127.0.0.1:31010"),
       })
-      .default({ command: "aag-heart-adapter", grpcAddress: "127.0.0.1:31010" }),
+      .default({ command: "knot-heart-adapter", grpcAddress: "127.0.0.1:31010" }),
   }),
   directMessages: directMessagesSchema.default({
     enabled: false,
@@ -413,8 +413,8 @@ export const configSchema = z.object({
       windowSeconds: 300,
     }),
   state: z
-    .object({ path: z.string().default("~/.local/state/aag/state.sqlite") })
-    .default({ path: "~/.local/state/aag/state.sqlite" }),
+    .object({ path: z.string().default("~/.local/state/knot/state.sqlite") })
+    .default({ path: "~/.local/state/knot/state.sqlite" }),
 });
 
 export type AgentConfig = z.infer<typeof configSchema>;

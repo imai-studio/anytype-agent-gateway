@@ -1,7 +1,7 @@
 {
   "id": "anytype",
   "name": "Anytype",
-  "description": "Native Anytype channel backed by the authenticated AAG bridge.",
+  "description": "Native Anytype channel backed by the authenticated Knot bridge.",
   "activation": {
     "onStartup": true
   },
@@ -33,7 +33,7 @@
         }
       },
       "uiHints": {
-        "bridgeToken": { "label": "AAG bridge token", "sensitive": true },
+        "bridgeToken": { "label": "Knot bridge token", "sensitive": true },
         "allowFrom": { "label": "Allowed Anytype participant IDs" }
       }
     }

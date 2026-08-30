@@ -372,7 +372,7 @@ describe("output-cycle projection", () => {
     await projection.finish({ text: answer });
 
     const text = anytype.messages[0]?.content?.text ?? "";
-    const noticeStart = text.indexOf("\n\n[Response truncated by AAG]");
+    const noticeStart = text.indexOf("\n\n[Response truncated by Knot]");
     expect(noticeStart).toBeGreaterThan(0);
     expect(anytype.marks).toEqual([{ type: "bold", from: 0, to: noticeStart }]);
   });

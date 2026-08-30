@@ -320,7 +320,7 @@ describe("constrained gateway management", () => {
       config,
       "aag_set_wake with route_id=chat:space:chat and humans=<mode>",
     );
-    expect(prompt).toContain("Anytype Agent Gateway (AAG)");
+    expect(prompt).toContain("You are being contacted through Knot");
     expect(prompt).toContain("aag_set_wake");
     expect(prompt).toContain("explicit wake-behavior request");
   });
@@ -356,9 +356,9 @@ describe("constrained gateway management", () => {
       "/private/node /private/aag config wake --route-id chat:space:chat --humans <mode>",
     );
 
-    expect(prompt).toContain("This Codex task receives Anytype messages through AAG");
+    expect(prompt).toContain("This Codex task receives Anytype messages through Knot");
     expect(prompt).toContain("\n\nlisten here");
-    expect(prompt).toContain("AAG updates untrusted route context at");
+    expect(prompt).toContain("Knot updates untrusted route context at");
     expect(prompt).not.toContain("/private/node");
     expect(prompt).not.toContain("Available constrained tools");
     expect(prompt.length).toBeLessThan(500);

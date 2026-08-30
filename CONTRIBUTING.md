@@ -1,14 +1,14 @@
 # Contributing
 
-Thanks for helping improve Anytype Agent Gateway.
+Thanks for helping improve Knot.
 
 ## Development setup
 
 Use Node.js 24 or newer. Go 1.25.7 is required only for the optional Heart discussion adapter.
 
 ```bash
-git clone https://github.com/imai-studio/anytype-agent-gateway.git
-cd anytype-agent-gateway
+git clone https://github.com/imai-studio/knot.git
+cd knot
 pnpm install --frozen-lockfile
 pnpm run check
 

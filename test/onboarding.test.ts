@@ -1,9 +1,13 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import YAML from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
-import { runInitOnboarding } from "../src/onboarding.js";
+import {
+  resolveOnboardingApiKeyPath,
+  resolveOnboardingStatePath,
+  runInitOnboarding,
+} from "../src/onboarding.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -13,7 +17,22 @@ afterEach(async () => {
   );
 });
 
-describe("aag init", () => {
+describe("knot init", () => {
+  it("uses fresh Knot state defaults but reuses an existing per-agent AAG database", async () => {
+    const home = await mkdtemp(join(tmpdir(), "knot-init-home-"));
+    temporaryDirectories.push(home);
+    await expect(resolveOnboardingStatePath(home, "klee")).resolves.toBe(
+      join(home, ".local", "state", "knot-klee", "state.sqlite"),
+    );
+    const legacy = join(home, ".local", "state", "aag-klee", "state.sqlite");
+    await mkdir(dirname(legacy), { recursive: true });
+    await writeFile(legacy, "legacy");
+    await expect(resolveOnboardingStatePath(home, "klee")).resolves.toBe(legacy);
+    const legacyKey = join(home, ".config", "aag", "klee", "anytype-api-key");
+    await mkdir(dirname(legacyKey), { recursive: true });
+    await writeFile(legacyKey, "legacy-key");
+    await expect(resolveOnboardingApiKeyPath(home, "klee")).resolves.toBe(legacyKey);
+  });
   it("defaults a Codex agent workspace to the directory where init runs", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "aag-init-"));
     temporaryDirectories.push(cwd);
@@ -58,8 +77,6 @@ describe("aag init", () => {
       createMissing: true,
       wake: { humans: "every-message", allowedUsers: ["participant-raj"] },
     });
-    expect(await readFile(result.agentsFile!, "utf8")).toContain(
-      "Turns may arrive through Anytype Agent Gateway",
-    );
+    expect(await readFile(result.agentsFile!, "utf8")).toContain("Turns may arrive through Knot");
   });
 });

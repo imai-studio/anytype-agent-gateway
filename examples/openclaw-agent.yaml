@@ -6,11 +6,11 @@ agent:
 
 anytype:
   apiBase: http://127.0.0.1:31012
-  apiKeyFile: ~/.config/aag/anytype-api-key
+  apiKeyFile: ~/.config/knot/anytype-api-key
   cli:
     command: anytype
   heartAdapter:
-    command: aag-heart-adapter
+    command: knot-heart-adapter
 
 directMessages:
   enabled: true
@@ -56,8 +56,8 @@ runtime:
   channelBridge:
     enabled: true
     url: http://127.0.0.1:18791
-    tokenEnv: AAG_OPENCLAW_BRIDGE_TOKEN
-    tokenFile: ~/.config/aag/openclaw-bridge-token
+    tokenEnv: KNOT_OPENCLAW_BRIDGE_TOKEN
+    tokenFile: ~/.config/knot/openclaw-bridge-token
     accountId: default
     pollIntervalMilliseconds: 500
   inactivityTimeoutSeconds: 0
@@ -92,4 +92,4 @@ coordination:
   windowSeconds: 300
 
 state:
-  path: ~/.local/state/aag/state.sqlite
+  path: ~/.local/state/knot/state.sqlite

@@ -1,8 +1,8 @@
 # Reference unit only. Prefer:
-#   aag service install --config ~/.config/aag/agent.yaml
+#   knot service install --config ~/.config/knot/agent.yaml
 # because it records the actual Node, compiled CLI, and config paths.
 [Unit]
-Description=Anytype Agent Gateway
+Description=Knot
 After=network-online.target anytype.service
 Wants=network-online.target anytype.service
 StartLimitIntervalSec=60
@@ -11,10 +11,10 @@ StartLimitBurst=5
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:%h/.pnpm-global/bin:%h/.local/share/pnpm:%h/.local/share/pnpm/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env aag run --config %h/.config/aag/agent.yaml
+ExecStart=/usr/bin/env knot run --config %h/.config/knot/agent.yaml
 Restart=on-failure
 RestartSec=5
-# SIGTERM makes AAG stop streams, cancel active runs, close SQLite, and release
+# SIGTERM makes Knot stop streams, cancel active runs, close SQLite, and release
 # its singleton lock. The timeout is a supervisor backstop.
 TimeoutStopSec=30
 NoNewPrivileges=true

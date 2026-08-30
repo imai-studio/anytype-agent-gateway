@@ -20,7 +20,7 @@ export async function createIdentity(options) {
     const matches = [...plain.matchAll(/(?:^|\n)\s*Key:\s*([^\s]+)\s*(?=\n|$)/gi)];
     const match = matches.at(-1);
     if (!match?.[1])
-        throw new Error("Anytype CLI created an API key, but AAG could not recognize its output");
+        throw new Error("Anytype CLI created an API key, but Knot could not recognize its output");
     await mkdir(dirname(options.apiKeyFile), { recursive: true, mode: 0o700 });
     await writeFile(options.apiKeyFile, `${match[1]}\n`, { mode: 0o600 });
     await chmod(options.apiKeyFile, 0o600);

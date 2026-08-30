@@ -1,28 +1,29 @@
+import { existsSync } from "node:fs";
 import { access, constants } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
 export const PRODUCT = {
     current: {
-        name: "Anytype Agent Gateway",
-        shortName: "AAG",
-        executable: "aag",
-        packageName: "@imai/aag",
-    },
-    next: {
         name: "Knot",
         shortName: "Knot",
         executable: "knot",
         packageName: "@imai/knot",
     },
-    executables: ["aag", "knot"],
-    heartBinaries: ["aag-heart-adapter", "knot-heart-adapter"],
+    legacy: {
+        name: "Anytype Agent Gateway",
+        shortName: "AAG",
+        executable: "aag",
+        packageName: "@imai/aag",
+    },
+    executables: ["knot", "aag"],
+    heartBinaries: ["knot-heart-adapter", "aag-heart-adapter"],
     services: {
-        linux: ["anytype-agent-gateway.service", "knot.service"],
-        darwin: ["com.anytype.anytype-agent-gateway", "com.imai.knot"],
+        linux: { legacy: "anytype-agent-gateway.service", current: "knot.service" },
+        darwin: { legacy: "com.anytype.anytype-agent-gateway", current: "com.imai.knot" },
     },
     logs: {
-        current: "AnytypeAgentGateway",
-        next: "Knot",
+        current: "Knot",
+        legacy: "AnytypeAgentGateway",
     },
 };
 const warnedLegacyFamilies = new Set();
@@ -60,9 +61,11 @@ export function resolveConfigPath(options = {}) {
     });
     if (options.explicit)
         return normalizePath(options.explicit, options.home);
-    return configured
-        ? normalizePath(configured, options.home)
-        : join(options.home ?? homedir(), ".config", "aag", "agent.yaml");
+    if (configured)
+        return normalizePath(configured, options.home);
+    const home = options.home ?? homedir();
+    const legacy = join(home, ".config", "aag", "agent.yaml");
+    return existsSync(legacy) ? legacy : join(home, ".config", "knot", "agent.yaml");
 }
 export function resolveStatePath(options = {}) {
     const configured = resolveProductEnvironment("STATE_PATH", {
@@ -72,9 +75,11 @@ export function resolveStatePath(options = {}) {
     });
     if (options.explicit)
         return normalizePath(options.explicit, options.home);
-    return configured
-        ? normalizePath(configured, options.home)
-        : join(options.home ?? homedir(), ".local", "state", "aag", "state.sqlite");
+    if (configured)
+        return normalizePath(configured, options.home);
+    const home = options.home ?? homedir();
+    const legacy = join(home, ".local", "state", "aag", "state.sqlite");
+    return existsSync(legacy) ? legacy : join(home, ".local", "state", "knot", "state.sqlite");
 }
 export async function resolveHeartBinary(configured = PRODUCT.heartBinaries[0], exists = executableExists) {
     if (!PRODUCT.heartBinaries.includes(configured))
@@ -87,14 +92,17 @@ export async function resolveHeartBinary(configured = PRODUCT.heartBinaries[0], 
 }
 export async function detectServices(platform, exists) {
     const identities = PRODUCT.services[platform];
-    return Promise.all(identities.map(async (identity, index) => ({
-        generation: index === 0 ? "aag" : "knot",
+    return Promise.all([
+        ["aag", identities.legacy],
+        ["knot", identities.current],
+    ].map(async ([generation, identity]) => ({
+        generation,
         identity,
         installed: await exists(identity),
     })));
 }
-export function logNamespace(generation = "aag") {
-    return generation === "aag" ? PRODUCT.logs.current : PRODUCT.logs.next;
+export function logNamespace(generation = "knot") {
+    return generation === "aag" ? PRODUCT.logs.legacy : PRODUCT.logs.current;
 }
 function warnLegacyOnce(family, message, warn) {
     if (warnedLegacyFamilies.has(family))
