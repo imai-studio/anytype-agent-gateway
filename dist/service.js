@@ -121,16 +121,18 @@ export async function migrateService(options = {}) {
         throw error;
     }
 }
-function serviceRollbackCommands() {
-    return process.platform === "darwin"
+export function serviceRollbackCommands(platform = process.platform) {
+    return platform === "darwin"
         ? [
             "knot service stop",
+            "rm -f ~/Library/LaunchAgents/com.imai.knot.plist",
             "mv <legacy-backup> ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist",
             "launchctl enable gui/$(id -u)/com.anytype.anytype-agent-gateway",
             "launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist",
         ]
         : [
             "systemctl --user disable --now knot.service",
+            "rm -f ~/.config/systemd/user/knot.service",
             "mv <legacy-backup> ~/.config/systemd/user/anytype-agent-gateway.service",
             "systemctl --user daemon-reload",
             "systemctl --user enable --now anytype-agent-gateway.service",

@@ -8,6 +8,7 @@ import {
   buildLaunchdPlist,
   launchdServiceLabel,
   resolveInstalledService,
+  serviceRollbackCommands,
   systemdServiceName,
   migrateService,
   type ManagedServiceState,
@@ -18,6 +19,22 @@ describe("buildLaunchdPlist", () => {
   it("uses the Knot service identities for newly generated services", () => {
     expect(systemdServiceName).toBe("knot.service");
     expect(launchdServiceLabel).toBe("com.imai.knot");
+  });
+  it("prints complete platform-specific rollback commands", () => {
+    expect(serviceRollbackCommands("linux")).toEqual([
+      "systemctl --user disable --now knot.service",
+      "rm -f ~/.config/systemd/user/knot.service",
+      "mv <legacy-backup> ~/.config/systemd/user/anytype-agent-gateway.service",
+      "systemctl --user daemon-reload",
+      "systemctl --user enable --now anytype-agent-gateway.service",
+    ]);
+    expect(serviceRollbackCommands("darwin")).toEqual([
+      "knot service stop",
+      "rm -f ~/Library/LaunchAgents/com.imai.knot.plist",
+      "mv <legacy-backup> ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist",
+      "launchctl enable gui/$(id -u)/com.anytype.anytype-agent-gateway",
+      "launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist",
+    ]);
   });
   it("discovers a legacy service for in-place management", async () => {
     const home = await mkdtemp(join(tmpdir(), "knot-service-home-"));
