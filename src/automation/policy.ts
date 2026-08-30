@@ -1,0 +1,211 @@
+import { createHash } from "node:crypto";
+import { z } from "zod";
+import { canonicalJson, type JsonValue } from "./workflow.js";
+import { workflowCapabilitySchema } from "./workflow.js";
+import type { WorkflowDefinition, WorkflowCapability } from "./workflow.js";
+
+export type WorkflowRiskTier = "T0" | "T1" | "T2";
+
+const tierOrder: Record<WorkflowRiskTier, number> = { T0: 0, T1: 1, T2: 2 };
+
+const stepCapabilities: Record<
+  WorkflowDefinition["spec"]["steps"][number]["kind"],
+  WorkflowCapability[]
+> = {
+  agent: ["agent.invoke"],
+  "anytype.read": ["anytype.read"],
+  "anytype.query": ["anytype.query"],
+  "anytype.write": ["anytype.write"],
+  "anytype.upsert": ["anytype.write"],
+  "anytype.materialize": ["anytype.materialize", "anytype.write"],
+  transform: [],
+  http: ["http.request"],
+  approval: [],
+  notify: ["notify"],
+};
+
+const t2Capabilities = new Set<WorkflowCapability>([
+  "anytype.archive",
+  "anytype.bulk",
+  "anytype.cross-space",
+  "http.request",
+]);
+const t1Capabilities = new Set<WorkflowCapability>([
+  "agent.invoke",
+  "anytype.materialize",
+  "anytype.write",
+  "notify",
+]);
+
+export interface WorkflowPolicyEvaluation {
+  riskTier: WorkflowRiskTier;
+  requiredCapabilities: WorkflowCapability[];
+  missingCapabilities: WorkflowCapability[];
+  approvalRequired: boolean;
+}
+
+export const workflowAuthorityFields = {
+  allowedAuthorIds: z.array(z.string().min(1)).default([]),
+  allowedSpaceIds: z.array(z.string().min(1)).default([]),
+  allowedCapabilities: z.array(workflowCapabilitySchema).default([]),
+  allowedConnections: z.array(z.string().min(1)).default([]),
+  allowedSecretNames: z.array(z.string().min(1)).default([]),
+  allowedProjects: z.array(z.string().min(1)).default([]),
+  maximumRiskTier: z.enum(["T0", "T1", "T2"]).default("T0"),
+  limits: z
+    .object({
+      maximumConcurrentRuns: z.number().int().min(1).max(100).default(4),
+      maximumStepsPerRun: z.number().int().min(1).max(1_000).default(100),
+      maximumEffectsPerRun: z.number().int().min(0).max(1_000).default(20),
+      maximumRunSeconds: z.number().int().min(1).max(604_800).default(3_600),
+      maximumCausalDepth: z.number().int().min(0).max(100).default(8),
+    })
+    .strict()
+    .default({
+      maximumConcurrentRuns: 4,
+      maximumStepsPerRun: 100,
+      maximumEffectsPerRun: 20,
+      maximumRunSeconds: 3_600,
+      maximumCausalDepth: 8,
+    }),
+} satisfies z.ZodRawShape;
+
+export const workflowAuthoritySchema = z.object(workflowAuthorityFields).strict();
+export type WorkflowAuthority = z.infer<typeof workflowAuthoritySchema>;
+
+export interface WorkflowPolicyContext {
+  sourceSpaceId?: string;
+}
+
+export interface WorkflowAuthorityContext extends WorkflowPolicyContext {
+  authorId?: string;
+}
+
+export interface WorkflowAuthorityEvaluation extends WorkflowPolicyEvaluation {
+  allowed: boolean;
+  violations: string[];
+  authorityHash: string;
+}
+
+export function evaluateWorkflowPolicy(
+  workflow: WorkflowDefinition,
+  context: WorkflowPolicyContext = {},
+): WorkflowPolicyEvaluation {
+  const requested = new Set(workflow.spec.capabilities);
+  const required = new Set<WorkflowCapability>();
+  for (const step of workflow.spec.steps)
+    for (const capability of stepCapabilities[step.kind]) required.add(capability);
+  deriveConfiguredRiskCapabilities(workflow, context, required);
+  for (const capability of requested) required.add(capability);
+  const requiredCapabilities = [...required].sort();
+  const riskTier = requiredCapabilities.some((capability) => t2Capabilities.has(capability))
+    ? "T2"
+    : requiredCapabilities.some((capability) => t1Capabilities.has(capability))
+      ? "T1"
+      : "T0";
+  return {
+    riskTier,
+    requiredCapabilities,
+    missingCapabilities: requiredCapabilities.filter((capability) => !requested.has(capability)),
+    approvalRequired: riskTier !== "T0",
+  };
+}
+
+function deriveConfiguredRiskCapabilities(
+  workflow: WorkflowDefinition,
+  context: WorkflowPolicyContext,
+  required: Set<WorkflowCapability>,
+): void {
+  const configuredSpaces = new Set<string>();
+  for (const trigger of workflow.spec.triggers)
+    if ("spaceId" in trigger && trigger.spaceId) configuredSpaces.add(trigger.spaceId);
+  for (const step of workflow.spec.steps) {
+    if (!step.kind.startsWith("anytype.")) continue;
+    const config = step.config ?? {};
+    if ("spaceId" in config && config.spaceId) configuredSpaces.add(config.spaceId);
+    if ("bulk" in config && config.bulk) required.add("anytype.bulk");
+    if ("operation" in config && (config.operation === "archive" || config.operation === "delete"))
+      required.add("anytype.archive");
+  }
+  if (
+    configuredSpaces.size > 1 ||
+    (context.sourceSpaceId &&
+      [...configuredSpaces].some((spaceId) => spaceId !== context.sourceSpaceId))
+  )
+    required.add("anytype.cross-space");
+}
+
+export function evaluateWorkflowAuthority(
+  workflow: WorkflowDefinition,
+  authority: WorkflowAuthority,
+  context: WorkflowAuthorityContext = {},
+): WorkflowAuthorityEvaluation {
+  const policy = evaluateWorkflowPolicy(workflow, context);
+  const violations: string[] = [];
+  const allowedCapabilities = new Set(authority.allowedCapabilities);
+  for (const capability of policy.requiredCapabilities)
+    if (!allowedCapabilities.has(capability))
+      violations.push(`Capability is not locally authorized: ${capability}`);
+  if (!riskTierAllows(authority.maximumRiskTier, policy.riskTier))
+    violations.push(
+      `Risk tier ${policy.riskTier} exceeds local maximum ${authority.maximumRiskTier}`,
+    );
+  const spaces = new Set<string>();
+  if (context.sourceSpaceId) spaces.add(context.sourceSpaceId);
+  for (const trigger of workflow.spec.triggers)
+    if ("spaceId" in trigger && trigger.spaceId) spaces.add(trigger.spaceId);
+  for (const step of workflow.spec.steps)
+    if (step.kind.startsWith("anytype.")) {
+      const config = step.config ?? {};
+      if ("spaceId" in config && config.spaceId) spaces.add(config.spaceId);
+    }
+  for (const spaceId of spaces)
+    if (!authority.allowedSpaceIds.includes(spaceId))
+      violations.push(`Space is not locally authorized: ${spaceId}`);
+  if (context.authorId && !authority.allowedAuthorIds.includes(context.authorId))
+    violations.push(`Author is not locally authorized: ${context.authorId}`);
+  for (const step of workflow.spec.steps) {
+    const config = step.config ?? {};
+    if (step.kind === "agent" && "project" in config && config.project)
+      if (!authority.allowedProjects.includes(config.project))
+        violations.push(`Project is not locally authorized: ${config.project}`);
+    if (step.kind !== "http" && step.kind !== "notify") continue;
+    if (
+      "connectionRef" in config &&
+      config.connectionRef &&
+      !authority.allowedConnections.includes(config.connectionRef)
+    )
+      violations.push(`Connection is not locally authorized: ${config.connectionRef}`);
+    for (const secretRef of ("secretRefs" in config && config.secretRefs) || [])
+      if (!authority.allowedSecretNames.includes(secretRef))
+        violations.push(`Secret is not locally authorized: ${secretRef}`);
+  }
+  return {
+    ...policy,
+    allowed: violations.length === 0,
+    violations,
+    authorityHash: workflowAuthorityHash(authority),
+  };
+}
+
+export function riskTierAllows(maximum: WorkflowRiskTier, actual: WorkflowRiskTier): boolean {
+  return tierOrder[actual] <= tierOrder[maximum];
+}
+
+export function workflowAuthorityHash(authority: WorkflowAuthority): string {
+  const material: JsonValue = {
+    allowedAuthorIds: [...new Set(authority.allowedAuthorIds)].sort(),
+    allowedCapabilities: [...new Set(authority.allowedCapabilities)].sort(),
+    allowedConnections: [...new Set(authority.allowedConnections)].sort(),
+    allowedProjects: [...new Set(authority.allowedProjects)].sort(),
+    allowedSecretNames: [...new Set(authority.allowedSecretNames)].sort(),
+    allowedSpaceIds: [...new Set(authority.allowedSpaceIds)].sort(),
+    limits: authority.limits,
+    maximumRiskTier: authority.maximumRiskTier,
+  };
+  const digest = createHash("sha256")
+    .update("knot.workflow.authority.v1\0")
+    .update(canonicalJson(material))
+    .digest("hex");
+  return `sha256:${digest}`;
+}

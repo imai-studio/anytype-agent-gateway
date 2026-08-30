@@ -37,6 +37,50 @@ describe("loadConfig", () => {
     expect(config.spaces[0]?.chatDiscovery.autoEnroll).toBe(false);
     expect(config.directMessages.enabled).toBe(false);
     expect(config.directMessages.createMissing).toBe(false);
+    expect(config.automation.enabled).toBe(false);
+    expect(config.automation.execution).toBe(false);
+    expect(config.automation.maximumRiskTier).toBe("T0");
+  });
+
+  it("requires explicit workflow authors and spaces before enabling automation", () => {
+    const base = {
+      version: 1,
+      agent: { name: "Knot", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ id: "space" }],
+      runtime: { kind: "codex" },
+    };
+    expect(() => configSchema.parse({ ...base, automation: { enabled: true } })).toThrow(
+      "allowedAuthorIds",
+    );
+    expect(
+      configSchema.parse({
+        ...base,
+        automation: {
+          enabled: true,
+          allowedAuthorIds: ["operator"],
+          allowedSpaceIds: ["space"],
+        },
+      }).automation.enabled,
+    ).toBe(true);
+    expect(() =>
+      configSchema.parse({
+        ...base,
+        automation: {
+          enabled: true,
+          observation: false,
+          execution: true,
+          allowedAuthorIds: ["operator"],
+          allowedSpaceIds: ["space"],
+        },
+      }),
+    ).toThrow("observation");
+    expect(() =>
+      configSchema.parse({ ...base, automation: { allowedCapabilties: ["anytype.read"] } }),
+    ).toThrow("Unrecognized key");
+    expect(() => configSchema.parse({ ...base, automation: { heartHints: true } })).toThrow(
+      "Heart hints",
+    );
   });
 
   it("accepts workspace-owned stable prompt instructions", () => {
