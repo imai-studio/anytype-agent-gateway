@@ -24,6 +24,7 @@ export declare const workflowAuthorityFields: {
     }>>>;
     allowedConnections: z.ZodDefault<z.ZodArray<z.ZodString>>;
     allowedSecretNames: z.ZodDefault<z.ZodArray<z.ZodString>>;
+    allowedProjects: z.ZodDefault<z.ZodArray<z.ZodString>>;
     maximumRiskTier: z.ZodDefault<z.ZodEnum<{
         T0: "T0";
         T1: "T1";
@@ -54,6 +55,7 @@ export declare const workflowAuthoritySchema: z.ZodObject<{
     }>>>;
     allowedConnections: z.ZodDefault<z.ZodArray<z.ZodString>>;
     allowedSecretNames: z.ZodDefault<z.ZodArray<z.ZodString>>;
+    allowedProjects: z.ZodDefault<z.ZodArray<z.ZodString>>;
     maximumRiskTier: z.ZodDefault<z.ZodEnum<{
         T0: "T0";
         T1: "T1";
@@ -71,6 +73,15 @@ export type WorkflowAuthority = z.infer<typeof workflowAuthoritySchema>;
 export interface WorkflowPolicyContext {
     sourceSpaceId?: string;
 }
+export interface WorkflowAuthorityContext extends WorkflowPolicyContext {
+    authorId?: string;
+}
+export interface WorkflowAuthorityEvaluation extends WorkflowPolicyEvaluation {
+    allowed: boolean;
+    violations: string[];
+    authorityHash: string;
+}
 export declare function evaluateWorkflowPolicy(workflow: WorkflowDefinition, context?: WorkflowPolicyContext): WorkflowPolicyEvaluation;
+export declare function evaluateWorkflowAuthority(workflow: WorkflowDefinition, authority: WorkflowAuthority, context?: WorkflowAuthorityContext): WorkflowAuthorityEvaluation;
 export declare function riskTierAllows(maximum: WorkflowRiskTier, actual: WorkflowRiskTier): boolean;
 export declare function workflowAuthorityHash(authority: WorkflowAuthority): string;

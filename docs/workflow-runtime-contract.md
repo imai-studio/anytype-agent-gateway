@@ -29,10 +29,14 @@ silently route work through the existing chat gateway.
 ## Definition and approval integrity
 
 Definitions use `knot.imai.studio/v1alpha1` and `KnotWorkflow`. The parser rejects unknown fields in
-the workflow-owned envelope. Step configuration remains JSON-only and step kinds are limited to the
+the workflow-owned envelope. Every step kind has a strict configuration schema; executors may not
+interpret undeclared nested options. Connection, secret, project, target-space, bulk, and destructive
+references therefore remain visible to approval and authority policy. Step kinds are limited to the
 initial Phase 2 catalog. Step IDs are unique and their dependency graph must be valid and acyclic.
 
-Knot hashes the parsed, default-materialized approval projection, never raw YAML. Canonical JSON
+Knot hashes the parsed, default-materialized approval projection, never raw YAML. The projection
+includes an explicit policy-derivation version, so changing risk semantics invalidates old approval
+subjects. Canonical JSON
 sorts object keys and preserves semantic array order. Set-like capability, dependency, and pinned
 reference collections are normalized explicitly. The domain-separated `knot.workflow.approval.v1`
 SHA-256 hash includes:
@@ -59,6 +63,9 @@ the step requires is invalid. Declaring additional capabilities can only increas
 
 T1 and T2 require an exact approved hash. T2 always requires an explicit manual approval. Local
 maximum tier and capability grants remain authoritative even when an old approval exists.
+Before approval or execution, Knot evaluates the complete intersection of definition intent with
+the current local author, space, capability, project, connection, secret-name, tier, and budget
+grants. An approval decision cannot expand that intersection.
 
 ## Observation correctness boundary
 

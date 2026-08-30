@@ -15,6 +15,7 @@ export declare const workflowCapabilitySchema: z.ZodEnum<{
     notify: "notify";
 }>;
 export type WorkflowCapability = z.infer<typeof workflowCapabilitySchema>;
+export declare const WORKFLOW_POLICY_VERSION = 1;
 export declare const workflowStepKindSchema: z.ZodEnum<{
     transform: "transform";
     "anytype.materialize": "anytype.materialize";
@@ -58,22 +59,15 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
             spaceId: z.ZodOptional<z.ZodString>;
             chatId: z.ZodOptional<z.ZodString>;
         }, z.core.$strict>], "kind">>;
-        steps: z.ZodArray<z.ZodObject<{
+        steps: z.ZodArray<z.ZodDiscriminatedUnion<[z.ZodObject<{
             id: z.ZodString;
-            kind: z.ZodEnum<{
-                transform: "transform";
-                "anytype.materialize": "anytype.materialize";
-                "anytype.query": "anytype.query";
-                "anytype.read": "anytype.read";
-                "anytype.write": "anytype.write";
-                notify: "notify";
-                agent: "agent";
-                "anytype.upsert": "anytype.upsert";
-                http: "http";
-                approval: "approval";
-            }>;
+            kind: z.ZodLiteral<"agent">;
             dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
-            config: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodType<JsonValue, unknown, z.core.$ZodTypeInternals<JsonValue, unknown>>>>;
+            config: z.ZodOptional<z.ZodObject<{
+                project: z.ZodOptional<z.ZodString>;
+                prompt: z.ZodOptional<z.ZodString>;
+                model: z.ZodOptional<z.ZodString>;
+            }, z.core.$strict>>;
             retry: z.ZodOptional<z.ZodObject<{
                 attempts: z.ZodDefault<z.ZodNumber>;
                 initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
@@ -81,7 +75,163 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
                 multiplier: z.ZodDefault<z.ZodNumber>;
             }, z.core.$strict>>;
             timeoutSeconds: z.ZodOptional<z.ZodNumber>;
-        }, z.core.$strict>>;
+        }, z.core.$strict>, z.ZodObject<{
+            id: z.ZodString;
+            kind: z.ZodLiteral<"anytype.read">;
+            dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            config: z.ZodOptional<z.ZodObject<{
+                spaceId: z.ZodOptional<z.ZodString>;
+                objectId: z.ZodOptional<z.ZodString>;
+            }, z.core.$strict>>;
+            retry: z.ZodOptional<z.ZodObject<{
+                attempts: z.ZodDefault<z.ZodNumber>;
+                initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                maximumDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                multiplier: z.ZodDefault<z.ZodNumber>;
+            }, z.core.$strict>>;
+            timeoutSeconds: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strict>, z.ZodObject<{
+            id: z.ZodString;
+            kind: z.ZodLiteral<"anytype.query">;
+            dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            config: z.ZodOptional<z.ZodObject<{
+                spaceId: z.ZodOptional<z.ZodString>;
+                query: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodType<JsonValue, unknown, z.core.$ZodTypeInternals<JsonValue, unknown>>>>;
+            }, z.core.$strict>>;
+            retry: z.ZodOptional<z.ZodObject<{
+                attempts: z.ZodDefault<z.ZodNumber>;
+                initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                maximumDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                multiplier: z.ZodDefault<z.ZodNumber>;
+            }, z.core.$strict>>;
+            timeoutSeconds: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strict>, z.ZodObject<{
+            id: z.ZodString;
+            kind: z.ZodLiteral<"anytype.write">;
+            dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            config: z.ZodOptional<z.ZodObject<{
+                spaceId: z.ZodOptional<z.ZodString>;
+                objectId: z.ZodOptional<z.ZodString>;
+                operation: z.ZodDefault<z.ZodEnum<{
+                    create: "create";
+                    update: "update";
+                    archive: "archive";
+                    delete: "delete";
+                }>>;
+                bulk: z.ZodDefault<z.ZodBoolean>;
+                values: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodType<JsonValue, unknown, z.core.$ZodTypeInternals<JsonValue, unknown>>>>;
+            }, z.core.$strict>>;
+            retry: z.ZodOptional<z.ZodObject<{
+                attempts: z.ZodDefault<z.ZodNumber>;
+                initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                maximumDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                multiplier: z.ZodDefault<z.ZodNumber>;
+            }, z.core.$strict>>;
+            timeoutSeconds: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strict>, z.ZodObject<{
+            id: z.ZodString;
+            kind: z.ZodLiteral<"anytype.upsert">;
+            dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            config: z.ZodOptional<z.ZodObject<{
+                spaceId: z.ZodOptional<z.ZodString>;
+                objectTypeId: z.ZodOptional<z.ZodString>;
+                uniqueKey: z.ZodOptional<z.ZodString>;
+                bulk: z.ZodDefault<z.ZodBoolean>;
+                values: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodType<JsonValue, unknown, z.core.$ZodTypeInternals<JsonValue, unknown>>>>;
+            }, z.core.$strict>>;
+            retry: z.ZodOptional<z.ZodObject<{
+                attempts: z.ZodDefault<z.ZodNumber>;
+                initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                maximumDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                multiplier: z.ZodDefault<z.ZodNumber>;
+            }, z.core.$strict>>;
+            timeoutSeconds: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strict>, z.ZodObject<{
+            id: z.ZodString;
+            kind: z.ZodLiteral<"anytype.materialize">;
+            dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            config: z.ZodOptional<z.ZodObject<{
+                spaceId: z.ZodOptional<z.ZodString>;
+                collectionId: z.ZodOptional<z.ZodString>;
+                bulk: z.ZodDefault<z.ZodBoolean>;
+            }, z.core.$strict>>;
+            retry: z.ZodOptional<z.ZodObject<{
+                attempts: z.ZodDefault<z.ZodNumber>;
+                initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                maximumDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                multiplier: z.ZodDefault<z.ZodNumber>;
+            }, z.core.$strict>>;
+            timeoutSeconds: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strict>, z.ZodObject<{
+            id: z.ZodString;
+            kind: z.ZodLiteral<"transform">;
+            dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            config: z.ZodOptional<z.ZodObject<{
+                transformRef: z.ZodOptional<z.ZodString>;
+                inputStepId: z.ZodOptional<z.ZodString>;
+            }, z.core.$strict>>;
+            retry: z.ZodOptional<z.ZodObject<{
+                attempts: z.ZodDefault<z.ZodNumber>;
+                initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                maximumDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                multiplier: z.ZodDefault<z.ZodNumber>;
+            }, z.core.$strict>>;
+            timeoutSeconds: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strict>, z.ZodObject<{
+            id: z.ZodString;
+            kind: z.ZodLiteral<"http">;
+            dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            config: z.ZodOptional<z.ZodObject<{
+                url: z.ZodOptional<z.ZodString>;
+                method: z.ZodDefault<z.ZodEnum<{
+                    GET: "GET";
+                    POST: "POST";
+                    PUT: "PUT";
+                    PATCH: "PATCH";
+                    DELETE: "DELETE";
+                }>>;
+                connectionRef: z.ZodOptional<z.ZodString>;
+                secretRefs: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            }, z.core.$strict>>;
+            retry: z.ZodOptional<z.ZodObject<{
+                attempts: z.ZodDefault<z.ZodNumber>;
+                initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                maximumDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                multiplier: z.ZodDefault<z.ZodNumber>;
+            }, z.core.$strict>>;
+            timeoutSeconds: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strict>, z.ZodObject<{
+            id: z.ZodString;
+            kind: z.ZodLiteral<"approval">;
+            dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            config: z.ZodOptional<z.ZodObject<{
+                message: z.ZodOptional<z.ZodString>;
+            }, z.core.$strict>>;
+            retry: z.ZodOptional<z.ZodObject<{
+                attempts: z.ZodDefault<z.ZodNumber>;
+                initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                maximumDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                multiplier: z.ZodDefault<z.ZodNumber>;
+            }, z.core.$strict>>;
+            timeoutSeconds: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strict>, z.ZodObject<{
+            id: z.ZodString;
+            kind: z.ZodLiteral<"notify">;
+            dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            config: z.ZodOptional<z.ZodObject<{
+                destination: z.ZodOptional<z.ZodString>;
+                message: z.ZodOptional<z.ZodString>;
+                connectionRef: z.ZodOptional<z.ZodString>;
+                secretRefs: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            }, z.core.$strict>>;
+            retry: z.ZodOptional<z.ZodObject<{
+                attempts: z.ZodDefault<z.ZodNumber>;
+                initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                maximumDelaySeconds: z.ZodDefault<z.ZodNumber>;
+                multiplier: z.ZodDefault<z.ZodNumber>;
+            }, z.core.$strict>>;
+            timeoutSeconds: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strict>], "kind">>;
         capabilities: z.ZodDefault<z.ZodArray<z.ZodEnum<{
             "agent.invoke": "agent.invoke";
             "anytype.archive": "anytype.archive";

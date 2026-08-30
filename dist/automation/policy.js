@@ -33,6 +33,7 @@ export const workflowAuthorityFields = {
     allowedCapabilities: z.array(workflowCapabilitySchema).default([]),
     allowedConnections: z.array(z.string().min(1)).default([]),
     allowedSecretNames: z.array(z.string().min(1)).default([]),
+    allowedProjects: z.array(z.string().min(1)).default([]),
     maximumRiskTier: z.enum(["T0", "T1", "T2"]).default("T0"),
     limits: z
         .object({
@@ -82,14 +83,12 @@ function deriveConfiguredRiskCapabilities(workflow, context, required) {
     for (const step of workflow.spec.steps) {
         if (!step.kind.startsWith("anytype."))
             continue;
-        collectStringValues(step.config, "spaceId", configuredSpaces);
-        if (step.config.bulk === true)
+        const config = step.config ?? {};
+        if ("spaceId" in config && config.spaceId)
+            configuredSpaces.add(config.spaceId);
+        if ("bulk" in config && config.bulk)
             required.add("anytype.bulk");
-        if (step.config.archive === true || step.config.destructive === true)
-            required.add("anytype.archive");
-        const operation = step.config.operation;
-        if (typeof operation === "string" &&
-            ["archive", "delete", "destroy", "purge"].includes(operation.toLowerCase()))
+        if ("operation" in config && (config.operation === "archive" || config.operation === "delete"))
             required.add("anytype.archive");
     }
     if (configuredSpaces.size > 1 ||
@@ -97,20 +96,53 @@ function deriveConfiguredRiskCapabilities(workflow, context, required) {
             [...configuredSpaces].some((spaceId) => spaceId !== context.sourceSpaceId)))
         required.add("anytype.cross-space");
 }
-function collectStringValues(value, key, output) {
-    if (!value || typeof value !== "object")
-        return;
-    if (Array.isArray(value)) {
-        for (const item of value)
-            collectStringValues(item, key, output);
-        return;
+export function evaluateWorkflowAuthority(workflow, authority, context = {}) {
+    const policy = evaluateWorkflowPolicy(workflow, context);
+    const violations = [];
+    const allowedCapabilities = new Set(authority.allowedCapabilities);
+    for (const capability of policy.requiredCapabilities)
+        if (!allowedCapabilities.has(capability))
+            violations.push(`Capability is not locally authorized: ${capability}`);
+    if (!riskTierAllows(authority.maximumRiskTier, policy.riskTier))
+        violations.push(`Risk tier ${policy.riskTier} exceeds local maximum ${authority.maximumRiskTier}`);
+    const spaces = new Set();
+    if (context.sourceSpaceId)
+        spaces.add(context.sourceSpaceId);
+    for (const trigger of workflow.spec.triggers)
+        if ("spaceId" in trigger && trigger.spaceId)
+            spaces.add(trigger.spaceId);
+    for (const step of workflow.spec.steps)
+        if (step.kind.startsWith("anytype.")) {
+            const config = step.config ?? {};
+            if ("spaceId" in config && config.spaceId)
+                spaces.add(config.spaceId);
+        }
+    for (const spaceId of spaces)
+        if (!authority.allowedSpaceIds.includes(spaceId))
+            violations.push(`Space is not locally authorized: ${spaceId}`);
+    if (context.authorId && !authority.allowedAuthorIds.includes(context.authorId))
+        violations.push(`Author is not locally authorized: ${context.authorId}`);
+    for (const step of workflow.spec.steps) {
+        const config = step.config ?? {};
+        if (step.kind === "agent" && "project" in config && config.project)
+            if (!authority.allowedProjects.includes(config.project))
+                violations.push(`Project is not locally authorized: ${config.project}`);
+        if (step.kind !== "http" && step.kind !== "notify")
+            continue;
+        if ("connectionRef" in config &&
+            config.connectionRef &&
+            !authority.allowedConnections.includes(config.connectionRef))
+            violations.push(`Connection is not locally authorized: ${config.connectionRef}`);
+        for (const secretRef of ("secretRefs" in config && config.secretRefs) || [])
+            if (!authority.allowedSecretNames.includes(secretRef))
+                violations.push(`Secret is not locally authorized: ${secretRef}`);
     }
-    for (const [candidate, nested] of Object.entries(value)) {
-        if (candidate === key && typeof nested === "string")
-            output.add(nested);
-        else
-            collectStringValues(nested, key, output);
-    }
+    return {
+        ...policy,
+        allowed: violations.length === 0,
+        violations,
+        authorityHash: workflowAuthorityHash(authority),
+    };
 }
 export function riskTierAllows(maximum, actual) {
     return tierOrder[actual] <= tierOrder[maximum];
@@ -120,6 +152,7 @@ export function workflowAuthorityHash(authority) {
         allowedAuthorIds: [...new Set(authority.allowedAuthorIds)].sort(),
         allowedCapabilities: [...new Set(authority.allowedCapabilities)].sort(),
         allowedConnections: [...new Set(authority.allowedConnections)].sort(),
+        allowedProjects: [...new Set(authority.allowedProjects)].sort(),
         allowedSecretNames: [...new Set(authority.allowedSecretNames)].sort(),
         allowedSpaceIds: [...new Set(authority.allowedSpaceIds)].sort(),
         limits: authority.limits,

@@ -372,6 +372,7 @@ export declare const configSchema: z.ZodObject<{
         }>>>;
         allowedConnections: z.ZodDefault<z.ZodArray<z.ZodString>>;
         allowedSecretNames: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        allowedProjects: z.ZodDefault<z.ZodArray<z.ZodString>>;
         maximumRiskTier: z.ZodDefault<z.ZodEnum<{
             T0: "T0";
             T1: "T1";
@@ -389,7 +390,7 @@ export declare const configSchema: z.ZodObject<{
         execution: z.ZodDefault<z.ZodBoolean>;
         authoring: z.ZodDefault<z.ZodBoolean>;
         dataProducts: z.ZodDefault<z.ZodBoolean>;
-    }, z.core.$strip>>;
+    }, z.core.$strict>>;
     state: z.ZodDefault<z.ZodObject<{
         path: z.ZodDefault<z.ZodString>;
     }, z.core.$strip>>;

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  evaluateWorkflowAuthority,
   evaluateWorkflowPolicy,
   riskTierAllows,
   workflowAuthorityHash,
 } from "../src/automation/policy.js";
 import {
   canonicalJson,
+  workflowApprovalMaterial,
   workflowApprovalHash,
   workflowDefinitionSchema,
 } from "../src/automation/workflow.js";
@@ -38,6 +40,11 @@ describe("workflow foundation", () => {
       metadata: { ...first.metadata, name: "Renamed", description: "Presentation only" },
     });
     expect(workflowApprovalHash(renamed)).toBe(workflowApprovalHash(first));
+    const disabled = workflowDefinitionSchema.parse({
+      ...first,
+      spec: { ...first.spec, enabled: !first.spec.enabled },
+    });
+    expect(workflowApprovalHash(disabled)).toBe(workflowApprovalHash(first));
     const changed = workflow({ behavior: { includeSelfWrites: true } });
     expect(workflowApprovalHash(changed)).not.toBe(workflowApprovalHash(first));
     expect(workflowApprovalHash(first)).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -47,6 +54,20 @@ describe("workflow foundation", () => {
     });
     expect(workflowApprovalHash(reorderedCapabilities)).toBe(
       workflowApprovalHash(otherCapabilityOrder),
+    );
+  });
+
+  it("keeps every behavior-bearing spec field in approval material", () => {
+    const definition = workflow();
+    const material = workflowApprovalMaterial(definition) as {
+      policyVersion: number;
+      spec: Record<string, unknown>;
+    };
+    expect(material.policyVersion).toBeGreaterThan(0);
+    expect(Object.keys(material.spec).sort()).toEqual(
+      Object.keys(definition.spec)
+        .filter((key) => key !== "enabled")
+        .sort(),
     );
   });
 
@@ -151,6 +172,7 @@ describe("workflow foundation", () => {
       allowedCapabilities: ["anytype.read" as const, "anytype.query" as const],
       allowedConnections: [],
       allowedSecretNames: [],
+      allowedProjects: [],
       maximumRiskTier: "T1" as const,
       limits: {
         maximumConcurrentRuns: 2,
@@ -172,5 +194,43 @@ describe("workflow foundation", () => {
         limits: { ...authority.limits, maximumEffectsPerRun: 6 },
       }),
     ).not.toBe(workflowAuthorityHash(authority));
+
+    expect(
+      evaluateWorkflowAuthority(workflow(), authority, {
+        sourceSpaceId: "space-1",
+        authorId: "operator",
+      }),
+    ).toMatchObject({ allowed: true, violations: [] });
+    const external = workflow({
+      steps: [
+        {
+          id: "send",
+          kind: "http",
+          config: { connectionRef: "billing", secretRefs: ["billing-token"] },
+        },
+      ],
+      capabilities: ["http.request"],
+    });
+    expect(
+      evaluateWorkflowAuthority(external, authority, {
+        sourceSpaceId: "space-2",
+        authorId: "intruder",
+      }),
+    ).toMatchObject({ allowed: false, riskTier: "T2" });
+    expect(
+      evaluateWorkflowAuthority(external, authority, {
+        sourceSpaceId: "space-2",
+        authorId: "intruder",
+      }).violations,
+    ).toEqual(
+      expect.arrayContaining([
+        "Capability is not locally authorized: http.request",
+        "Risk tier T2 exceeds local maximum T1",
+        "Space is not locally authorized: space-2",
+        "Author is not locally authorized: intruder",
+        "Connection is not locally authorized: billing",
+        "Secret is not locally authorized: billing-token",
+      ]),
+    );
   });
 });

@@ -30,6 +30,8 @@ export const workflowCapabilitySchema = z.enum([
 
 export type WorkflowCapability = z.infer<typeof workflowCapabilitySchema>;
 
+export const WORKFLOW_POLICY_VERSION = 1;
+
 export const workflowStepKindSchema = z.enum([
   "agent",
   "anytype.read",
@@ -83,16 +85,106 @@ const workflowTriggerSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
-const workflowStepSchema = z
+const jsonObjectSchema = z.record(z.string(), jsonValueSchema);
+const anytypeReadConfigSchema = z
+  .object({ spaceId: z.string().min(1).optional(), objectId: z.string().min(1).optional() })
+  .strict();
+const anytypeQueryConfigSchema = z
+  .object({ spaceId: z.string().min(1).optional(), query: jsonObjectSchema.optional() })
+  .strict();
+const anytypeWriteConfigSchema = z
   .object({
-    id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
-    kind: workflowStepKindSchema,
-    dependsOn: z.array(z.string()).default([]),
-    config: z.record(z.string(), jsonValueSchema).default({}),
-    retry: retrySchema.optional(),
-    timeoutSeconds: z.number().int().min(1).max(86_400).optional(),
+    spaceId: z.string().min(1).optional(),
+    objectId: z.string().min(1).optional(),
+    operation: z.enum(["create", "update", "archive", "delete"]).default("update"),
+    bulk: z.boolean().default(false),
+    values: jsonObjectSchema.default({}),
   })
   .strict();
+const anytypeUpsertConfigSchema = z
+  .object({
+    spaceId: z.string().min(1).optional(),
+    objectTypeId: z.string().min(1).optional(),
+    uniqueKey: z.string().min(1).optional(),
+    bulk: z.boolean().default(false),
+    values: jsonObjectSchema.default({}),
+  })
+  .strict();
+const anytypeMaterializeConfigSchema = z
+  .object({
+    spaceId: z.string().min(1).optional(),
+    collectionId: z.string().min(1).optional(),
+    bulk: z.boolean().default(false),
+  })
+  .strict();
+const externalReferenceConfig = {
+  connectionRef: z.string().min(1).optional(),
+  secretRefs: z.array(z.string().min(1)).default([]),
+};
+
+function workflowStep<K extends z.infer<typeof workflowStepKindSchema>, T extends z.ZodTypeAny>(
+  kind: K,
+  config: T,
+) {
+  return z
+    .object({
+      id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
+      kind: z.literal(kind),
+      dependsOn: z.array(z.string()).default([]),
+      config: config.optional(),
+      retry: retrySchema.optional(),
+      timeoutSeconds: z.number().int().min(1).max(86_400).optional(),
+    })
+    .strict();
+}
+
+const workflowStepSchema = z.discriminatedUnion("kind", [
+  workflowStep(
+    "agent",
+    z
+      .object({
+        project: z.string().min(1).optional(),
+        prompt: z.string().max(100_000).optional(),
+        model: z.string().min(1).optional(),
+      })
+      .strict(),
+  ),
+  workflowStep("anytype.read", anytypeReadConfigSchema),
+  workflowStep("anytype.query", anytypeQueryConfigSchema),
+  workflowStep("anytype.write", anytypeWriteConfigSchema),
+  workflowStep("anytype.upsert", anytypeUpsertConfigSchema),
+  workflowStep("anytype.materialize", anytypeMaterializeConfigSchema),
+  workflowStep(
+    "transform",
+    z
+      .object({
+        transformRef: z.string().min(1).optional(),
+        inputStepId: z.string().min(1).optional(),
+      })
+      .strict(),
+  ),
+  workflowStep(
+    "http",
+    z
+      .object({
+        ...externalReferenceConfig,
+        url: z.string().url().optional(),
+        method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).default("GET"),
+      })
+      .strict(),
+  ),
+  workflowStep("approval", z.object({ message: z.string().max(4_000).optional() }).strict()),
+  workflowStep(
+    "notify",
+    z
+      .object({
+        ...externalReferenceConfig,
+        destination: z.string().min(1).optional(),
+        message: z.string().max(100_000).optional(),
+      })
+      .strict(),
+  ),
+]);
 
 const workflowDefinitionObjectSchema = z
   .object({
@@ -247,11 +339,13 @@ export function canonicalJson(value: JsonValue): string {
 export function workflowApprovalMaterial(workflow: WorkflowDefinition): JsonValue {
   const normalizedSteps = workflow.spec.steps.map((step) => ({
     ...step,
+    config: step.config ?? {},
     dependsOn: [...new Set(step.dependsOn)].sort(),
   }));
   return {
     apiVersion: workflow.apiVersion,
     kind: workflow.kind,
+    policyVersion: WORKFLOW_POLICY_VERSION,
     spec: {
       behavior: workflow.spec.behavior,
       behaviorReferences: [...workflow.spec.behaviorReferences].sort((left, right) =>

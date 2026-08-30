@@ -75,6 +75,12 @@ describe("loadConfig", () => {
         },
       }),
     ).toThrow("observation");
+    expect(() =>
+      configSchema.parse({ ...base, automation: { allowedCapabilties: ["anytype.read"] } }),
+    ).toThrow("Unrecognized key");
+    expect(() => configSchema.parse({ ...base, automation: { heartHints: true } })).toThrow(
+      "Heart hints",
+    );
   });
 
   it("accepts workspace-owned stable prompt instructions", () => {

@@ -399,6 +399,7 @@ export const configSchema = z.object({
         ...workflowAuthorityFields,
         heartHints: z.boolean().default(false),
     })
+        .strict()
         .superRefine((value, context) => {
         if (value.enabled && value.allowedAuthorIds.length === 0)
             context.addIssue({
@@ -425,6 +426,12 @@ export const configSchema = z.object({
                 path: ["observation"],
                 message: "automation.observation is required before execution",
             });
+        if (value.heartHints && !value.observation)
+            context.addIssue({
+                code: "custom",
+                path: ["observation"],
+                message: "automation.observation is required before Heart hints",
+            });
         if ((value.authoring || value.dataProducts) && !value.execution)
             context.addIssue({
                 code: "custom",
@@ -443,6 +450,7 @@ export const configSchema = z.object({
         allowedCapabilities: [],
         allowedConnections: [],
         allowedSecretNames: [],
+        allowedProjects: [],
         maximumRiskTier: "T0",
         heartHints: false,
         limits: {
