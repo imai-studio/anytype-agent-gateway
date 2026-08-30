@@ -85,7 +85,7 @@ describe("AAG Anytype MCP policy", () => {
       {},
     );
     expect(result).toMatchObject({
-      gateway: "Anytype Agent Gateway",
+      gateway: "Knot",
       route_id: "chat:space-1:chat",
       space_id: "space-1",
     });

@@ -255,7 +255,7 @@ describe("projection ordering", () => {
     await projection.finish({ text: `${"x".repeat(70)}😀${"y".repeat(80)}` });
     const text = anytype.messages.at(-1)?.content?.text ?? "";
     expect(text.length).toBeLessThanOrEqual(100);
-    expect(text).toContain("[Response truncated by AAG]");
+    expect(text).toContain("[Response truncated by Knot]");
     expect(text).not.toContain("�");
   });
 });

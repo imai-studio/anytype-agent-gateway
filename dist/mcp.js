@@ -37,7 +37,7 @@ const reservedPropertyKeys = new Set([
 export async function runMcpServer(configPath, context = {}) {
     const config = await loadConfig(configPath);
     if (!config.tools.anytype.enabled && !config.tools.codex.enabled)
-        throw new Error("All AAG tools are disabled in this configuration");
+        throw new Error("All Knot tools are disabled in this configuration");
     const anytype = await AnytypeClient.create(config);
     const routeId = context.routeId ?? resolveProductEnvironment("ROUTE_ID");
     // Resolve legacy/new direct actor variables for compatibility diagnostics,
@@ -306,7 +306,7 @@ export function toolDefinitions(config) {
         },
         {
             name: "anytype_update_object",
-            description: "Update an existing Anytype object's name, Markdown body, or properties without changing its type. Read it first and preserve unrelated values. Returns a native link and AAG object reference.",
+            description: "Update an existing Anytype object's name, Markdown body, or properties without changing its type. Read it first and preserve unrelated values. Returns a native link and Knot object reference.",
             inputSchema: objectSchema({
                 space_id: stringSchema(),
                 object_id: stringSchema(),
@@ -336,7 +336,7 @@ export function toolDefinitions(config) {
         },
         {
             name: "aag_set_profile_image",
-            description: "Set this agent identity's own Anytype profile image from an allowed local image file. The target identity is fixed by AAG and cannot be changed by the caller.",
+            description: "Set this agent identity's own Anytype profile image from an allowed local image file. The target identity is fixed by Knot and cannot be changed by the caller.",
             inputSchema: objectSchema({ space_id: stringSchema(), path: stringSchema("Absolute local image file path") }, ["path"]),
         },
         ...(config.tools.anytype.allowArchive
@@ -362,7 +362,7 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
     const effectiveRouteId = requestedRouteId ?? boundRouteId;
     if (name === "aag_context")
         return {
-            gateway: "Anytype Agent Gateway",
+            gateway: "Knot",
             route_id: effectiveRouteId,
             space_id: defaultSpaceId,
             permissions: {
@@ -381,7 +381,7 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
                 file_roots: config.tools.anytype.allowedFileRoots,
             },
             response_format: "Anytype rich text; use short paragraphs and simple lists, avoid Markdown tables and fenced code blocks",
-            object_links: "Use object_ref for a compact clickable mention. Use object_card when the user asks to send, attach, or show the object itself; AAG renders it as a native Anytype card. link is the deep-link fallback",
+            object_links: "Use object_ref for a compact clickable mention. Use object_card when the user asks to send, attach, or show the object itself; Knot renders it as a native Anytype card. link is the deep-link fallback",
             object_workflow: "Discover types and properties first, read the target before updating it, preserve unrelated properties, then use the returned native link in the Anytype reply",
             scheduling: schedulingContext(config, effectiveRouteId, typeof input.discussion_root_id === "string" ? input.discussion_root_id : undefined),
         };
@@ -607,7 +607,7 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
         const configuredSpace = config.spaces.find((space) => space.id === spaceId);
         const memberId = configuredSpace?.participantId ?? config.agent.participantId;
         if (!memberId)
-            throw new Error("This space needs spaces[].participantId or agent.participantId before AAG can update its own profile");
+            throw new Error("This space needs spaces[].participantId or agent.participantId before Knot can update its own profile");
         const updated = await anytype.setProfileImage(spaceId, path);
         return { updated: true, space_id: spaceId, member_id: memberId, ...updated };
     }
@@ -756,7 +756,7 @@ function validatedProperties(value) {
         if (!key)
             throw new Error(`properties[${index}].key is required`);
         if (reservedPropertyKeys.has(key.toLowerCase()))
-            throw new Error(`Property key ${key} is reserved and cannot be changed through AAG`);
+            throw new Error(`Property key ${key} is reserved and cannot be changed through Knot`);
         const fields = propertyValueFields.filter((field) => property[field] !== undefined);
         if (fields.length !== 1)
             throw new Error(`properties[${index}] must contain exactly one typed value`);
@@ -800,7 +800,7 @@ function schedulingContext(config, routeId, discussionRootId) {
         return {
             provider: "codex",
             available: false,
-            reason: "This Codex ACP connection has no native scheduled-task integration; AAG does not emulate a scheduler",
+            reason: "This Codex ACP connection has no native scheduled-task integration; Knot does not emulate a scheduler",
         };
     if (!routeId)
         return {
@@ -859,7 +859,7 @@ function schedulingContext(config, routeId, discussionRootId) {
             "--reply-to",
             target,
         ],
-        instructions: "Create a native OpenClaw command job with continuation_argv, replacing <scheduled prompt>. Do not create a plain agentTurn cron job: OpenClaw isolates those under a cron session key. The command job continues this exact conversation session and delivers its agent output to this Anytype route. AAG remains only the channel bridge and does not own the schedule.",
+        instructions: "Create a native OpenClaw command job with continuation_argv, replacing <scheduled prompt>. Do not create a plain agentTurn cron job: OpenClaw isolates those under a cron session key. The command job continues this exact conversation session and delivers its agent output to this Anytype route. Knot remains only the channel bridge and does not own the schedule.",
     };
 }
 function parseRouteId(routeId) {

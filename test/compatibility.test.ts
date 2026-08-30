@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   detectServices,
@@ -14,16 +17,36 @@ import { parseSilenceMarker } from "../src/protocol-markers.js";
 describe("Knot compatibility foundation", () => {
   beforeEach(() => resetCompatibilityWarningsForTests());
 
-  it("keeps current public metadata and defaults while recording Knot names", () => {
-    expect(PRODUCT.current.executable).toBe("aag");
-    expect(PRODUCT.next.executable).toBe("knot");
+  it("makes Knot current while retaining the complete AAG name mapping", () => {
+    expect(PRODUCT.current).toMatchObject({
+      name: "Knot",
+      executable: "knot",
+      packageName: "@imai/knot",
+    });
+    expect(PRODUCT.legacy).toMatchObject({
+      name: "Anytype Agent Gateway",
+      executable: "aag",
+      packageName: "@imai/aag",
+    });
     expect(resolveConfigPath({ home: "/home/fixture", environment: {} })).toBe(
-      "/home/fixture/.config/aag/agent.yaml",
+      "/home/fixture/.config/knot/agent.yaml",
     );
     expect(resolveStatePath({ home: "/home/fixture", environment: {} })).toBe(
-      "/home/fixture/.local/state/aag/state.sqlite",
+      "/home/fixture/.local/state/knot/state.sqlite",
     );
-    expect(logNamespace()).toBe("AnytypeAgentGateway");
+    expect(logNamespace()).toBe("Knot");
+  });
+
+  it("discovers existing AAG paths in place before choosing fresh Knot defaults", async () => {
+    const home = await mkdtemp(join(tmpdir(), "knot-compat-home-"));
+    const config = join(home, ".config", "aag", "agent.yaml");
+    const state = join(home, ".local", "state", "aag", "state.sqlite");
+    await mkdir(join(home, ".config", "aag"), { recursive: true });
+    await mkdir(join(home, ".local", "state", "aag"), { recursive: true });
+    await writeFile(config, "version: 1\n");
+    await writeFile(state, "fixture");
+    expect(resolveConfigPath({ home, environment: {} })).toBe(config);
+    expect(resolveStatePath({ home, environment: {} })).toBe(state);
   });
 
   it("accepts old-only and warns at most once without revealing values", () => {
@@ -108,6 +131,9 @@ describe("Knot compatibility foundation", () => {
     await expect(resolveHeartBinary("/opt/custom/heart", async () => false)).resolves.toBe(
       "/opt/custom/heart",
     );
+    await expect(
+      resolveHeartBinary("knot-heart-adapter", async (command) => command === "aag-heart-adapter"),
+    ).resolves.toBe("aag-heart-adapter");
   });
 
   it("detects legacy and Knot service identities independently", async () => {

@@ -43,8 +43,8 @@ jobs:
         run: |
           pnpm run check
           test "$(node dist/cli.js --version)" = "$(node -p "require('./package.json').version")"
-          npm pack --dry-run --json > /tmp/aag-pack.json
-          node -e "const p=require('/tmp/aag-pack.json')[0]; for (const f of ['LICENSE','NOTICE','THIRD_PARTY_NOTICES.md','README.md','dist/cli.js','dist/mcp.js','packages/openclaw-anytype-channel/dist/index.js','packages/openclaw-anytype-channel/openclaw.plugin.json','packages/openclaw-anytype-channel/package.json']) if (!p.files.some(x => x.path === f)) throw new Error('missing package file: '+f)"
+          npm pack --dry-run --json > /tmp/knot-pack.json
+          node -e "const p=require('/tmp/knot-pack.json')[0]; for (const f of ['LICENSE','NOTICE','THIRD_PARTY_NOTICES.md','README.md','dist/cli.js','dist/mcp.js','packages/openclaw-anytype-channel/dist/index.js','packages/openclaw-anytype-channel/openclaw.plugin.json','packages/openclaw-anytype-channel/package.json']) if (!p.files.some(x => x.path === f)) throw new Error('missing package file: '+f)"
 
       - name: Publish to npm
         run: npm publish

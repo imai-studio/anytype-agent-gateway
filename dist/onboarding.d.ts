@@ -3,6 +3,7 @@ export type InitPrompter = {
 };
 export type InitOptions = {
     cwd?: string;
+    home?: string;
     output?: string;
 };
 export type InitResult = {
@@ -12,3 +13,5 @@ export type InitResult = {
     runtimeKind: "codex" | "openclaw";
 };
 export declare function runInitOnboarding(prompt: InitPrompter, options?: InitOptions): Promise<InitResult>;
+export declare function resolveOnboardingStatePath(home: string, slug: string): Promise<string>;
+export declare function resolveOnboardingApiKeyPath(home: string, slug: string): Promise<string>;

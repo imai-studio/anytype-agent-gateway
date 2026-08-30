@@ -105,7 +105,7 @@ type ensureDirectMessageResponse struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve|ensure-dm> [flags]"))
+		fatal(errors.New("usage: knot-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve|ensure-dm> [flags]"))
 	}
 	switch os.Args[1] {
 	case "resolve":
@@ -123,7 +123,7 @@ func main() {
 	case "ensure-dm":
 		runEnsureDirectMessage(os.Args[2:])
 	default:
-		fatal(errors.New("usage: aag-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve|ensure-dm> [flags]"))
+		fatal(errors.New("usage: knot-heart-adapter <resolve|hydrate|send|edit|delete|profile|profile-image|space-approve|ensure-dm> [flags]"))
 	}
 }
 

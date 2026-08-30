@@ -22,7 +22,7 @@ export async function acquireProcessLock(
   const waitMilliseconds = options.waitMilliseconds ?? 0;
   const contentionMessage =
     options.contentionMessage ??
-    ((ownerPid: number) => `Another AAG process is already running (pid ${ownerPid})`);
+    ((ownerPid: number) => `Another Knot process is already running (pid ${ownerPid})`);
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -74,7 +74,7 @@ export async function acquireProcessLock(
       await unlink(stalePath).catch(() => undefined);
     }
   }
-  throw new Error(`Could not acquire AAG process lock: ${path}`);
+  throw new Error(`Could not acquire Knot process lock: ${path}`);
 }
 
 function processIsLive(pid: number, probe: ProcessProbe): boolean {

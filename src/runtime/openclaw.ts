@@ -92,8 +92,8 @@ export class OpenClawDriver implements RuntimeDriver {
       `Gateway ${this.config.gateway.url} via ${this.config.gateway.clientModule}`,
       `project policy: ${this.projectEnforcement} (enforced by OpenClaw configuration)`,
       this.config.maxRunSeconds > 0
-        ? `AAG-requested run cap: ${this.config.maxRunSeconds}s`
-        : "AAG-requested run cap: none (OpenClaw and provider-native limits still apply)",
+        ? `Knot-requested run cap: ${this.config.maxRunSeconds}s`
+        : "Knot-requested run cap: none (OpenClaw and provider-native limits still apply)",
     ];
     if (this.config.channelBridge.enabled) {
       await this.bridgeToken();
@@ -699,7 +699,7 @@ export class OpenClawDriver implements RuntimeDriver {
         url: this.config.gateway.url,
         token,
         clientName: "gateway-client",
-        clientDisplayName: "Anytype Agent Gateway",
+        clientDisplayName: "Knot",
         clientVersion: VERSION,
         platform: process.platform,
         mode: "backend",

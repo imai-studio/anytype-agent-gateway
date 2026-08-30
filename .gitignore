@@ -5,6 +5,7 @@ deploy/*.local.yaml
 state/
 node_modules/
 heart-adapter/aag-heart-adapter*
+heart-adapter/knot-heart-adapter*
 heart-adapter/heart-adapter
 *.tgz
 .DS_Store

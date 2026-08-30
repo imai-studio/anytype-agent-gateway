@@ -1,4 +1,4 @@
-module github.com/imai-studio/anytype-agent-gateway/heart-adapter
+module github.com/imai-studio/knot/heart-adapter
 
 go 1.25.7
 

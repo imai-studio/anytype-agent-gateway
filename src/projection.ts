@@ -615,7 +615,7 @@ function truncateRendered(
       marks: clampMarks(rendered.marks, rendered.text.length),
       attachments: rendered.attachments,
     };
-  const notice = "\n\n[Response truncated by AAG]";
+  const notice = "\n\n[Response truncated by Knot]";
   let prefix = rendered.text.slice(0, Math.max(0, maxCharacters - notice.length));
   if (prefix && /[\uD800-\uDBFF]/.test(prefix.at(-1)!)) prefix = prefix.slice(0, -1);
   return {

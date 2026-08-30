@@ -22,7 +22,7 @@ import { VERSION } from "./version.js";
 import { runInitOnboarding } from "./onboarding.js";
 import { modelAllowed } from "./model-command.js";
 import { sameIdentity } from "./wake.js";
-import { PRODUCT } from "./compatibility.js";
+import { PRODUCT, resolveConfigPath } from "./compatibility.js";
 const program = new Command()
     .name(PRODUCT.current.executable)
     .description(PRODUCT.current.name)
@@ -42,9 +42,9 @@ program
         if (result.agentsFile)
             console.log(`Workspace instructions: ${result.agentsFile}`);
         console.log("\nNext steps:");
-        console.log(`  aag doctor --config ${result.output}`);
-        console.log(`  aag run --config ${result.output}`);
-        console.log(`  aag service install --config ${result.output}`);
+        console.log(`  knot doctor --config ${result.output}`);
+        console.log(`  knot run --config ${result.output}`);
+        console.log(`  knot service install --config ${result.output}`);
     }
     finally {
         prompt.close();
@@ -53,17 +53,18 @@ program
 program
     .command("validate")
     .description("Validate a configuration file")
-    .requiredOption("-c, --config <path>")
+    .option("-c, --config <path>", "configuration file (defaults to an existing AAG path, then ~/.config/knot/agent.yaml)")
     .action(async (options) => {
-    const config = await loadConfig(options.config);
+    const config = await loadConfig(selectedConfigPath(options.config));
     console.log(`valid: ${config.agent.name} (${config.runtime.kind}, ${config.spaces.length} space configuration(s))`);
 });
 program
     .command("doctor")
     .description("Check Anytype, configured routes, adapter, runtime, and projects")
-    .requiredOption("-c, --config <path>")
+    .option("-c, --config <path>", "configuration file (discovers an existing AAG config first)")
     .action(async (options) => {
-    const config = await loadConfig(options.config);
+    const configPath = selectedConfigPath(options.config);
+    const config = await loadConfig(configPath);
     await access(config.anytype.apiKeyFile, constants.R_OK);
     const anytype = await AnytypeClient.create(config);
     for (const configuredSpace of config.spaces) {
@@ -110,7 +111,7 @@ program
             throw new Error(`Heart adapter not found: ${config.anytype.heartAdapter.command}`);
         console.log(`ok: Heart discussion adapter ${config.anytype.heartAdapter.command}`);
     }
-    const runtime = makeRuntime(config, undefined, resolve(options.config));
+    const runtime = makeRuntime(config, undefined, configPath);
     for (const line of await runtime.doctor())
         console.log(`ok: ${line}`);
     for (const project of [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter(Boolean)) {
@@ -121,15 +122,16 @@ program
 program
     .command("run")
     .description("Run one configured Anytype agent in the foreground")
-    .requiredOption("-c, --config <path>")
+    .option("-c, --config <path>", "configuration file (discovers an existing AAG config first)")
     .action(async (options) => {
-    const config = await loadConfig(options.config);
+    const selectedPath = selectedConfigPath(options.config);
+    const config = await loadConfig(selectedPath);
     const anytype = await AnytypeClient.create(config);
     const releaseLock = await acquireProcessLock(`${config.state.path}.lock`);
     let store;
     try {
         store = new Store(config.state.path);
-        const configPath = resolve(options.config);
+        const configPath = resolve(selectedPath);
         const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId) => managementCommand(config, routeId), (spaceId, spaceName, chatId, chatName, wake) => enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }));
         const stop = () => gateway.stop({ drain: true });
         process.once("SIGINT", stop);
@@ -144,14 +146,14 @@ program
 const config = program.command("config").description("Manage constrained runtime configuration");
 config
     .command("wake")
-    .description("Set the human wake mode for one AAG route")
+    .description("Set the human wake mode for one Knot route")
     .requiredOption("-c, --config <path>")
     .requiredOption("--route-id <id>")
     .requiredOption("--humans <mode>")
     .option("--prefix <text>")
     .action(async (options) => {
     await setRouteWake({
-        configPath: options.config,
+        configPath: selectedConfigPath(options.config),
         routeId: options.routeId,
         humans: options.humans,
         ...(options.prefix ? { prefix: options.prefix } : {}),
@@ -160,14 +162,14 @@ config
 });
 config
     .command("access")
-    .description("Change the participant allowlist for one AAG route")
+    .description("Change the participant allowlist for one Knot route")
     .requiredOption("-c, --config <path>")
     .requiredOption("--route-id <id>")
     .requiredOption("--operation <operation>")
     .requiredOption("--participant-id <id...>")
     .action(async (options) => {
     const allowedUsers = await setRouteAccess({
-        configPath: options.config,
+        configPath: selectedConfigPath(options.config),
         routeId: options.routeId,
         operation: options.operation,
         participantIds: options.participantId,
@@ -177,10 +179,10 @@ config
 config
     .command("models")
     .description("List cached native harness models for one conversation")
-    .requiredOption("-c, --config <path>")
+    .option("-c, --config <path>", "configuration file (discovers an existing AAG config first)")
     .requiredOption("--thread-key <key>")
     .action(async (options) => {
-    const loaded = await loadConfig(options.config);
+    const loaded = await loadConfig(selectedConfigPath(options.config));
     if (!loaded.models.enabled)
         throw new Error("Model selection is disabled");
     const store = new Store(loaded.state.path);
@@ -205,7 +207,7 @@ config
     .requiredOption("--thread-key <key>")
     .requiredOption("--model <id>")
     .action(async (options) => {
-    const loaded = await loadConfig(options.config);
+    const loaded = await loadConfig(selectedConfigPath(options.config));
     if (!loaded.models.enabled)
         throw new Error("Model selection is disabled");
     if (!loaded.management.allowModelChanges)
@@ -219,7 +221,7 @@ config
             ? undefined
             : current?.catalog.find((entry) => entry.id === options.model)?.id;
         if (!reset && !model)
-            throw new Error("Use an exact cached model ID from `aag config models`");
+            throw new Error("Use an exact cached model ID from `knot config models`");
         if (model && !modelAllowed(model, loaded.models.allowed))
             throw new Error("That model is not allowed by the agent configuration");
         store.saveConversationModel({
@@ -244,10 +246,10 @@ config
 program
     .command("mcp")
     .description("Run the policy-mediated Anytype tool server over stdio")
-    .requiredOption("-c, --config <path>")
+    .option("-c, --config <path>", "configuration file")
     .option("--route-id <id>")
     .option("--space-id <id>")
-    .action(async (options) => runMcpServer(resolve(options.config), {
+    .action(async (options) => runMcpServer(selectedConfigPath(options.config), {
     ...(options.routeId ? { routeId: options.routeId } : {}),
     ...(options.spaceId ? { spaceId: options.spaceId } : {}),
 }));
@@ -259,7 +261,7 @@ identity
     .argument("<name>")
     .option("--anytype <command>", "Anytype CLI command", "anytype")
     .option("--invite <url...>", "space invite link(s)", [])
-    .option("--api-key-file <path>", "where to save the API key", "./aag-anytype-api-key")
+    .option("--api-key-file <path>", "where to save the API key", "./knot-anytype-api-key")
     .option("--data-path <path>")
     .action(async (name, options) => {
     const keyFile = resolve(options.apiKeyFile);
@@ -294,7 +296,7 @@ openclawPlugin
     .action(async (options) => {
     const path = bundledOpenClawPluginPath();
     await access(path, constants.R_OK);
-    const staging = await mkdtemp(join(tmpdir(), "aag-openclaw-plugin-"));
+    const staging = await mkdtemp(join(tmpdir(), "knot-openclaw-plugin-"));
     try {
         await cp(path, staging, { recursive: true, dereference: true, force: true });
         const result = await runProcess(options.openclaw, ["plugins", "install", "--force", staging], { timeoutMs: 120_000 });
@@ -313,7 +315,7 @@ const service = program
 service
     .command("install")
     .requiredOption("-c, --config <path>")
-    .action(async (options) => installService(options.config));
+    .action(async (options) => installService(selectedConfigPath(options.config)));
 for (const command of ["status", "restart", "stop", "logs"])
     service.command(command).action(async () => serviceCommand(command));
 program.parseAsync().catch((error) => {
@@ -346,4 +348,7 @@ function managementCommand(config, routeId) {
 }
 function bundledOpenClawPluginPath() {
     return resolve(dirname(fileURLToPath(import.meta.url)), "..", "packages", "openclaw-anytype-channel");
+}
+function selectedConfigPath(explicit) {
+    return resolveConfigPath({ ...(explicit ? { explicit } : {}) });
 }

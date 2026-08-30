@@ -1,7 +1,41 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildLaunchdPlist } from "../src/service.js";
+import {
+  buildLaunchdPlist,
+  launchdServiceLabel,
+  resolveInstalledService,
+  systemdServiceName,
+} from "../src/service.js";
 
 describe("buildLaunchdPlist", () => {
+  it("uses the Knot service identities for newly generated services", () => {
+    expect(systemdServiceName).toBe("knot.service");
+    expect(launchdServiceLabel).toBe("com.imai.knot");
+  });
+  it("discovers a legacy service for in-place management", async () => {
+    const home = await mkdtemp(join(tmpdir(), "knot-service-home-"));
+    const directory = join(home, "Library", "LaunchAgents");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "com.anytype.anytype-agent-gateway.plist"), "legacy");
+    await expect(resolveInstalledService("darwin", home)).resolves.toEqual({
+      generation: "aag",
+      identity: "com.anytype.anytype-agent-gateway",
+    });
+  });
+  it("fails closed when both service generations exist", async () => {
+    const home = await mkdtemp(join(tmpdir(), "knot-service-conflict-"));
+    const directory = join(home, ".config", "systemd", "user");
+    await mkdir(directory, { recursive: true });
+    await Promise.all([
+      writeFile(join(directory, "anytype-agent-gateway.service"), "legacy"),
+      writeFile(join(directory, "knot.service"), "current"),
+    ]);
+    await expect(resolveInstalledService("linux", home)).rejects.toThrow(
+      "Both AAG and Knot service definitions exist",
+    );
+  });
   it("uses argument-array absolute paths, private log destinations, and the Anytype dependency", () => {
     const plist = buildLaunchdPlist({
       nodePath: "/opt/node/bin/node",

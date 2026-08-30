@@ -50,7 +50,7 @@ describe("process lock", () => {
           throw Object.assign(new Error("not permitted"), { code: "EPERM" });
         },
       }),
-    ).rejects.toThrow("Another AAG process is already running (pid 987654)");
+    ).rejects.toThrow("Another Knot process is already running (pid 987654)");
     expect(await readFile(path, "utf8")).toBe("987654 protected\n");
   });
 });

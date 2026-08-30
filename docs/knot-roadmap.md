@@ -62,10 +62,10 @@ services, protocol markers, MCP names, and configured agent identities such as K
 
 ### PR sequence
 
-1. **Compatibility foundation (this PR):** centralized product metadata, environment/path/Heart/
+1. **Compatibility foundation (complete):** centralized product metadata, environment/path/Heart/
    service/log resolvers, dual protocol parsing, authenticated principals, this roadmap, and a
-   sanitized v0.1.3 upgrade fixture. Defaults and public names remain AAG.
-2. **Product/package rename:** package metadata, `knot` CLI plus `aag` alias, help/onboarding/docs,
+   sanitized v0.1.3 upgrade fixture. Its release-state defaults and public names remained AAG.
+2. **Product/package rename (this PR):** package metadata, `knot` CLI plus `aag` alias, help/onboarding/docs,
    source-visible names, URLs, default paths, and generated output.
 3. **Installation/service migration:** `knot migrate`, `knot service migrate`, old-service
    exclusion, process-lock checks, copy/verify/backup/rollback behavior, dual Heart lookup, and
