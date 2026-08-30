@@ -94,7 +94,7 @@ const workflowStepSchema = z
   })
   .strict();
 
-export const workflowDefinitionSchema = z
+const workflowDefinitionObjectSchema = z
   .object({
     apiVersion: z.literal("knot.imai.studio/v1alpha1"),
     kind: z.literal("KnotWorkflow"),
@@ -205,6 +205,34 @@ export const workflowDefinitionSchema = z
       });
   });
 
+export const workflowDefinitionSchema = z.preprocess((value, context) => {
+  const unsafe = unsafeObjectKey(value);
+  if (unsafe)
+    context.addIssue({
+      code: "custom",
+      message: `Unsafe object key is not allowed in workflow definitions: ${unsafe}`,
+    });
+  return value;
+}, workflowDefinitionObjectSchema);
+
+function unsafeObjectKey(value: unknown, seen = new WeakSet<object>()): string | undefined {
+  if (!value || typeof value !== "object" || seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const unsafe = unsafeObjectKey(item, seen);
+      if (unsafe) return unsafe;
+    }
+    return undefined;
+  }
+  for (const key of Object.keys(value)) {
+    if (["__proto__", "constructor", "prototype"].includes(key)) return key;
+    const unsafe = unsafeObjectKey((value as Record<string, unknown>)[key], seen);
+    if (unsafe) return unsafe;
+  }
+  return undefined;
+}
+
 export type WorkflowDefinition = z.infer<typeof workflowDefinitionSchema>;
 
 export function canonicalJson(value: JsonValue): string {
@@ -245,6 +273,18 @@ export function workflowApprovalHash(workflow: WorkflowDefinition): string {
   const digest = createHash("sha256")
     .update("knot.workflow.approval.v1\0")
     .update(canonicalJson(workflowApprovalMaterial(workflow)))
+    .digest("hex");
+  return `sha256:${digest}`;
+}
+
+export function canonicalWorkflowDefinition(workflow: WorkflowDefinition): string {
+  return canonicalJson(JSON.parse(JSON.stringify(workflow)) as JsonValue);
+}
+
+export function workflowVersionHash(workflow: WorkflowDefinition): string {
+  const digest = createHash("sha256")
+    .update("knot.workflow.version.v1\0")
+    .update(canonicalWorkflowDefinition(workflow))
     .digest("hex");
   return `sha256:${digest}`;
 }

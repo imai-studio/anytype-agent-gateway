@@ -355,11 +355,7 @@ export declare const configSchema: z.ZodObject<{
         windowSeconds: z.ZodDefault<z.ZodNumber>;
     }, z.core.$strip>>;
     automation: z.ZodDefault<z.ZodObject<{
-        enabled: z.ZodDefault<z.ZodBoolean>;
-        observation: z.ZodDefault<z.ZodBoolean>;
-        execution: z.ZodDefault<z.ZodBoolean>;
-        authoring: z.ZodDefault<z.ZodBoolean>;
-        dataProducts: z.ZodDefault<z.ZodBoolean>;
+        heartHints: z.ZodDefault<z.ZodBoolean>;
         allowedAuthorIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
         allowedSpaceIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
         allowedCapabilities: z.ZodDefault<z.ZodArray<z.ZodEnum<{
@@ -381,14 +377,18 @@ export declare const configSchema: z.ZodObject<{
             T1: "T1";
             T2: "T2";
         }>>;
-        heartHints: z.ZodDefault<z.ZodBoolean>;
         limits: z.ZodDefault<z.ZodObject<{
             maximumConcurrentRuns: z.ZodDefault<z.ZodNumber>;
             maximumStepsPerRun: z.ZodDefault<z.ZodNumber>;
             maximumEffectsPerRun: z.ZodDefault<z.ZodNumber>;
             maximumRunSeconds: z.ZodDefault<z.ZodNumber>;
             maximumCausalDepth: z.ZodDefault<z.ZodNumber>;
-        }, z.core.$strip>>;
+        }, z.core.$strict>>;
+        enabled: z.ZodDefault<z.ZodBoolean>;
+        observation: z.ZodDefault<z.ZodBoolean>;
+        execution: z.ZodDefault<z.ZodBoolean>;
+        authoring: z.ZodDefault<z.ZodBoolean>;
+        dataProducts: z.ZodDefault<z.ZodBoolean>;
     }, z.core.$strip>>;
     state: z.ZodDefault<z.ZodObject<{
         path: z.ZodDefault<z.ZodString>;

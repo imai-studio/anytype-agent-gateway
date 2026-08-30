@@ -27,7 +27,7 @@ export declare const workflowStepKindSchema: z.ZodEnum<{
     http: "http";
     approval: "approval";
 }>;
-export declare const workflowDefinitionSchema: z.ZodObject<{
+export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodObject<{
     apiVersion: z.ZodLiteral<"knot.imai.studio/v1alpha1">;
     kind: z.ZodLiteral<"KnotWorkflow">;
     metadata: z.ZodObject<{
@@ -123,8 +123,10 @@ export declare const workflowDefinitionSchema: z.ZodObject<{
         }, z.core.$strict>>>;
         concurrency: z.ZodDefault<z.ZodNumber>;
     }, z.core.$strict>;
-}, z.core.$strict>;
+}, z.core.$strict>>;
 export type WorkflowDefinition = z.infer<typeof workflowDefinitionSchema>;
 export declare function canonicalJson(value: JsonValue): string;
 export declare function workflowApprovalMaterial(workflow: WorkflowDefinition): JsonValue;
 export declare function workflowApprovalHash(workflow: WorkflowDefinition): string;
+export declare function canonicalWorkflowDefinition(workflow: WorkflowDefinition): string;
+export declare function workflowVersionHash(workflow: WorkflowDefinition): string;

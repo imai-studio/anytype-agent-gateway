@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { evaluateWorkflowPolicy, riskTierAllows } from "../src/automation/policy.js";
+import {
+  evaluateWorkflowPolicy,
+  riskTierAllows,
+  workflowAuthorityHash,
+} from "../src/automation/policy.js";
 import {
   canonicalJson,
   workflowApprovalHash,
@@ -69,6 +73,13 @@ describe("workflow foundation", () => {
         spec: { ...workflow().spec, undocumentedBehavior: true },
       }),
     ).toThrow("Unrecognized key");
+    expect(() =>
+      workflowDefinitionSchema.parse(
+        JSON.parse(
+          '{"apiVersion":"knot.imai.studio/v1alpha1","kind":"KnotWorkflow","metadata":{"name":"Unsafe"},"spec":{"triggers":[{"kind":"manual"}],"steps":[{"id":"read","kind":"anytype.read","config":{"__proto__":{"polluted":true}}}]}}',
+        ),
+      ),
+    ).toThrow("Unsafe object key");
   });
 
   it("invalidates approval when ordered behavior or pinned references change", () => {
@@ -109,5 +120,57 @@ describe("workflow foundation", () => {
       workflow({ steps: [{ id: "write", kind: "anytype.upsert" }], capabilities: [] }),
     );
     expect(result.missingCapabilities).toEqual(["anytype.write"]);
+  });
+
+  it("derives cross-space, bulk, and destructive capabilities from step configuration", () => {
+    const result = evaluateWorkflowPolicy(
+      workflow({
+        steps: [
+          {
+            id: "write",
+            kind: "anytype.write",
+            config: { spaceId: "space-2", bulk: true, operation: "archive" },
+          },
+        ],
+        capabilities: ["anytype.write"],
+      }),
+      { sourceSpaceId: "space-1" },
+    );
+    expect(result.riskTier).toBe("T2");
+    expect(result.missingCapabilities).toEqual([
+      "anytype.archive",
+      "anytype.bulk",
+      "anytype.cross-space",
+    ]);
+  });
+
+  it("binds approvals to normalized local authority", () => {
+    const authority = {
+      allowedAuthorIds: ["operator"],
+      allowedSpaceIds: ["space-1"],
+      allowedCapabilities: ["anytype.read" as const, "anytype.query" as const],
+      allowedConnections: [],
+      allowedSecretNames: [],
+      maximumRiskTier: "T1" as const,
+      limits: {
+        maximumConcurrentRuns: 2,
+        maximumStepsPerRun: 20,
+        maximumEffectsPerRun: 5,
+        maximumRunSeconds: 600,
+        maximumCausalDepth: 4,
+      },
+    };
+    expect(
+      workflowAuthorityHash({
+        ...authority,
+        allowedCapabilities: [...authority.allowedCapabilities].reverse(),
+      }),
+    ).toBe(workflowAuthorityHash(authority));
+    expect(
+      workflowAuthorityHash({
+        ...authority,
+        limits: { ...authority.limits, maximumEffectsPerRun: 6 },
+      }),
+    ).not.toBe(workflowAuthorityHash(authority));
   });
 });

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import YAML from "yaml";
 import { z } from "zod";
-import { workflowCapabilitySchema } from "./automation/workflow.js";
+import { workflowAuthorityFields } from "./automation/policy.js";
 import { resolveHeartBinary, resolveStatePath } from "./compatibility.js";
 const wakeSchema = z
     .object({
@@ -396,28 +396,8 @@ export const configSchema = z.object({
         execution: z.boolean().default(false),
         authoring: z.boolean().default(false),
         dataProducts: z.boolean().default(false),
-        allowedAuthorIds: z.array(z.string().min(1)).default([]),
-        allowedSpaceIds: z.array(z.string().min(1)).default([]),
-        allowedCapabilities: z.array(workflowCapabilitySchema).default([]),
-        allowedConnections: z.array(z.string().min(1)).default([]),
-        allowedSecretNames: z.array(z.string().min(1)).default([]),
-        maximumRiskTier: z.enum(["T0", "T1", "T2"]).default("T0"),
+        ...workflowAuthorityFields,
         heartHints: z.boolean().default(false),
-        limits: z
-            .object({
-            maximumConcurrentRuns: z.number().int().min(1).max(100).default(4),
-            maximumStepsPerRun: z.number().int().min(1).max(1_000).default(100),
-            maximumEffectsPerRun: z.number().int().min(0).max(1_000).default(20),
-            maximumRunSeconds: z.number().int().min(1).max(604_800).default(3_600),
-            maximumCausalDepth: z.number().int().min(0).max(100).default(8),
-        })
-            .default({
-            maximumConcurrentRuns: 4,
-            maximumStepsPerRun: 100,
-            maximumEffectsPerRun: 20,
-            maximumRunSeconds: 3_600,
-            maximumCausalDepth: 8,
-        }),
     })
         .superRefine((value, context) => {
         if (value.enabled && value.allowedAuthorIds.length === 0)
