@@ -35,6 +35,7 @@ export type ConversationRef = {
     discussionRootId?: string;
     objectName?: string;
     selfParticipantId?: string;
+    managementEnabled?: boolean;
 };
 export type ContextBundle = {
     conversation: ConversationRef;
@@ -165,6 +166,17 @@ export type AnytypeEvent = {
         message?: ChatMessage;
     };
 };
+export type AnytypeSpace = {
+    id: string;
+    name: string;
+    object?: string;
+};
+export type AnytypeMember = {
+    id: string;
+    name: string;
+    identity?: string;
+    status?: string;
+};
 export interface AnytypePort {
     getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage>;
     listMessages(spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]>;
@@ -185,6 +197,8 @@ export interface AnytypePort {
         id: string;
         name: string;
     }>;
+    listSpaces(): Promise<AnytypeSpace[]>;
+    listMembers(spaceId: string): Promise<AnytypeMember[]>;
     resolveChat(spaceId: string, selector: {
         id?: string;
         name?: string;

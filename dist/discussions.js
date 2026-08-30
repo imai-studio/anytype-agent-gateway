@@ -128,6 +128,12 @@ export class DiscussionAnytypePort {
     async resolveSpace(selector) {
         return this.base.resolveSpace(selector);
     }
+    async listSpaces() {
+        return this.base.listSpaces();
+    }
+    async listMembers(spaceId) {
+        return this.base.listMembers(spaceId);
+    }
     async resolveChat(spaceId, selector) {
         return this.base.resolveChat(spaceId, selector);
     }

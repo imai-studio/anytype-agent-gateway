@@ -55,7 +55,7 @@ pnpm add --global github:imai-studio/anytype-agent-gateway
 aag --version
 ```
 
-The repository includes its compiled `dist` output, so this command does not need to run package build scripts. To install a specific revision, append a branch, tag, or commit, for example `github:imai-studio/anytype-agent-gateway#v0.1.1` after that tag exists.
+The repository includes its compiled `dist` output, so this command does not need to run package build scripts. To install a specific revision, append a branch, tag, or commit, for example `github:imai-studio/anytype-agent-gateway#v0.1.2` after that tag exists.
 
 If you are handing this repository to Codex, OpenClaw, or another coding agent to configure, point it to [AGENTS.md](AGENTS.md) and [the agent setup runbook](docs/agent-setup.md). They define the required inputs, safe setup sequence, validation checks, and runtime-specific configuration.
 
@@ -139,6 +139,14 @@ anytype:
     command: aag-heart-adapter
     grpcAddress: 127.0.0.1:31010
 
+directMessages:
+  enabled: true
+  discoveryIntervalSeconds: 30
+  wake:
+    humans: every-message
+    agents: never
+    allowedUsers: [_participant_replace_with_authorized_human_id]
+
 spaces:
   - name: IMAI Studio Inc.
     chatDiscovery:
@@ -214,9 +222,11 @@ Set `agent.participantId` to the bot member's stable Anytype participant ID. AAG
 
 When `chatDiscovery.autoEnroll` is enabled, a direct mention from someone in the discovery wake allowlist persists that chat as an explicit route in the agent configuration before processing the message. Unauthorized mentions never enroll a chat. Discovery remains active so the same trusted user can introduce the agent to channels created later. Because managed updates serialize the YAML document, keep explanatory notes in source-controlled example files rather than comments inside the live agent configuration.
 
+`directMessages` is disabled by default. When enabled, AAG discovers newly created Anytype one-to-one spaces across the agent identity, verifies the other active member against `wake.allowedUsers`, and subscribes to that DM's chats. Direct messages always use `humans: every-message`; the sender does not need to mention the agent. Wildcard access is rejected, and shared spaces are never treated as DMs. Use stable Anytype identity IDs in the allowlist so the same authorized person matches their space-scoped participant ID safely.
+
 Anytype participant IDs can be space-scoped. When one identity joins multiple spaces, set `spaces[].participantId` for each space; it overrides `agent.participantId` for self-filtering and mention matching on that space's routes.
 
-Wake allowlists deliberately treat a bare Anytype identity and that identity's space-scoped `_participant_…_<identity>` forms as the same member. This lets one owner entry authorize the same account across configured spaces; use a full space-scoped participant ID when the permission must be limited to one membership.
+Wake allowlists deliberately treat a bare Anytype identity and that identity's space-scoped `_participant_…_<identity>` forms as the same member. This lets one owner entry authorize the same account across configured spaces. Access is identity-scoped and cannot be narrowed to only one space membership.
 
 For OpenClaw, AAG loads `gateway.clientModule` dynamically. The npm name shown by the schema default is not available in every OpenClaw distribution, so a source installation should normally use the absolute path to its built `packages/gateway-client/dist/index.mjs`. The Gateway token is read from the environment variable named by `gateway.tokenEnv` (default `OPENCLAW_GATEWAY_TOKEN`) or from `gateway.configFile`; it is never included in an agent prompt.
 
@@ -304,6 +314,7 @@ Every configured chat must include its `wake` block; there is no implicit broad 
 - `humans: every-message` implements a group-listener style agent. Use it only in a tightly scoped chat and combine it with `allowedUsers` when appropriate.
 - `agents` applies only to creators listed in `coordination.peers` or the legacy `coordination.agentParticipants` list. A peer entry supplies a stable participant ID plus the name/aliases used for outbound coordination.
 - `spaces[].chatDiscovery` is disabled by default. When enabled with its own required `wake` block, AAG subscribes to current and newly created chats in that space. Existing history is baselined; a bounded recent tail is checked when a chat appears after startup so its first mention is not lost.
+- `directMessages` is disabled by default. When enabled with `humans: every-message` and an explicit sender allowlist, AAG discovers current and newly created `anytype.onetoone` spaces and subscribes only when the peer is authorized.
 - `responses.streaming: true` edits the stable reply with text as the runtime produces it. Streaming is enabled by default and coalesced to avoid excessive API writes; set it to `false` to keep the placeholder unchanged until the final answer. `responses.mode: single` hides tool and status chatter, `milestones` exposes tool lifecycle milestones, and `verbose` also exposes runtime status output.
 - `responses.thinking: stream` displays only the safe progress/thinking text emitted by the harness. It does not expose hidden model chain-of-thought. AAG renders current thinking and milestone tool titles as a compact, plain-text `Working…` activity feed, keeps only the latest four items, and updates a tool item in place when it completes. The first following assistant text replaces that feed in the same message; later assistant parts get separate messages. `editIntervalMilliseconds` controls edit coalescing.
 - `runtime.inactivityTimeoutSeconds` and `runtime.maxRunSeconds` are independent. A `maxRunSeconds` value of `0` means AAG does not request or enforce a run cap and keeps using bounded `agent.wait` long polls; OpenClaw, its harness, and the model provider may still apply their own native limits. Set an AAG maximum only when the operator intentionally wants an additional hard cap.

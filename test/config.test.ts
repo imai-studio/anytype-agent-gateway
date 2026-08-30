@@ -35,6 +35,7 @@ describe("loadConfig", () => {
     expect(config.tools.codex.enabled).toBe(false);
     expect(config.spaces[0]?.chatDiscovery.enabled).toBe(false);
     expect(config.spaces[0]?.chatDiscovery.autoEnroll).toBe(false);
+    expect(config.directMessages.enabled).toBe(false);
   });
 
   it("accepts workspace-owned stable prompt instructions", () => {
@@ -148,6 +149,43 @@ describe("loadConfig", () => {
         ],
       }),
     ).toThrow("wildcard route overrides");
+  });
+
+  it("requires an explicit sender allowlist and every-message wake for direct messages", () => {
+    const base = {
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ id: "space" }],
+      runtime: { kind: "openclaw" },
+    };
+    expect(() =>
+      configSchema.parse({
+        ...base,
+        directMessages: {
+          enabled: true,
+          wake: { humans: "mention", agents: "never", allowedUsers: ["admin"] },
+        },
+      }),
+    ).toThrow("every-message");
+    expect(() =>
+      configSchema.parse({
+        ...base,
+        directMessages: {
+          enabled: true,
+          wake: { humans: "every-message", agents: "never", allowedUsers: ["*"] },
+        },
+      }),
+    ).toThrow("explicit sender allowlist");
+    expect(
+      configSchema.parse({
+        ...base,
+        directMessages: {
+          enabled: true,
+          wake: { humans: "every-message", agents: "never", allowedUsers: ["admin"] },
+        },
+      }).directMessages.enabled,
+    ).toBe(true);
   });
 
   it("requires access admins when runtime access changes are enabled", () => {

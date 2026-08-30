@@ -3,7 +3,15 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import type { AgentConfig } from "./config.js";
 import { runProcess } from "./process.js";
-import type { AnytypeEvent, AnytypePort, ChatAttachment, ChatMessage, TextMark } from "./types.js";
+import type {
+  AnytypeEvent,
+  AnytypeMember,
+  AnytypePort,
+  AnytypeSpace,
+  ChatAttachment,
+  ChatMessage,
+  TextMark,
+} from "./types.js";
 
 type JsonRecord = Record<string, any>;
 
@@ -99,9 +107,23 @@ export class AnytypeClient implements AnytypePort {
     return { id: match.id, name: match.name ?? match.id };
   }
 
-  async listSpaces(): Promise<Array<{ id: string; name: string }>> {
+  async listSpaces(): Promise<AnytypeSpace[]> {
     const spaces = await this.listPages("/v1/spaces");
-    return spaces.map((space) => ({ id: space.id, name: space.name || space.id }));
+    return spaces.map((space) => ({
+      id: space.id,
+      name: space.name || space.id,
+      ...(typeof space.object === "string" ? { object: space.object } : {}),
+    }));
+  }
+
+  async listMembers(spaceId: string): Promise<AnytypeMember[]> {
+    const members = await this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/members`);
+    return members.map((member) => ({
+      id: member.id,
+      name: member.name || member.id,
+      ...(member.identity ? { identity: member.identity } : {}),
+      ...(member.status ? { status: member.status } : {}),
+    }));
   }
 
   async resolveChat(

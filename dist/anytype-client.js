@@ -80,7 +80,20 @@ export class AnytypeClient {
     }
     async listSpaces() {
         const spaces = await this.listPages("/v1/spaces");
-        return spaces.map((space) => ({ id: space.id, name: space.name || space.id }));
+        return spaces.map((space) => ({
+            id: space.id,
+            name: space.name || space.id,
+            ...(typeof space.object === "string" ? { object: space.object } : {}),
+        }));
+    }
+    async listMembers(spaceId) {
+        const members = await this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/members`);
+        return members.map((member) => ({
+            id: member.id,
+            name: member.name || member.id,
+            ...(member.identity ? { identity: member.identity } : {}),
+            ...(member.status ? { status: member.status } : {}),
+        }));
     }
     async resolveChat(spaceId, selector) {
         const chats = await this.listChats(spaceId);

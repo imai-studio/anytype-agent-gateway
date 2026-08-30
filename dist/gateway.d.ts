@@ -18,6 +18,9 @@ export declare class Gateway {
     private readonly terminal;
     private pruneTimer;
     private drainOnStop;
+    private readonly reportedUnknownSpaceKinds;
+    private initialDirectMessageScanComplete;
+    private readonly directMessageMembership;
     private resolveTerminal;
     private rejectTerminal;
     constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string, actorId: string) => string, enrollChat?: ((spaceId: string, spaceName: string, chatId: string, chatName: string, wake: WakeConfig) => Promise<"enrolled" | "existing" | "disabled">) | undefined);
@@ -32,6 +35,7 @@ export declare class Gateway {
     private processMessage;
     private maybeAutoEnroll;
     private discoverChats;
+    private discoverDirectMessages;
     private reconcileInterruptedRuns;
     private discoverDiscussions;
     private port;

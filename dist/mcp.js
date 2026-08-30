@@ -392,7 +392,8 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
         const routeSpaceId = spaceFromRoute(effectiveRouteId);
         if (!routeSpaceId)
             throw new Error("The Anytype route does not contain a valid space ID");
-        assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
+        if (!boundRouteId)
+            assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
         const requestedDiscussionRoot = typeof input.discussion_root_id === "string" ? input.discussion_root_id : undefined;
         if (boundDiscussionRootId &&
             requestedDiscussionRoot &&

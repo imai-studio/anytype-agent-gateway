@@ -3,7 +3,7 @@ import { AgentController, messageFingerprint } from "./controller.js";
 import { DiscussionAnytypePort, HeartDiscussionAdapter } from "./discussions.js";
 import { Store } from "./store.js";
 import type { AnytypePort, ChatMessage, ConversationRef, RuntimeDriver } from "./types.js";
-import { decideWake, mergeWakeOverride } from "./wake.js";
+import { decideWake, mergeWakeOverride, sameIdentity } from "./wake.js";
 
 type Route = {
   conversation: ConversationRef;
@@ -18,6 +18,8 @@ type Route = {
   };
 };
 const INTERRUPTED_RUN_RECOVERY_GRACE_MS = 60 * 60 * 1000;
+const DIRECT_MESSAGE_DISCOVERY_MARKER = "system:aag:direct-message-discovery";
+const directMessageSpaceMarker = (spaceId: string) => `system:aag:direct-message-space:${spaceId}`;
 
 export class Gateway {
   private readonly abort = new AbortController();
@@ -28,6 +30,18 @@ export class Gateway {
   private readonly terminal: Promise<void>;
   private pruneTimer: NodeJS.Timeout | undefined;
   private drainOnStop = false;
+  private readonly reportedUnknownSpaceKinds = new Set<string>();
+  private initialDirectMessageScanComplete = false;
+  private readonly directMessageMembership = new Map<
+    string,
+    {
+      checkedAt: number;
+      authorized: boolean;
+      reason?: string;
+      selfParticipantId?: string;
+      peerName?: string;
+    }
+  >();
   private resolveTerminal!: () => void;
   private rejectTerminal!: (error: unknown) => void;
 
@@ -126,6 +140,8 @@ export class Gateway {
             ),
           );
       }
+      if (this.config.directMessages.enabled)
+        this.track(this.discoverDirectMessages(this.config.directMessages));
       if (!this.tasks.size) throw new Error("Configuration produced no chat or discussion routes");
       await this.terminal;
     } finally {
@@ -166,30 +182,33 @@ export class Gateway {
   private async runRoute(route: Route): Promise<void> {
     const { conversation } = route;
     const anytype = this.port(conversation);
-    if (!this.store.isInitialized(conversation.routeId)) {
-      const recent = await anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
-      const baseline = route.baselineExisting === false ? recent.slice(0, -20) : recent;
-      for (const message of baseline)
-        this.store.markHandled(
-          conversation.routeId,
-          message.id,
-          message.modified_at ?? message.created_at,
-          messageFingerprint(message),
-        );
-      this.store.initialize(conversation.routeId, baseline.at(-1)?.order_id);
-      this.log(route.baselineExisting === false ? "route_recent_catchup" : "route_baselined", {
-        routeId: conversation.routeId,
-        messages: recent.length,
-        pending: recent.length - baseline.length,
-      });
-    }
-    await this.controller.restoreObserversForRoute(conversation);
-    await this.reconcileInterruptedRuns(conversation);
     let delay = 500;
+    let reconciledInterruptedRuns = false;
     while (!this.abort.signal.aborted) {
       const attemptStarted = Date.now();
       try {
+        if (!this.store.isInitialized(conversation.routeId)) {
+          const recent = await anytype.listMessages(conversation.spaceId, conversation.chatId, 100);
+          const baseline = route.baselineExisting === false ? recent.slice(0, -20) : recent;
+          for (const message of baseline)
+            this.store.markHandled(
+              conversation.routeId,
+              message.id,
+              message.modified_at ?? message.created_at,
+              messageFingerprint(message),
+            );
+          this.store.initialize(conversation.routeId, baseline.at(-1)?.order_id);
+          this.log(route.baselineExisting === false ? "route_recent_catchup" : "route_baselined", {
+            routeId: conversation.routeId,
+            messages: recent.length,
+            pending: recent.length - baseline.length,
+          });
+        }
         await this.controller.restoreObserversForRoute(conversation);
+        if (!reconciledInterruptedRuns) {
+          await this.reconcileInterruptedRuns(conversation);
+          reconciledInterruptedRuns = true;
+        }
         let cursor = await this.catchUp(anytype, route, this.store.cursor(conversation.routeId));
         this.log("route_connecting", { routeId: conversation.routeId });
         const eventStream = anytype.stream(
@@ -374,6 +393,124 @@ export class Gateway {
         });
       }
       firstPass = false;
+      await wait(discovery.discoveryIntervalSeconds * 1000, this.abort.signal).catch(
+        () => undefined,
+      );
+    }
+  }
+
+  private async discoverDirectMessages(discovery: AgentConfig["directMessages"]): Promise<void> {
+    while (!this.abort.signal.aborted) {
+      try {
+        const allSpaces = await this.anytype.listSpaces();
+        const knownKinds = new Set([
+          "anytype.space",
+          "anytype.chatspace",
+          "anytype.onetoone",
+          "anytype.techspace",
+        ]);
+        const unknownKinds = [
+          ...new Set(
+            allSpaces
+              .map((space) => space.object ?? "missing")
+              .filter((kind) => !knownKinds.has(kind)),
+          ),
+        ];
+        const newlyObservedKinds = unknownKinds.filter(
+          (kind) => !this.reportedUnknownSpaceKinds.has(kind),
+        );
+        if (newlyObservedKinds.length) {
+          for (const kind of newlyObservedKinds) this.reportedUnknownSpaceKinds.add(kind);
+          this.log("direct_message_space_kind_unsupported", { observed: newlyObservedKinds });
+        }
+        const spaces = allSpaces.filter((space) => space.object === "anytype.onetoone");
+        if (!this.initialDirectMessageScanComplete) {
+          if (!this.store.isInitialized(DIRECT_MESSAGE_DISCOVERY_MARKER)) {
+            for (const space of spaces) this.store.initialize(directMessageSpaceMarker(space.id));
+            this.store.initialize(DIRECT_MESSAGE_DISCOVERY_MARKER);
+          }
+          this.initialDirectMessageScanComplete = true;
+        }
+        let chatsDiscovered = 0;
+        for (const space of spaces) {
+          try {
+            const now = Date.now();
+            let membership = this.directMessageMembership.get(space.id);
+            const refreshAfter =
+              membership?.authorized || membership?.reason === "unauthorized-peer"
+                ? 5 * 60 * 1000
+                : discovery.discoveryIntervalSeconds * 1000;
+            if (!membership || now - membership.checkedAt >= refreshAfter) {
+              const members = (await this.anytype.listMembers(space.id)).filter(
+                (member) => member.status === "active",
+              );
+              const self = members.find((member) =>
+                sameIdentity(member.identity ?? member.id, this.config.agent.participantId),
+              );
+              const peers = members.filter(
+                (member) =>
+                  !sameIdentity(member.identity ?? member.id, this.config.agent.participantId),
+              );
+              const authorizedPeer =
+                peers.length === 1 &&
+                discovery.wake.allowedUsers.some((allowed) =>
+                  sameIdentity(peers[0]!.identity ?? peers[0]!.id, allowed),
+                )
+                  ? peers[0]
+                  : undefined;
+              const reason = !self
+                ? "self-member-not-found"
+                : peers.length !== 1
+                  ? "not-one-to-one"
+                  : authorizedPeer
+                    ? undefined
+                    : "unauthorized-peer";
+              const previousReason = membership?.reason;
+              membership = {
+                checkedAt: now,
+                authorized: Boolean(self && authorizedPeer),
+                ...(reason ? { reason } : {}),
+                ...(self ? { selfParticipantId: self.id } : {}),
+                ...(authorizedPeer ? { peerName: authorizedPeer.name } : {}),
+              };
+              this.directMessageMembership.set(space.id, membership);
+              if (reason && reason !== previousReason)
+                this.log("direct_message_ignored", { spaceId: space.id, reason });
+            }
+            if (!membership.authorized || !membership.selfParticipantId) continue;
+            const chats = await this.anytype.listChats(space.id);
+            for (const chat of chats) {
+              chatsDiscovered += 1;
+              this.addRoute({
+                conversation: {
+                  routeId: `chat:${space.id}:${chat.id}`,
+                  spaceId: space.id,
+                  chatId: chat.id,
+                  kind: "chat",
+                  spaceName: membership.peerName || space.name,
+                  selfParticipantId: membership.selfParticipantId,
+                  managementEnabled: false,
+                },
+                wake: discovery.wake,
+                baselineExisting: this.store.isInitialized(directMessageSpaceMarker(space.id)),
+              });
+            }
+          } catch (error) {
+            this.log("direct_message_space_discovery_failed", {
+              spaceId: space.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        this.log("direct_message_discovery_complete", {
+          spaces: spaces.length,
+          chats: chatsDiscovered,
+        });
+      } catch (error) {
+        this.log("direct_message_discovery_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       await wait(discovery.discoveryIntervalSeconds * 1000, this.abort.signal).catch(
         () => undefined,
       );

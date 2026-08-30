@@ -156,6 +156,32 @@ describe("AAG Anytype MCP policy", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it("allows bound DM model tools without widening unbound space access", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aag-mcp-dm-model-"));
+    const configured = config({
+      state: { path: join(directory, "state.sqlite") },
+      models: { enabled: true, allowed: ["*"] },
+      tools: { anytype: { allowWrite: true, allowedSpaceIds: ["space-1"] } },
+    });
+    await expect(
+      callTool(
+        client(),
+        configured,
+        "/config.yaml",
+        "chat:dm-space:chat",
+        "dm-space",
+        "aag_list_models",
+        {},
+      ),
+    ).resolves.toMatchObject({ thread_key: "chat:dm-space:chat" });
+    await expect(
+      callTool(client(), configured, "/config.yaml", undefined, "space-1", "aag_list_models", {
+        route_id: "chat:dm-space:chat",
+      }),
+    ).rejects.toThrow("not allowed");
+    await rm(directory, { recursive: true, force: true });
+  });
+
   it("describes a native OpenClaw command job bound to the current chat session", async () => {
     const directory = await mkdtemp(join(tmpdir(), "aag-mcp-schedule-"));
     const statePath = join(directory, "state.sqlite");

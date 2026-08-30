@@ -1,6 +1,6 @@
 {
   "name": "@imai/aag",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Run an OpenClaw or Codex agent as a first-class Anytype member.",
   "license": "Apache-2.0",
   "author": "IMAI Studio",

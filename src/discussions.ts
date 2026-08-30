@@ -1,6 +1,14 @@
 import type { AgentConfig } from "./config.js";
 import { runProcess } from "./process.js";
-import type { AnytypeEvent, AnytypePort, ChatAttachment, ChatMessage, TextMark } from "./types.js";
+import type {
+  AnytypeEvent,
+  AnytypeMember,
+  AnytypePort,
+  AnytypeSpace,
+  ChatAttachment,
+  ChatMessage,
+  TextMark,
+} from "./types.js";
 
 export type DiscussionResolution = { objectId: string; discussionId?: string; error?: string };
 
@@ -187,6 +195,12 @@ export class DiscussionAnytypePort implements AnytypePort {
     name?: string;
   }): Promise<{ id: string; name: string }> {
     return this.base.resolveSpace(selector);
+  }
+  async listSpaces(): Promise<AnytypeSpace[]> {
+    return this.base.listSpaces();
+  }
+  async listMembers(spaceId: string): Promise<AnytypeMember[]> {
+    return this.base.listMembers(spaceId);
   }
   async resolveChat(
     spaceId: string,

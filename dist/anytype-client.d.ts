@@ -1,5 +1,5 @@
 import type { AgentConfig } from "./config.js";
-import type { AnytypeEvent, AnytypePort, ChatAttachment, ChatMessage, TextMark } from "./types.js";
+import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 type JsonRecord = Record<string, any>;
 export declare class AnytypeClient implements AnytypePort {
     private readonly base;
@@ -21,10 +21,8 @@ export declare class AnytypeClient implements AnytypePort {
         id: string;
         name: string;
     }>;
-    listSpaces(): Promise<Array<{
-        id: string;
-        name: string;
-    }>>;
+    listSpaces(): Promise<AnytypeSpace[]>;
+    listMembers(spaceId: string): Promise<AnytypeMember[]>;
     resolveChat(spaceId: string, selector: {
         id?: string;
         name?: string;

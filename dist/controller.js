@@ -312,7 +312,9 @@ export class AgentController {
                 }
             });
             let lastActivityAt = Date.now();
-            const prompt = await preparePrompt(context, this.config, sessionKey, this.managementCommand?.(conversation.routeId, message.creator ?? ""), { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId });
+            const prompt = await preparePrompt(context, this.config, sessionKey, conversation.managementEnabled === false
+                ? undefined
+                : this.managementCommand?.(conversation.routeId, message.creator ?? ""), { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId });
             const workspacePath = this.store.sessionWorkspace(threadKey);
             const turn = {
                 conversation,

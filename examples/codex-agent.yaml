@@ -6,6 +6,13 @@ agent:
 anytype:
   apiBase: http://127.0.0.1:31012
   apiKeyFile: ~/.config/aag/anytype-api-key
+directMessages:
+  enabled: true
+  discoveryIntervalSeconds: 30
+  wake:
+    humans: every-message
+    agents: never
+    allowedUsers: [_participant_replace_with_authorized_human_id]
 spaces:
   - name: My Anytype Space
     chatDiscovery:

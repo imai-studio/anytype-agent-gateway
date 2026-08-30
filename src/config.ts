@@ -99,6 +99,34 @@ const chatDiscoverySchema = z
   })
   .transform((value) => ({ ...value, wake: value.wake ?? disabledWake }));
 
+const directMessagesSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    discoveryIntervalSeconds: z.number().int().min(10).default(30),
+    wake: wakeSchema.optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.enabled && !value.wake)
+      context.addIssue({
+        code: "custom",
+        path: ["wake"],
+        message: "directMessages.wake is required when direct messages are enabled",
+      });
+    if (value.enabled && value.wake && value.wake.humans !== "every-message")
+      context.addIssue({
+        code: "custom",
+        path: ["wake", "humans"],
+        message: "directMessages requires every-message human wake behavior",
+      });
+    if (value.enabled && value.wake?.allowedUsers.includes("*"))
+      context.addIssue({
+        code: "custom",
+        path: ["wake", "allowedUsers"],
+        message: "directMessages requires an explicit sender allowlist",
+      });
+  })
+  .transform((value) => ({ ...value, wake: value.wake ?? disabledWake }));
+
 const routeWakeOverrideSchema = z.object({
   kind: z.enum(["chat", "discussion"]),
   id: z.string().min(1),
@@ -232,6 +260,11 @@ export const configSchema = z.object({
         grpcAddress: z.string().default("127.0.0.1:31010"),
       })
       .default({ command: "aag-heart-adapter", grpcAddress: "127.0.0.1:31010" }),
+  }),
+  directMessages: directMessagesSchema.default({
+    enabled: false,
+    discoveryIntervalSeconds: 30,
+    wake: disabledWake,
   }),
   spaces: z.array(spaceSchema).min(1),
   runtime: runtimeSchema,

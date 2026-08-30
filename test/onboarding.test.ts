@@ -25,6 +25,7 @@ describe("aag init", () => {
       "",
       "space-imai",
       "participant-raj",
+      "y",
       "",
       "",
       "",
@@ -52,6 +53,10 @@ describe("aag init", () => {
     expect(config.context.promptMode).toBe("workspace");
     expect(config.tools.codex).toMatchObject({ enabled: true, sandbox: "workspace-write" });
     expect(config.spaces[0].chatDiscovery).toMatchObject({ enabled: true, autoEnroll: true });
+    expect(config.directMessages).toMatchObject({
+      enabled: true,
+      wake: { humans: "every-message", allowedUsers: ["participant-raj"] },
+    });
     expect(await readFile(result.agentsFile!, "utf8")).toContain(
       "Turns may arrive through Anytype Agent Gateway",
     );

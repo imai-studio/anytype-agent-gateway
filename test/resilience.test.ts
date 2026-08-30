@@ -196,6 +196,272 @@ describe("failure containment", () => {
     store.close();
   });
 
+  it("discovers new one-to-one spaces and wakes only for an authorized peer", async () => {
+    class DirectMessageAnytype extends FakeAnytype {
+      listCalls = 0;
+      override async listSpaces() {
+        this.listCalls += 1;
+        return this.listCalls === 1
+          ? [{ id: "shared", name: "Shared", object: "anytype.space" as const }]
+          : [
+              { id: "shared", name: "Shared", object: "anytype.space" as const },
+              { id: "other-shared", name: "Other", object: "anytype.space" as const },
+              { id: "failed-dm", name: "", object: "anytype.onetoone" as const },
+              { id: "dm", name: "", object: "anytype.onetoone" as const },
+              { id: "blocked-dm", name: "", object: "anytype.onetoone" as const },
+            ];
+      }
+      override async listMembers(spaceId: string) {
+        if (spaceId === "failed-dm") throw new Error("space is still syncing");
+        const peer = spaceId === "dm" ? "authorized" : "outsider";
+        return [
+          { id: `_participant_${spaceId}_bot`, name: "AAG", identity: "bot", status: "active" },
+          { id: `_participant_${spaceId}_${peer}`, name: peer, identity: peer, status: "active" },
+        ];
+      }
+      override async listChats(spaceId: string) {
+        if (spaceId === "dm") return [{ id: "direct-chat", name: "Chat" }];
+        if (spaceId === "blocked-dm") return [{ id: "blocked-chat", name: "Blocked" }];
+        if (spaceId === "other-shared") return [{ id: "other-chat", name: "Other" }];
+        return [];
+      }
+      override async listMessages(
+        _spaceId: string,
+        chatId: string,
+        limit: number,
+        afterOrderId?: string,
+      ): Promise<ChatMessage[]> {
+        if (chatId !== "direct-chat") return [];
+        const values = afterOrderId
+          ? this.messages.filter((message) => message.order_id && message.order_id > afterOrderId)
+          : this.messages;
+        return values.slice(-limit);
+      }
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        if (!signal.aborted) yield { type: "unreachable" };
+      }
+    }
+    const anytype = new DirectMessageAnytype();
+    anytype.messages.push(incoming({ id: "dm-message", order_id: "001", creator: "authorized" }));
+    const runtime = new FakeRuntime();
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      directMessages: {
+        enabled: true,
+        discoveryIntervalSeconds: 10,
+        wake: {
+          humans: "every-message",
+          agents: "never",
+          allowedUsers: ["authorized"],
+        },
+      },
+      spaces: [
+        {
+          id: "shared",
+          chats: [
+            {
+              id: "shared-chat",
+              wake: { humans: "mention", agents: "never", allowedUsers: ["authorized"] },
+            },
+          ],
+        },
+      ],
+      runtime: { kind: "openclaw" },
+    });
+    config.directMessages.discoveryIntervalSeconds = 0.01;
+    const store = new Store(":memory:");
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      (event, fields) => logs.push({ event, ...(fields ? { fields } : {}) }),
+    );
+    const running = gateway.start();
+    await eventually(() => expect(runtime.starts).toHaveLength(1));
+    expect(runtime.starts[0]?.sessionKey).toBe("aag:chat:dm:direct-chat");
+    expect(runtime.starts.some((start) => start.sessionKey.includes("blocked"))).toBe(false);
+    expect(runtime.starts.some((start) => start.sessionKey.includes("other-chat"))).toBe(false);
+    expect(anytype.reactionParticipants).toContain("_participant_dm_bot");
+    expect(logs).toContainEqual({
+      event: "direct_message_ignored",
+      fields: { spaceId: "blocked-dm", reason: "unauthorized-peer" },
+    });
+    expect(logs).toContainEqual({
+      event: "direct_message_space_discovery_failed",
+      fields: { spaceId: "failed-dm", error: "space is still syncing" },
+    });
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("baselines an existing direct message even when its first membership scan fails", async () => {
+    class ExistingDirectMessageAnytype extends FakeAnytype {
+      memberCalls = 0;
+      messageCalls = 0;
+      override async listSpaces() {
+        return [{ id: "existing-dm", name: "Raj", object: "anytype.onetoone" }];
+      }
+      override async listMembers() {
+        this.memberCalls += 1;
+        if (this.memberCalls === 1) throw new Error("membership still syncing");
+        return [
+          { id: "_participant_bot", name: "AAG", identity: "bot", status: "active" },
+          {
+            id: "_participant_authorized",
+            name: "Raj",
+            identity: "authorized",
+            status: "active",
+          },
+        ];
+      }
+      override async listChats() {
+        return [{ id: "existing-chat", name: "Chat" }];
+      }
+      override async listMessages(
+        spaceId: string,
+        chatId: string,
+        limit: number,
+        afterOrderId?: string,
+      ) {
+        this.messageCalls += 1;
+        if (this.messageCalls === 1) throw new Error("message history still syncing");
+        return super.listMessages(spaceId, chatId, limit, afterOrderId);
+      }
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        if (!signal.aborted) yield { type: "unreachable" };
+      }
+    }
+    const anytype = new ExistingDirectMessageAnytype();
+    anytype.messages.push(incoming({ id: "old-message", order_id: "001", creator: "authorized" }));
+    const runtime = new FakeRuntime();
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      directMessages: {
+        enabled: true,
+        discoveryIntervalSeconds: 10,
+        wake: {
+          humans: "every-message",
+          agents: "never",
+          allowedUsers: ["authorized"],
+        },
+      },
+      spaces: [{ id: "shared" }],
+      runtime: { kind: "openclaw" },
+    });
+    config.directMessages.discoveryIntervalSeconds = 0.01;
+    const store = new Store(":memory:");
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      (event, fields) => logs.push({ event, ...(fields ? { fields } : {}) }),
+    );
+    const running = gateway.start();
+    await eventually(() =>
+      expect(logs.some(({ event }) => event === "route_baselined")).toBe(true),
+    );
+    expect(anytype.memberCalls).toBeGreaterThanOrEqual(2);
+    expect(anytype.messageCalls).toBeGreaterThanOrEqual(2);
+    expect(runtime.starts).toHaveLength(0);
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("catches a first-contact DM that arrived while a previously enabled gateway was down", async () => {
+    class RestartedDirectMessageAnytype extends FakeAnytype {
+      override async listSpaces() {
+        return [{ id: "new-dm", name: "Raj", object: "anytype.onetoone" }];
+      }
+      override async listMembers() {
+        return [
+          { id: "_participant_bot", name: "AAG", identity: "bot", status: "active" },
+          {
+            id: "_participant_authorized",
+            name: "Raj",
+            identity: "authorized",
+            status: "active",
+          },
+        ];
+      }
+      override async listChats() {
+        return [{ id: "new-chat", name: "Chat" }];
+      }
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        if (!signal.aborted) yield { type: "unreachable" };
+      }
+    }
+    const anytype = new RestartedDirectMessageAnytype();
+    anytype.messages.push(
+      incoming({ id: "offline-first-contact", order_id: "001", creator: "authorized" }),
+    );
+    const runtime = new FakeRuntime();
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      directMessages: {
+        enabled: true,
+        discoveryIntervalSeconds: 10,
+        wake: {
+          humans: "every-message",
+          agents: "never",
+          allowedUsers: ["authorized"],
+        },
+      },
+      spaces: [{ id: "shared" }],
+      runtime: { kind: "openclaw" },
+    });
+    const store = new Store(":memory:");
+    store.initialize("system:aag:direct-message-discovery");
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      () => undefined,
+    );
+    const running = gateway.start();
+    await eventually(() => expect(runtime.starts).toHaveLength(1));
+    expect(runtime.starts[0]?.sessionKey).toBe("aag:chat:new-dm:new-chat");
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
   it("does not auto-enroll a chat for a sender revoked by a live access override", async () => {
     class DiscoveringAnytype extends FakeAnytype {
       listCalls = 0;
@@ -593,6 +859,64 @@ describe("failure containment", () => {
     );
     expect(store.runningRuns("chat:space:chat")).toEqual([]);
     expect(anytype.reactions).toContainEqual({ id: "trigger", emoji: "👀", present: false });
+    gateway.stop();
+    await running;
+    store.close();
+  });
+
+  it("does not reconcile a live non-observable run again when its Anytype stream reconnects", async () => {
+    class ReconnectingAnytype extends FakeAnytype {
+      streamCalls = 0;
+      override async listMessages(): Promise<ChatMessage[]> {
+        return [];
+      }
+      override async *stream(
+        _spaceId: string,
+        _chatId: string,
+        signal: AbortSignal,
+      ): AsyncIterable<AnytypeEvent> {
+        this.streamCalls += 1;
+        if (this.streamCalls === 1) {
+          yield { type: "message_added", payload: { message: this.messages[0]! } };
+          return;
+        }
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        if (!signal.aborted) yield { type: "unreachable" };
+      }
+    }
+    const anytype = new ReconnectingAnytype();
+    anytype.messages.push(incoming({ id: "live-trigger" }));
+    const runtime = new FakeRuntime();
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [
+        {
+          id: "space",
+          chats: [
+            { id: "chat", wake: { humans: "mention", agents: "never", allowedUsers: ["human-1"] } },
+          ],
+        },
+      ],
+      runtime: { kind: "codex" },
+    });
+    const store = new Store(":memory:");
+    store.initialize("chat:space:chat");
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      () => undefined,
+    );
+    const running = gateway.start();
+    await eventually(() => expect(anytype.streamCalls).toBeGreaterThanOrEqual(2));
+    expect(store.runningRuns("chat:space:chat")).toHaveLength(1);
+    expect(anytype.edits.some((edit) => edit.text.includes("interrupted"))).toBe(false);
     gateway.stop();
     await running;
     store.close();

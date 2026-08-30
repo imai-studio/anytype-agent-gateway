@@ -19,6 +19,9 @@ export async function runInitOnboarding(prompt, options = {}) {
     const allowedUsers = csv(await prompt.question("Authorized participant IDs (comma-separated): "));
     if (allowedUsers.length === 0)
         throw new Error("Provide at least one authorized participant ID");
+    const enableDirectMessages = allowedUsers.includes("*")
+        ? false
+        : yes(await prompt.question("Allow these users to message the agent directly [y/N]: "), false);
     const chatId = (await prompt.question("Initial Anytype chat/channel ID (optional with discovery): ")).trim();
     const discoverChats = yes(await prompt.question("Discover chats and allow authorized mentions to add them [Y/n]: "), true);
     const autoEnrollChats = discoverChats &&
@@ -63,6 +66,17 @@ export async function runInitOnboarding(prompt, options = {}) {
         version: 1,
         agent: { name, participantId, aliases: [slug] },
         anytype: { apiKeyFile },
+        directMessages: enableDirectMessages
+            ? {
+                enabled: true,
+                discoveryIntervalSeconds: 30,
+                wake: {
+                    humans: "every-message",
+                    agents: "never",
+                    allowedUsers,
+                },
+            }
+            : { enabled: false },
         spaces: [
             {
                 id: spaceId,

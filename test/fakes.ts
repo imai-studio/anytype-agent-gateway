@@ -1,7 +1,9 @@
 import type {
   ActiveRuntime,
   AnytypeEvent,
+  AnytypeMember,
   AnytypePort,
+  AnytypeSpace,
   ChatAttachment,
   ChatMessage,
   RuntimeDriver,
@@ -91,10 +93,16 @@ export class FakeAnytype implements AnytypePort {
   async resolveSpace(): Promise<{ id: string; name: string }> {
     return { id: "space", name: "Space" };
   }
+  async listSpaces(): Promise<AnytypeSpace[]> {
+    return [{ id: "space", name: "Space", object: "anytype.space" }];
+  }
+  async listMembers(_spaceId: string): Promise<AnytypeMember[]> {
+    return [];
+  }
   async resolveChat(): Promise<{ id: string; name: string }> {
     return { id: "chat", name: "Chat" };
   }
-  async listChats(): Promise<Array<{ id: string; name: string }>> {
+  async listChats(_spaceId: string): Promise<Array<{ id: string; name: string }>> {
     return this.chats;
   }
   async getObject(

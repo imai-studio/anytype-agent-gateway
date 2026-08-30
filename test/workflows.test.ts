@@ -35,6 +35,42 @@ function setup(silentPlaceholder: "delete" | "keep" | "replace" = "delete") {
 }
 
 describe("example workflows", () => {
+  it("does not expose route management commands in direct-message prompts", async () => {
+    const anytype = new FakeAnytype();
+    const runtime = new FakeRuntime();
+    const store = new Store(":memory:");
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "openclaw" },
+    });
+    const controller = new AgentController(
+      anytype,
+      runtime,
+      config,
+      store,
+      () => undefined,
+      undefined,
+      () => "SECRET ROUTE MANAGEMENT COMMAND",
+    );
+    const directMessage: ConversationRef = {
+      routeId: "chat:dm-space:dm-chat",
+      spaceId: "dm-space",
+      chatId: "dm-chat",
+      kind: "chat",
+      managementEnabled: false,
+    };
+    const message = incoming({ content: { text: "hello" }, mentioned: false });
+    anytype.messages.push(message);
+    await controller.process(directMessage, { ...wake, humans: "every-message" }, message);
+    expect(runtime.starts).toHaveLength(1);
+    expect(runtime.starts[0]?.prompt).not.toContain("SECRET ROUTE MANAGEMENT COMMAND");
+    await controller.stop();
+    store.close();
+  });
+
   it("lists and changes the native harness model per Anytype chat", async () => {
     const anytype = new FakeAnytype();
     const runtime = new FakeRuntime();

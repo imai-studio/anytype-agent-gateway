@@ -414,7 +414,9 @@ export class AgentController {
         context,
         this.config,
         sessionKey,
-        this.managementCommand?.(conversation.routeId, message.creator ?? ""),
+        conversation.managementEnabled === false
+          ? undefined
+          : this.managementCommand?.(conversation.routeId, message.creator ?? ""),
         { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId },
       );
       const workspacePath = this.store.sessionWorkspace(threadKey);

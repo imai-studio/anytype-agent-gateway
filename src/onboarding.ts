@@ -52,6 +52,9 @@ export async function runInitOnboarding(
   const spaceId = required(await prompt.question("Anytype space ID: "), "Anytype space ID");
   const allowedUsers = csv(await prompt.question("Authorized participant IDs (comma-separated): "));
   if (allowedUsers.length === 0) throw new Error("Provide at least one authorized participant ID");
+  const enableDirectMessages = allowedUsers.includes("*")
+    ? false
+    : yes(await prompt.question("Allow these users to message the agent directly [y/N]: "), false);
 
   const chatId = (
     await prompt.question("Initial Anytype chat/channel ID (optional with discovery): ")
@@ -130,6 +133,17 @@ export async function runInitOnboarding(
     version: 1,
     agent: { name, participantId, aliases: [slug] },
     anytype: { apiKeyFile },
+    directMessages: enableDirectMessages
+      ? {
+          enabled: true,
+          discoveryIntervalSeconds: 30,
+          wake: {
+            humans: "every-message" as const,
+            agents: "never" as const,
+            allowedUsers,
+          },
+        }
+      : { enabled: false },
     spaces: [
       {
         id: spaceId,

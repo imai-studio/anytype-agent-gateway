@@ -21,6 +21,7 @@ import { runMcpServer } from "./mcp.js";
 import { VERSION } from "./version.js";
 import { runInitOnboarding } from "./onboarding.js";
 import { modelAllowed } from "./model-command.js";
+import { sameIdentity } from "./wake.js";
 const program = new Command().name("aag").description("Anytype Agent Gateway").version(VERSION);
 program
     .command("init")
@@ -78,6 +79,27 @@ program
         }
         if (configuredSpace.chatDiscovery.enabled)
             console.log(`ok: chat discovery (${(await anytype.listChats(space.id)).length} current chats)`);
+    }
+    if (config.directMessages.enabled) {
+        const spaces = await anytype.listSpaces();
+        const observedKinds = [...new Set(spaces.map((space) => space.object ?? "missing"))].sort();
+        const directSpaces = spaces.filter((space) => space.object === "anytype.onetoone");
+        let authorized = 0;
+        for (const space of directSpaces) {
+            const members = (await anytype.listMembers(space.id)).filter((member) => member.status === "active");
+            const self = members.find((member) => sameIdentity(member.identity ?? member.id, config.agent.participantId));
+            const peers = members.filter((member) => !sameIdentity(member.identity ?? member.id, config.agent.participantId));
+            if (self &&
+                peers.length === 1 &&
+                config.directMessages.wake.allowedUsers.some((allowed) => sameIdentity(peers[0].identity ?? peers[0].id, allowed)))
+                authorized += 1;
+            await anytype.listChats(space.id);
+        }
+        console.log(`ok: direct message discovery (${directSpaces.length} current DMs, ${authorized} authorized; observed kinds: ${observedKinds.join(", ") || "none"})`);
+        if (!directSpaces.length)
+            console.warn("warning: direct messages are enabled, but Anytype reported no anytype.onetoone spaces");
+        else if (!authorized)
+            console.warn("warning: direct messages are enabled, but no active one-to-one peer matched directMessages.wake.allowedUsers");
     }
     if (config.spaces.some((space) => space.comments.mode !== "disabled")) {
         if (!(await commandExists(config.anytype.heartAdapter.command)))

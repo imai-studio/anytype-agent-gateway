@@ -33,12 +33,13 @@ Ask only for values that cannot be discovered safely:
 3. One or more Anytype space invite links, unless the identity is already a member.
 4. Space and initial chat names to watch, whether newly created chats should be discovered, and whether object discussions are enabled.
 5. Stable participant IDs allowed to wake the agent.
-6. Wake rule per chat: `mention`, `mention-or-reply`, `every-message`, `prefix`, or `disabled`.
-7. Absolute default and allowed project paths.
-8. Codex permission mode (`deny` is the safe default) or OpenClaw Gateway connection details.
-9. Whether answer text should stream, plus response verbosity (`single`, `milestones`, or `verbose`).
-10. Whether the agent may write Anytype objects, which exact spaces it may touch, whether archive is allowed, and which local roots may supply uploads.
-11. For OpenClaw, a random channel-bridge token and whether native cron/heartbeat/background output should return to the bound Anytype conversation.
+6. Whether those users may direct-message the agent without a mention.
+7. Wake rule per chat: `mention`, `mention-or-reply`, `every-message`, `prefix`, or `disabled`.
+8. Absolute default and allowed project paths.
+9. Codex permission mode (`deny` is the safe default) or OpenClaw Gateway connection details.
+10. Whether answer text should stream, plus response verbosity (`single`, `milestones`, or `verbose`).
+11. Whether the agent may write Anytype objects, which exact spaces it may touch, whether archive is allowed, and which local roots may supply uploads.
+12. For OpenClaw, a random channel-bridge token and whether native cron/heartbeat/background output should return to the bound Anytype conversation.
 
 Never infer an invite link, participant ID, or project authorization from a display name. Never place an API key or Gateway token in the YAML file.
 
@@ -83,6 +84,13 @@ agent:
 anytype:
   apiBase: http://127.0.0.1:31009
   apiKeyFile: ~/.config/aag/anytype-api-key
+directMessages:
+  enabled: true
+  discoveryIntervalSeconds: 30
+  wake:
+    humans: every-message
+    agents: never
+    allowedUsers: [_participant_authorized_human_id]
 spaces:
   - name: SPACE_NAME
     chatDiscovery:
@@ -136,6 +144,10 @@ Generate one random token of at least 24 characters. Prefer a mode-`0600` file s
 For object work, tell the agent to call `aag_context`, discover the space's types and properties, read the target object, and then mutate it. Select and multi-select values can be resolved through the property-tag tool, templates through the type-template tool, and collection membership through the view tools. Every found, created, or updated object returns an `object_ref` token for a compact clickable reference and an `object_card` token for a full native card attachment. The accompanying `anytype://` link is a fallback.
 
 One configuration should describe one identity and one runtime agent. Use explicit routes or an explicit `chatDiscovery` policy; space membership alone must not turn on every conversation. When discovery is enabled, keep its wake policy mention-based and its sender allowlist narrow. Set `chatDiscovery.autoEnroll: true` when a trusted sender's first direct mention should persist that chat as an explicit route; other senders cannot enroll it. Managed updates serialize the live YAML file, so keep long-form annotations in a separate operator document rather than YAML comments.
+
+Enable `directMessages` only with explicit stable Anytype identity IDs. AAG scans for `anytype.onetoone` spaces, verifies both the configured agent and an allowed peer are active members, and listens to every message in that DM without requiring a mention. Wildcards and mention-only DM policies are rejected. Shared spaces and group chats remain governed by their own configured routes.
+
+DM routes inherit the response and harness behavior but not route self-management: change their sender allowlist and wake policy in `directMessages` operator configuration. Anytype object tools remain limited to `tools.anytype.allowedSpaceIds`. When that list is empty, the current DM backing space is the turn's default Anytype space and is therefore accessible. Configure an explicit list of shared-space IDs to prevent object access to DM backing spaces; discovering a DM never widens an explicit list.
 
 ## 5. Validate before connecting
 
