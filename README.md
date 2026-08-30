@@ -59,6 +59,8 @@ The repository includes its compiled `dist` output, so this command does not nee
 
 If you are handing this repository to Codex, OpenClaw, or another coding agent to configure, point it to [AGENTS.md](AGENTS.md) and [the agent setup runbook](docs/agent-setup.md). They define the required inputs, safe setup sequence, validation checks, and runtime-specific configuration.
 
+Existing AAG installations should follow the [copy, service migration, and rollback guide](docs/upgrade-from-aag.md). Migration is explicit and keeps the legacy configuration and state untouched.
+
 To build from source instead:
 
 ```bash

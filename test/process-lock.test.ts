@@ -2,7 +2,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { acquireProcessLock } from "../src/process-lock.js";
+import {
+  acquireCompatibleProcessLocks,
+  acquireProcessLock,
+  compatibleProcessLockPaths,
+} from "../src/process-lock.js";
 
 const directories: string[] = [];
 
@@ -52,6 +56,31 @@ describe("process lock", () => {
       }),
     ).rejects.toThrow("Another Knot process is already running (pid 987654)");
     expect(await readFile(path, "utf8")).toBe("987654 protected\n");
+  });
+
+  it("reclaims a stale owner when migration allows the retry", async () => {
+    const path = await lockPath();
+    await writeFile(path, "987654 stale\n", { mode: 0o600 });
+    const release = await acquireProcessLock(path, {
+      attempts: 2,
+      probe: () => {
+        throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      },
+    });
+    await release();
+  });
+
+  it("makes legacy and current state paths contend on one identity lock", async () => {
+    const home = await mkdtemp(join(tmpdir(), "knot-cross-generation-lock-"));
+    directories.push(home);
+    const legacy = join(home, ".local", "state", "aag", "state.sqlite");
+    const current = join(home, ".local", "state", "knot", "state.sqlite");
+    expect(compatibleProcessLockPaths(legacy)[0]).toBe(compatibleProcessLockPaths(current)[0]);
+    const release = await acquireCompatibleProcessLocks(legacy, { pid: process.pid });
+    await expect(
+      acquireCompatibleProcessLocks(current, { pid: process.pid, attempts: 1 }),
+    ).rejects.toThrow("Another Knot process is already running");
+    await release();
   });
 });
 
