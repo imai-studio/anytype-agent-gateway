@@ -7,7 +7,7 @@ import { renderForAnytype, RunProjection } from "./projection.js";
 import { modelAllowed, parseModelCommand } from "./model-command.js";
 import { parseProjectCommand } from "./project-command.js";
 import { decideWake, mergeWakeOverride } from "./wake.js";
-import { principalAllowed, principalAuditFields, principalFromMessage } from "./principal.js";
+import { principalAllowed, principalAuditFields, principalFromMessage, principalFromParticipantId, } from "./principal.js";
 export class AgentController {
     anytype;
     runtime;
@@ -743,16 +743,12 @@ export class AgentController {
         await this.sendControlMessage(conversation, replyTargetId, `Project tag set to ${tag}. Use /new to start a fresh Codex task in ${projectName}.`);
     }
     canChangeProject(actorId) {
-        const principal = actorId
-            ? principalFromMessage({ id: "authorization", creator: actorId })
-            : undefined;
+        const principal = principalFromParticipantId(actorId);
         return Boolean(this.config.management.allowProjectChanges &&
             principalAllowed(principal, this.config.management.projectAdmins));
     }
     canChangeModel(actorId) {
-        const principal = actorId
-            ? principalFromMessage({ id: "authorization", creator: actorId })
-            : undefined;
+        const principal = principalFromParticipantId(actorId);
         return Boolean(this.config.management.allowModelChanges &&
             principalAllowed(principal, this.config.management.modelAdmins));
     }
@@ -1155,7 +1151,7 @@ function mentionTargetsFrom(message) {
 }
 function decisionActorCommand(managementCommand, routeId, message) {
     const actor = principalFromMessage(message);
-    return actor ? managementCommand?.(routeId, actor.participantId) : undefined;
+    return actor ? managementCommand?.(routeId) : undefined;
 }
 function isTurnAlreadyCompleted(error) {
     return error instanceof Error && error.name === "RuntimeTurnAlreadyCompletedError";

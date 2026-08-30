@@ -211,7 +211,7 @@ describe("constrained gateway management", () => {
       setRouteAccess({
         configPath,
         routeId: "chat:space:chat",
-        actorId: "admin",
+        actor: { participantId: "admin", provenance: "anytype-native" },
         operation: "add",
         participantIds: ["shyam"],
       }),
@@ -259,7 +259,7 @@ describe("constrained gateway management", () => {
       setRouteAccess({
         configPath,
         routeId: "chat:space:chat",
-        actorId: "member",
+        actor: { participantId: "member", provenance: "anytype-native" },
         operation: "add",
         participantIds: ["other"],
       }),
@@ -268,7 +268,7 @@ describe("constrained gateway management", () => {
       setRouteAccess({
         configPath,
         routeId: "chat:space:chat",
-        actorId: "admin",
+        actor: { participantId: "admin", provenance: "anytype-native" },
         operation: "remove",
         participantIds: ["admin"],
       }),
@@ -318,10 +318,10 @@ describe("constrained gateway management", () => {
     const prompt = formatPrompt(
       bundle,
       config,
-      "aag config wake --route-id chat:space:chat --humans <mode>",
+      "aag_set_wake with route_id=chat:space:chat and humans=<mode>",
     );
     expect(prompt).toContain("Anytype Agent Gateway (AAG)");
-    expect(prompt).toContain("aag config wake");
+    expect(prompt).toContain("aag_set_wake");
     expect(prompt).toContain("explicit wake-behavior request");
   });
 
@@ -360,7 +360,7 @@ describe("constrained gateway management", () => {
     expect(prompt).toContain("\n\nlisten here");
     expect(prompt).toContain("AAG updates untrusted route context at");
     expect(prompt).not.toContain("/private/node");
-    expect(prompt).not.toContain("Available constrained commands");
+    expect(prompt).not.toContain("Available constrained tools");
     expect(prompt.length).toBeLessThan(500);
     const contextPath = prompt.match(/route context at (.+)\. Read it only/)?.[1];
     expect(contextPath).toBeTruthy();

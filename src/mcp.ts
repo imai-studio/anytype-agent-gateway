@@ -10,7 +10,7 @@ import { modelAllowed } from "./model-command.js";
 import { Store } from "./store.js";
 import { VERSION } from "./version.js";
 import { resolveProductEnvironment } from "./compatibility.js";
-import { principalAllowed, principalFromMessage } from "./principal.js";
+import { principalAllowed, principalFromParticipantId } from "./principal.js";
 
 type Request = {
   jsonrpc?: string;
@@ -529,9 +529,7 @@ export async function callTool(
           models: current?.catalog ?? [],
         };
       if (!config.management.allowModelChanges) throw new Error("Model changes are disabled");
-      const boundPrincipal = boundActorId
-        ? principalFromMessage({ id: "mcp-actor", creator: boundActorId })
-        : undefined;
+      const boundPrincipal = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
       if (!principalAllowed(boundPrincipal, config.management.modelAdmins))
         throw new Error("The current Anytype sender is not allowed to change models");
       const requested = required(input, "model_id");
@@ -575,9 +573,7 @@ export async function callTool(
     const routeSpaceId = spaceFromRoute(effectiveRouteId);
     if (!routeSpaceId) throw new Error("route_id does not contain a valid Anytype space");
     assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
-    const boundPrincipal = boundActorId
-      ? principalFromMessage({ id: "mcp-actor", creator: boundActorId })
-      : undefined;
+    const boundPrincipal = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
     if (!boundPrincipal) throw new Error("The current Anytype sender could not be verified");
     await setRouteWake({
       configPath,
@@ -602,7 +598,7 @@ export async function callTool(
     const allowedUsers = await setRouteAccess({
       configPath,
       routeId: effectiveRouteId,
-      actor: principalFromMessage({ id: "mcp-actor", creator: boundActorId })!,
+      actor: principalFromParticipantId(boundActorId)!,
       operation: String(input.operation),
       participantIds: requiredArray(input, "participant_ids"),
     });

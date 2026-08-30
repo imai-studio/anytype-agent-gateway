@@ -23,7 +23,12 @@ import type {
   RuntimeSessionOutput,
 } from "./types.js";
 import { decideWake, mergeWakeOverride } from "./wake.js";
-import { principalAllowed, principalAuditFields, principalFromMessage } from "./principal.js";
+import {
+  principalAllowed,
+  principalAuditFields,
+  principalFromMessage,
+  principalFromParticipantId,
+} from "./principal.js";
 
 type ActiveRun = {
   id: string;
@@ -52,7 +57,7 @@ export class AgentController {
     private readonly store: Store,
     private readonly log: (event: string, fields?: Record<string, unknown>) => void,
     private readonly discussionAnytype: AnytypePort = anytype,
-    private readonly managementCommand?: (routeId: string, actorId: string) => string,
+    private readonly managementCommand?: (routeId: string) => string,
   ) {
     this.store.saveRuntimeCapabilities(this.runtimeName(), this.runtime.capabilities);
     const outbox = this.store.outboundStatusCounts();
@@ -949,9 +954,7 @@ export class AgentController {
   }
 
   private canChangeProject(actorId?: string): boolean {
-    const principal = actorId
-      ? principalFromMessage({ id: "authorization", creator: actorId })
-      : undefined;
+    const principal = principalFromParticipantId(actorId);
     return Boolean(
       this.config.management.allowProjectChanges &&
       principalAllowed(principal, this.config.management.projectAdmins),
@@ -959,9 +962,7 @@ export class AgentController {
   }
 
   private canChangeModel(actorId?: string): boolean {
-    const principal = actorId
-      ? principalFromMessage({ id: "authorization", creator: actorId })
-      : undefined;
+    const principal = principalFromParticipantId(actorId);
     return Boolean(
       this.config.management.allowModelChanges &&
       principalAllowed(principal, this.config.management.modelAdmins),
@@ -1455,12 +1456,12 @@ function mentionTargetsFrom(message: ChatMessage): Array<{ name: string; partici
 }
 
 function decisionActorCommand(
-  managementCommand: ((routeId: string, actorId: string) => string) | undefined,
+  managementCommand: ((routeId: string) => string) | undefined,
   routeId: string,
   message: ChatMessage,
 ): string | undefined {
   const actor = principalFromMessage(message);
-  return actor ? managementCommand?.(routeId, actor.participantId) : undefined;
+  return actor ? managementCommand?.(routeId) : undefined;
 }
 
 function isTurnAlreadyCompleted(error: unknown): boolean {

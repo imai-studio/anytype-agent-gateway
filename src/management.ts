@@ -7,7 +7,7 @@ import { configSchema, loadConfig, type AgentConfig, type WakeConfig } from "./c
 import { acquireProcessLock } from "./process-lock.js";
 import { Store } from "./store.js";
 import { sameIdentity } from "./wake.js";
-import { principalAllowed, principalFromMessage, type AnytypePrincipal } from "./principal.js";
+import { principalAllowed, type AnytypePrincipal } from "./principal.js";
 
 const humanModes = ["mention", "mention-or-reply", "every-message", "prefix", "disabled"] as const;
 type HumanMode = (typeof humanModes)[number];
@@ -69,7 +69,6 @@ export async function setRouteWake(input: {
 export async function setRouteAccess(input: {
   configPath: string;
   routeId: string;
-  actorId?: string;
   actor?: AnytypePrincipal;
   operation: string;
   participantIds: string[];
@@ -89,12 +88,7 @@ export async function setRouteAccess(input: {
     const route = await resolveRouteConfig(input.configPath, input.routeId, spaceName);
     if (!route.parsed.management.allowAccessChanges)
       throw new Error("management.allowAccessChanges is disabled");
-    const actor =
-      input.actor ??
-      (input.actorId
-        ? principalFromMessage({ id: "compatibility-actor", creator: input.actorId })
-        : undefined);
-    if (!principalAllowed(actor, route.parsed.management.accessAdmins))
+    if (input.actor && !principalAllowed(input.actor, route.parsed.management.accessAdmins))
       throw new Error("Only a configured access admin may change the route allowlist");
     const admins = route.parsed.management.accessAdmins;
     let allowedUsers: string[];

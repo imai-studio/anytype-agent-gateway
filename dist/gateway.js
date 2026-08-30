@@ -1,7 +1,7 @@
 import { AgentController, messageFingerprint } from "./controller.js";
 import { DiscussionAnytypePort } from "./discussions.js";
 import { decideWake, mergeWakeOverride, sameIdentity } from "./wake.js";
-import { principalAuditFields, principalFromMessage } from "./principal.js";
+import { principalAuditFields, principalFromMessage, principalFromParticipantId, } from "./principal.js";
 const INTERRUPTED_RUN_RECOVERY_GRACE_MS = 60 * 60 * 1000;
 const DIRECT_MESSAGE_DISCOVERY_MARKER = "system:aag:direct-message-discovery";
 const directMessageSpaceMarker = (spaceId) => `system:aag:direct-message-space:${spaceId}`;
@@ -427,7 +427,7 @@ export class Gateway {
                             this.store.initialize(directMessageBootstrapMarker(identity));
                             this.directMessageBootstrapFailures.delete(identity);
                             this.log("direct_message_created", {
-                                ...principalAuditFields(principalFromMessage({ id: "direct-message", creator: identity })),
+                                ...principalAuditFields(principalFromParticipantId(identity)),
                                 ...created,
                             });
                         }
@@ -441,7 +441,7 @@ export class Gateway {
                                 nextAttemptAt: Date.now() + retryInSeconds * 1000,
                             });
                             this.log("direct_message_create_failed", {
-                                ...principalAuditFields(principalFromMessage({ id: "direct-message", creator: identity })),
+                                ...principalAuditFields(principalFromParticipantId(identity)),
                                 failures,
                                 retryInSeconds,
                                 error: error instanceof Error ? error.message : String(error),

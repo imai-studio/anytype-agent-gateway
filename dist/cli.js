@@ -130,7 +130,7 @@ program
     try {
         store = new Store(config.state.path);
         const configPath = resolve(options.config);
-        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId, actorId) => managementCommand(config, configPath, routeId, actorId), (spaceId, spaceName, chatId, chatName, wake) => enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }));
+        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId) => managementCommand(config, routeId), (spaceId, spaceName, chatId, chatName, wake) => enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }));
         const stop = () => gateway.stop({ drain: true });
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
@@ -149,21 +149,12 @@ config
     .requiredOption("--route-id <id>")
     .requiredOption("--humans <mode>")
     .option("--prefix <text>")
-    .option("--actor-id <id>")
     .action(async (options) => {
     await setRouteWake({
         configPath: options.config,
         routeId: options.routeId,
         humans: options.humans,
         ...(options.prefix ? { prefix: options.prefix } : {}),
-        ...(options.actorId
-            ? {
-                actor: {
-                    participantId: options.actorId,
-                    provenance: "anytype-native",
-                },
-            }
-            : {}),
     });
     console.log(`Updated ${options.routeId} to humans=${options.humans}. The running gateway will apply it to the next message.`);
 });
@@ -172,14 +163,12 @@ config
     .description("Change the participant allowlist for one AAG route")
     .requiredOption("-c, --config <path>")
     .requiredOption("--route-id <id>")
-    .requiredOption("--actor-id <id>")
     .requiredOption("--operation <operation>")
     .requiredOption("--participant-id <id...>")
     .action(async (options) => {
     const allowedUsers = await setRouteAccess({
         configPath: options.config,
         routeId: options.routeId,
-        actorId: options.actorId,
         operation: options.operation,
         participantIds: options.participantId,
     });
@@ -349,18 +338,13 @@ function makeRuntime(config, store, configPath) {
 function log(event, fields = {}) {
     console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));
 }
-function managementCommand(config, configPath, routeId, actorId) {
-    const executable = resolve(process.argv[1]);
-    const command = `${shellQuote(process.execPath)} ${shellQuote(executable)}`;
+function managementCommand(config, routeId) {
     const commands = [];
     if (config.management.allowWakeChanges)
-        commands.push(`Wake command: ${command} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --actor-id ${shellQuote(actorId)} --humans <mode>`);
+        commands.push(`Wake tool: aag_set_wake with route_id=${JSON.stringify(routeId)} and humans=<mode>`);
     if (config.management.allowAccessChanges)
-        commands.push(`Access command: ${command} config access --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --actor-id ${shellQuote(actorId)} --operation <add|remove|replace> --participant-id <native-participant-id>`);
+        commands.push(`Access tool: aag_set_access with route_id=${JSON.stringify(routeId)}, actor_id set to the authenticated sender ID from context, operation=<add|remove|replace>, and participant_ids=[<native-participant-id>]`);
     return commands.join("\n");
-}
-function shellQuote(value) {
-    return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 function bundledOpenClawPluginPath() {
     return resolve(dirname(fileURLToPath(import.meta.url)), "..", "packages", "openclaw-anytype-channel");

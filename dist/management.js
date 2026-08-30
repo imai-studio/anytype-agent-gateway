@@ -7,7 +7,7 @@ import { configSchema, loadConfig } from "./config.js";
 import { acquireProcessLock } from "./process-lock.js";
 import { Store } from "./store.js";
 import { sameIdentity } from "./wake.js";
-import { principalAllowed, principalFromMessage } from "./principal.js";
+import { principalAllowed } from "./principal.js";
 const humanModes = ["mention", "mention-or-reply", "every-message", "prefix", "disabled"];
 export async function enrollChatRoute(input) {
     return withConfigWriteLock(input.configPath, async () => {
@@ -63,11 +63,7 @@ export async function setRouteAccess(input) {
         const route = await resolveRouteConfig(input.configPath, input.routeId, spaceName);
         if (!route.parsed.management.allowAccessChanges)
             throw new Error("management.allowAccessChanges is disabled");
-        const actor = input.actor ??
-            (input.actorId
-                ? principalFromMessage({ id: "compatibility-actor", creator: input.actorId })
-                : undefined);
-        if (!principalAllowed(actor, route.parsed.management.accessAdmins))
+        if (input.actor && !principalAllowed(input.actor, route.parsed.management.accessAdmins))
             throw new Error("Only a configured access admin may change the route allowlist");
         const admins = route.parsed.management.accessAdmins;
         let allowedUsers;

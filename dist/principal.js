@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 export function principalFromMessage(message) {
-    const participantId = message.creator;
+    return principalFromParticipantId(message.creator, message.creator_name);
+}
+export function principalFromParticipantId(participantId, displayName) {
     if (typeof participantId !== "string" ||
         participantId.length === 0 ||
         participantId.length > 512 ||
@@ -13,7 +15,7 @@ export function principalFromMessage(message) {
         return undefined;
     return {
         participantId,
-        ...(message.creator_name ? { displayName: message.creator_name } : {}),
+        ...(displayName ? { displayName } : {}),
         provenance: "anytype-native",
     };
 }

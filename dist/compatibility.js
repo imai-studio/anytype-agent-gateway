@@ -1,6 +1,6 @@
 import { access, constants } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
 export const PRODUCT = {
     current: {
         name: "Anytype Agent Gateway",
@@ -114,12 +114,19 @@ async function executableExists(command) {
         return access(command, constants.X_OK)
             .then(() => true)
             .catch(() => false);
-    const paths = (process.env.PATH ?? "").split(":").filter(Boolean);
+    const paths = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+    const extensions = process.platform === "win32" && !extname(command)
+        ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+            .split(";")
+            .filter(Boolean)
+            .flatMap((extension) => [extension.toLowerCase(), extension.toUpperCase()])
+        : [""];
     for (const directory of paths) {
-        if (await access(join(directory, command), constants.X_OK)
-            .then(() => true)
-            .catch(() => false))
-            return true;
+        for (const extension of extensions)
+            if (await access(join(directory, `${command}${extension}`), constants.X_OK)
+                .then(() => true)
+                .catch(() => false))
+                return true;
     }
     return false;
 }

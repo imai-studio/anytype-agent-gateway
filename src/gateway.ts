@@ -4,7 +4,11 @@ import { DiscussionAnytypePort, HeartDiscussionAdapter } from "./discussions.js"
 import { Store } from "./store.js";
 import type { AnytypePort, ChatMessage, ConversationRef, RuntimeDriver } from "./types.js";
 import { decideWake, mergeWakeOverride, sameIdentity } from "./wake.js";
-import { principalAuditFields, principalFromMessage } from "./principal.js";
+import {
+  principalAuditFields,
+  principalFromMessage,
+  principalFromParticipantId,
+} from "./principal.js";
 
 type Route = {
   conversation: ConversationRef;
@@ -60,7 +64,7 @@ export class Gateway {
     private readonly store: Store,
     private readonly discussions: HeartDiscussionAdapter,
     private readonly log: (event: string, fields?: Record<string, unknown>) => void,
-    managementCommand?: (routeId: string, actorId: string) => string,
+    managementCommand?: (routeId: string) => string,
     private readonly enrollChat?: (
       spaceId: string,
       spaceName: string,
@@ -538,9 +542,7 @@ export class Gateway {
               this.store.initialize(directMessageBootstrapMarker(identity));
               this.directMessageBootstrapFailures.delete(identity);
               this.log("direct_message_created", {
-                ...principalAuditFields(
-                  principalFromMessage({ id: "direct-message", creator: identity }),
-                ),
+                ...principalAuditFields(principalFromParticipantId(identity)),
                 ...created,
               });
             } catch (error) {
@@ -552,9 +554,7 @@ export class Gateway {
                 nextAttemptAt: Date.now() + retryInSeconds * 1000,
               });
               this.log("direct_message_create_failed", {
-                ...principalAuditFields(
-                  principalFromMessage({ id: "direct-message", creator: identity }),
-                ),
+                ...principalAuditFields(principalFromParticipantId(identity)),
                 failures,
                 retryInSeconds,
                 error: error instanceof Error ? error.message : String(error),

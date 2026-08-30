@@ -8,7 +8,13 @@ export type AnytypePrincipal = {
 };
 
 export function principalFromMessage(message: ChatMessage): AnytypePrincipal | undefined {
-  const participantId = message.creator;
+  return principalFromParticipantId(message.creator, message.creator_name);
+}
+
+export function principalFromParticipantId(
+  participantId: string | undefined,
+  displayName?: string,
+): AnytypePrincipal | undefined {
   if (
     typeof participantId !== "string" ||
     participantId.length === 0 ||
@@ -23,7 +29,7 @@ export function principalFromMessage(message: ChatMessage): AnytypePrincipal | u
     return undefined;
   return {
     participantId,
-    ...(message.creator_name ? { displayName: message.creator_name } : {}),
+    ...(displayName ? { displayName } : {}),
     provenance: "anytype-native",
   };
 }

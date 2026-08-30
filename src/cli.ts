@@ -162,7 +162,7 @@ program
         store,
         new HeartDiscussionAdapter(config),
         log,
-        (routeId, actorId) => managementCommand(config, configPath, routeId, actorId),
+        (routeId) => managementCommand(config, routeId),
         (spaceId, spaceName, chatId, chatName, wake) =>
           enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }),
       );
@@ -184,21 +184,12 @@ config
   .requiredOption("--route-id <id>")
   .requiredOption("--humans <mode>")
   .option("--prefix <text>")
-  .option("--actor-id <id>")
   .action(async (options) => {
     await setRouteWake({
       configPath: options.config,
       routeId: options.routeId,
       humans: options.humans,
       ...(options.prefix ? { prefix: options.prefix } : {}),
-      ...(options.actorId
-        ? {
-            actor: {
-              participantId: options.actorId,
-              provenance: "anytype-native" as const,
-            },
-          }
-        : {}),
     });
     console.log(
       `Updated ${options.routeId} to humans=${options.humans}. The running gateway will apply it to the next message.`,
@@ -209,14 +200,12 @@ config
   .description("Change the participant allowlist for one AAG route")
   .requiredOption("-c, --config <path>")
   .requiredOption("--route-id <id>")
-  .requiredOption("--actor-id <id>")
   .requiredOption("--operation <operation>")
   .requiredOption("--participant-id <id...>")
   .action(async (options) => {
     const allowedUsers = await setRouteAccess({
       configPath: options.config,
       routeId: options.routeId,
-      actorId: options.actorId,
       operation: options.operation,
       participantIds: options.participantId,
     });
@@ -408,26 +397,18 @@ function log(event: string, fields: Record<string, unknown> = {}): void {
 
 function managementCommand(
   config: Awaited<ReturnType<typeof loadConfig>>,
-  configPath: string,
   routeId: string,
-  actorId: string,
 ): string {
-  const executable = resolve(process.argv[1]!);
-  const command = `${shellQuote(process.execPath)} ${shellQuote(executable)}`;
   const commands: string[] = [];
   if (config.management.allowWakeChanges)
     commands.push(
-      `Wake command: ${command} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --actor-id ${shellQuote(actorId)} --humans <mode>`,
+      `Wake tool: aag_set_wake with route_id=${JSON.stringify(routeId)} and humans=<mode>`,
     );
   if (config.management.allowAccessChanges)
     commands.push(
-      `Access command: ${command} config access --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --actor-id ${shellQuote(actorId)} --operation <add|remove|replace> --participant-id <native-participant-id>`,
+      `Access tool: aag_set_access with route_id=${JSON.stringify(routeId)}, actor_id set to the authenticated sender ID from context, operation=<add|remove|replace>, and participant_ids=[<native-participant-id>]`,
     );
   return commands.join("\n");
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 function bundledOpenClawPluginPath(): string {

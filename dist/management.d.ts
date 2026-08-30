@@ -18,7 +18,6 @@ export declare function setRouteWake(input: {
 export declare function setRouteAccess(input: {
     configPath: string;
     routeId: string;
-    actorId?: string;
     actor?: AnytypePrincipal;
     operation: string;
     participantIds: string[];

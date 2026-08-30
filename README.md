@@ -373,9 +373,9 @@ Object discussions are flat threads in Anytype: every visible follow-up is attac
 
 ### Agent-managed wake behavior
 
-Set `management.allowWakeChanges: true` to let the connected harness change the human wake mode for its current chat or object discussion. AAG identifies itself in the harness prompt and provides a route-bound `aag config wake` command. When an authorized user explicitly says, for example, “listen to every message in this chat,” the agent can apply that setting immediately.
+Set `management.allowWakeChanges: true` to let the connected harness change the human wake mode for its current chat or object discussion. AAG identifies itself in the harness prompt and provides the route-bound `aag_set_wake` MCP tool. The tool binds authorization to the authenticated native Anytype sender; it never accepts a display name or caller-asserted identity. When an authorized user explicitly says, for example, “listen to every message in this chat,” the agent can apply that setting immediately.
 
-Participant access is a separate permission. Set `management.allowAccessChanges: true` and list stable participant IDs in `management.accessAdmins` to let only those admins ask the agent to add or remove allowed senders on the current route. The constrained `aag config access` command requires the requesting admin's native participant ID, refuses wildcard grants, and prevents an admin from removing an access admin. For example:
+Participant access is a separate permission. Set `management.allowAccessChanges: true` and list stable participant IDs in `management.accessAdmins` to let only those admins ask the agent to add or remove allowed senders on the current route. The constrained `aag_set_access` MCP tool uses the authenticated sender's native participant ID, refuses wildcard grants, and prevents an admin from removing an access admin. For example:
 
 ```yaml
 management:
@@ -388,7 +388,7 @@ management:
     - _participant_owner_id
 ```
 
-Both commands write a route-specific override to the private agent configuration and mirror the complete wake policy into SQLite, so the running gateway applies the change to the next message without a restart. Neither capability grants general configuration access or changes agent-to-agent wake rules. Both are disabled by default, and the agent is told not to report success unless the constrained command succeeds.
+Both tools write a route-specific override to the private agent configuration and mirror the complete wake policy into SQLite, so the running gateway applies the change to the next message without a restart. Neither capability grants general configuration access or changes agent-to-agent wake rules. Both are disabled by default, and the agent is told not to report success unless the constrained tool succeeds. The `aag config wake` and `aag config access` commands are local-operator surfaces; they do not claim to authenticate an Anytype sender.
 
 The adapter authenticates with the `sessionToken` in the official CLI config (normally `~/.anytype/config.json`) and defaults to Heart gRPC at `127.0.0.1:31010`. Keyring-only CLI sessions are not supported by this adapter. `comments.createMissing: true` asks Heart to add a discussion to objects that do not have one and is therefore a workspace mutation; it defaults to `false`.
 
