@@ -241,6 +241,10 @@ export class DiscussionAnytypePort implements AnytypePort {
   async listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]> {
     return this.base.listPropertyTags(spaceId, propertyId);
   }
+
+  async listProperties(spaceId: string): Promise<Record<string, unknown>[]> {
+    return this.base.listProperties ? this.base.listProperties(spaceId) : [];
+  }
   async createPropertyTag(
     spaceId: string,
     propertyId: string,

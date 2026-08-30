@@ -5,7 +5,7 @@ export async function resolveChatProjectBinding(anytype, config, conversation) {
         conversation.managementEnabled === false)
         return { kind: "none" };
     const object = await anytype.getObject(conversation.spaceId, conversation.chatId);
-    const property = tagProperty(object);
+    const property = await resolveTagProperty(anytype, conversation.spaceId, object);
     const catalog = property?.id
         ? await anytype.listPropertyTags(conversation.spaceId, String(property.id))
         : [];
@@ -52,7 +52,7 @@ export async function setChatProjectBindingTag(anytype, config, conversation, pr
     }
     for (let attempt = 0; attempt < 2; attempt++) {
         const object = await anytype.getObject(conversation.spaceId, conversation.chatId);
-        const property = tagProperty(object);
+        const property = await resolveTagProperty(anytype, conversation.spaceId, object);
         if (!property?.id)
             throw new Error("This Chat type has no writable Tag property");
         const catalog = await anytype.listPropertyTags(conversation.spaceId, String(property.id));
@@ -75,7 +75,7 @@ export async function setChatProjectBindingTag(anytype, config, conversation, pr
             properties: [{ key: "tag", multi_select: selected }],
         });
         const verified = await anytype.getObject(conversation.spaceId, conversation.chatId);
-        const verifiedProperty = tagProperty(verified);
+        const verifiedProperty = await resolveTagProperty(anytype, conversation.spaceId, verified);
         const verifiedCatalog = verifiedProperty?.id
             ? await anytype.listPropertyTags(conversation.spaceId, String(verifiedProperty.id))
             : [];
@@ -96,6 +96,15 @@ function tagProperty(object) {
     const type = isRecord(object.type) ? object.type : undefined;
     const definitions = type && Array.isArray(type.properties) ? type.properties : [];
     return definitions.find((value) => isRecord(value) && String(value.key ?? "").toLocaleLowerCase() === "tag");
+}
+async function resolveTagProperty(anytype, spaceId, object) {
+    const linked = tagProperty(object);
+    if (linked?.id || !anytype.listProperties)
+        return linked;
+    const properties = await anytype.listProperties(spaceId);
+    return properties.find((value) => isRecord(value) &&
+        String(value.key ?? "").toLocaleLowerCase() === "tag" &&
+        String(value.format ?? "").toLocaleLowerCase() === "multi_select");
 }
 function selectedTagReferences(property) {
     if (!Array.isArray(property.multi_select))

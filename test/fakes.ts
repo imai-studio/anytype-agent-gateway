@@ -22,6 +22,7 @@ export class FakeAnytype implements AnytypePort {
   reactions: Array<{ id: string; emoji: string; present: boolean }> = [];
   reactionParticipants: Array<string | undefined> = [];
   objects = new Map<string, Record<string, unknown>>();
+  properties: Record<string, unknown>[] = [];
   propertyTags: AnytypeTag[] = [];
   private nextId = 1;
 
@@ -121,6 +122,9 @@ export class FakeAnytype implements AnytypePort {
   }
   async listPropertyTags(_spaceId: string, _propertyId: string): Promise<AnytypeTag[]> {
     return this.propertyTags;
+  }
+  async listProperties(_spaceId: string): Promise<Record<string, unknown>[]> {
+    return this.properties;
   }
   async createPropertyTag(
     _spaceId: string,

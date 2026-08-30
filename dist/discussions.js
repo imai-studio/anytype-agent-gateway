@@ -161,6 +161,9 @@ export class DiscussionAnytypePort {
     async listPropertyTags(spaceId, propertyId) {
         return this.base.listPropertyTags(spaceId, propertyId);
     }
+    async listProperties(spaceId) {
+        return this.base.listProperties ? this.base.listProperties(spaceId) : [];
+    }
     async createPropertyTag(spaceId, propertyId, input) {
         return this.base.createPropertyTag(spaceId, propertyId, input);
     }

@@ -224,6 +224,7 @@ export interface AnytypePort {
         name?: string;
         markdown?: string;
     } & Record<string, unknown>>;
+    listProperties?(spaceId: string): Promise<Record<string, unknown>[]>;
     listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]>;
     createPropertyTag(spaceId: string, propertyId: string, input: {
         name: string;

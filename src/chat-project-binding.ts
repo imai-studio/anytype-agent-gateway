@@ -20,7 +20,7 @@ export async function resolveChatProjectBinding(
     return { kind: "none" };
 
   const object = await anytype.getObject(conversation.spaceId, conversation.chatId);
-  const property = tagProperty(object);
+  const property = await resolveTagProperty(anytype, conversation.spaceId, object);
   const catalog = property?.id
     ? await anytype.listPropertyTags(conversation.spaceId, String(property.id))
     : [];
@@ -75,7 +75,7 @@ export async function setChatProjectBindingTag(
   }
   for (let attempt = 0; attempt < 2; attempt++) {
     const object = await anytype.getObject(conversation.spaceId, conversation.chatId);
-    const property = tagProperty(object);
+    const property = await resolveTagProperty(anytype, conversation.spaceId, object);
     if (!property?.id) throw new Error("This Chat type has no writable Tag property");
     const catalog = await anytype.listPropertyTags(conversation.spaceId, String(property.id));
     const byReference = tagCatalogByReference(catalog);
@@ -99,7 +99,7 @@ export async function setChatProjectBindingTag(
       properties: [{ key: "tag", multi_select: selected }],
     });
     const verified = await anytype.getObject(conversation.spaceId, conversation.chatId);
-    const verifiedProperty = tagProperty(verified);
+    const verifiedProperty = await resolveTagProperty(anytype, conversation.spaceId, verified);
     const verifiedCatalog = verifiedProperty?.id
       ? await anytype.listPropertyTags(conversation.spaceId, String(verifiedProperty.id))
       : [];
@@ -126,6 +126,22 @@ function tagProperty(object: Record<string, unknown>): Record<string, unknown> |
   return definitions.find(
     (value): value is Record<string, unknown> =>
       isRecord(value) && String(value.key ?? "").toLocaleLowerCase() === "tag",
+  );
+}
+
+async function resolveTagProperty(
+  anytype: AnytypePort,
+  spaceId: string,
+  object: Record<string, unknown>,
+): Promise<Record<string, unknown> | undefined> {
+  const linked = tagProperty(object);
+  if (linked?.id || !anytype.listProperties) return linked;
+  const properties = await anytype.listProperties(spaceId);
+  return properties.find(
+    (value): value is Record<string, unknown> =>
+      isRecord(value) &&
+      String(value.key ?? "").toLocaleLowerCase() === "tag" &&
+      String(value.format ?? "").toLocaleLowerCase() === "multi_select",
   );
 }
 

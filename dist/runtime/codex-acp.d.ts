@@ -52,4 +52,5 @@ export declare class CodexAcpDriver implements RuntimeDriver {
     private hydrateDesktopProject;
     private retryDesktopProjectAssociation;
 }
+export declare function codexToolActivitySummary(title: unknown, toolCallId: unknown): string;
 export {};

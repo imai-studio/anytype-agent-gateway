@@ -424,6 +424,32 @@ export class Gateway {
                             continue;
                         try {
                             const created = await this.discussions.ensureDirectMessage(identity, this.abort.signal);
+                            const members = (await this.anytype.listMembers(created.spaceId)).filter((member) => member.status === "active");
+                            const self = members.find((member) => sameIdentity(member.identity ?? member.id, this.config.agent.participantId));
+                            const peer = members.find((member) => sameIdentity(member.identity ?? member.id, identity));
+                            if (!self || !peer || members.length !== 2)
+                                throw new Error("Created direct message did not expose the expected two members");
+                            this.directMessageMembership.set(created.spaceId, {
+                                checkedAt: Date.now(),
+                                authorized: true,
+                                selfParticipantId: self.id,
+                                peerName: peer.name,
+                                peerIdentity: peer.identity ?? peer.id,
+                            });
+                            authorizedPeerIdentities.add(peer.identity ?? peer.id);
+                            this.addRoute({
+                                conversation: {
+                                    routeId: `chat:${created.spaceId}:${created.chatId}`,
+                                    spaceId: created.spaceId,
+                                    chatId: created.chatId,
+                                    kind: "chat",
+                                    spaceName: peer.name,
+                                    selfParticipantId: self.id,
+                                    managementEnabled: false,
+                                },
+                                wake: discovery.wake,
+                                baselineExisting: false,
+                            });
                             this.store.initialize(directMessageBootstrapMarker(identity));
                             this.directMessageBootstrapFailures.delete(identity);
                             this.log("direct_message_created", {

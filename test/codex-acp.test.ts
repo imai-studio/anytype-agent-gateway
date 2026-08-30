@@ -2,7 +2,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexAcpDriver, RuntimeTurnAlreadyCompletedError } from "../src/runtime/codex-acp.js";
+import {
+  CodexAcpDriver,
+  RuntimeTurnAlreadyCompletedError,
+  codexToolActivitySummary,
+} from "../src/runtime/codex-acp.js";
 import { Store } from "../src/store.js";
 import type { RuntimeEvent, RuntimeTurn } from "../src/types.js";
 
@@ -336,6 +340,30 @@ describe("Codex ACP continuity", () => {
 });
 
 describe("Codex ACP output and steering", () => {
+  it("turns raw ACP tool metadata into safe user-facing activity summaries", () => {
+    expect(
+      codexToolActivitySummary(
+        "jq . /Users/raj/.config/knot/agent.yaml && curl --silent http://127.0.0.1:31009/v1/objects",
+        "exec-5d38cfbd-79f0-4a52-a40f-9d9a0b01d692",
+      ),
+    ).toBe("Running a command");
+    expect(
+      codexToolActivitySummary(
+        "mcp.aag-anytype.anytypesearch",
+        "tool-4b9457c6-9b8a-47f1-9f17-0be6aa4e984a",
+      ),
+    ).toBe("Searching Anytype");
+    expect(codexToolActivitySummary("guardianassessment:77fb9027", "assessment-77fb9027")).toBe(
+      "Reviewing changes",
+    );
+    expect(codexToolActivitySummary("Inspecting user prompts", "tool-1")).toBe(
+      "Inspecting user prompts",
+    );
+    expect(codexToolActivitySummary(undefined, "tool-f80aaf95-1f70-4ae4-95c0-acdee220615e")).toBe(
+      "Using a tool",
+    );
+  });
+
   it("terminates an ACP child that never completes setup", async () => {
     const runtime = new CodexAcpDriver({
       kind: "codex",

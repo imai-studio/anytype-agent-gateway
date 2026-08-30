@@ -69,6 +69,7 @@ export declare class DiscussionAnytypePort implements AnytypePort {
         markdown?: string;
     }>;
     listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]>;
+    listProperties(spaceId: string): Promise<Record<string, unknown>[]>;
     createPropertyTag(spaceId: string, propertyId: string, input: {
         name: string;
         color: string;

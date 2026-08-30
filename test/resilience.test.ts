@@ -412,10 +412,23 @@ describe("failure containment", () => {
       override async listSpaces() {
         return [{ id: "shared", name: "Shared", object: "anytype.space" }];
       }
+      override async listMembers(spaceId: string) {
+        if (spaceId !== "direct-space") return [];
+        return [
+          { id: "direct-bot", name: "AAG", identity: "bot", status: "active" as const },
+          {
+            id: "direct-peer",
+            name: "Raj",
+            identity: "authorized",
+            status: "active" as const,
+          },
+        ];
+      }
     }
     const anytype = new NoDirectMessagesAnytype();
     const runtime = new FakeRuntime();
     const created: string[] = [];
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
     const adapter = {
       async ensureDirectMessage(identity: string) {
         created.push(identity);
@@ -441,9 +454,19 @@ describe("failure containment", () => {
     });
     config.directMessages.discoveryIntervalSeconds = 0.01;
     const store = new Store(":memory:");
-    const gateway = new Gateway(anytype, runtime, config, store, adapter, () => undefined);
+    const gateway = new Gateway(anytype, runtime, config, store, adapter, (event, fields) =>
+      logs.push({ event, ...(fields ? { fields } : {}) }),
+    );
     const running = gateway.start();
     await eventually(() => expect(created).toEqual(["authorized"]));
+    await eventually(() =>
+      expect(
+        logs.some(
+          ({ event, fields }) =>
+            event === "route_connecting" && fields?.routeId === "chat:direct-space:direct-chat",
+        ),
+      ).toBe(true),
+    );
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(created).toEqual(["authorized"]);
     gateway.stop();

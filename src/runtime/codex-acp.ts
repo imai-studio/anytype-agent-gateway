@@ -381,7 +381,7 @@ export class CodexAcpDriver implements RuntimeDriver {
         ) {
           onEvent({
             type: "tool",
-            name: update.title ?? update.toolCallId ?? "tool",
+            name: codexToolActivitySummary(update.title, update.toolCallId),
             status: update.status ?? "running",
           });
         }
@@ -615,6 +615,56 @@ export class CodexAcpDriver implements RuntimeDriver {
       timer.unref?.();
     }
   }
+}
+
+export function codexToolActivitySummary(title: unknown, toolCallId: unknown): string {
+  const candidate = typeof title === "string" ? title.trim() : "";
+  const identifier = typeof toolCallId === "string" ? toolCallId.trim() : "";
+  const source = `${candidate} ${identifier}`.toLocaleLowerCase();
+
+  if (source.includes("anytypesearch") || source.includes("anytype search"))
+    return "Searching Anytype";
+  if (source.includes("anytypecreate") || source.includes("anytype create"))
+    return "Creating in Anytype";
+  if (source.includes("anytypeupdate") || source.includes("anytype update"))
+    return "Updating Anytype";
+  if (source.includes("anytypeget") || source.includes("anytype get"))
+    return "Reading from Anytype";
+  if (source.includes("guardian")) return "Reviewing changes";
+  if (looksLikeShellActivity(candidate) || /(?:^|[.:-])exec(?:$|[.:-])/.test(source))
+    return "Running a command";
+  if (
+    /(?:read|inspect|open|view).*(?:file|directory)|(?:file|directory).*(?:read|inspect)/.test(
+      source,
+    )
+  )
+    return "Reading files";
+  if (
+    /(?:write|edit|patch|create).*(?:file|directory)|(?:file|directory).*(?:write|edit)/.test(
+      source,
+    )
+  )
+    return "Editing files";
+  if (isHumanActivityTitle(candidate)) return candidate;
+  return "Using a tool";
+}
+
+function looksLikeShellActivity(value: string): boolean {
+  return (
+    /(?:^|\s)(?:curl|jq|cat|sed|rg|grep|find|ls|pwd|node|python\d*|pnpm|npm|git|gh|ssh|scp|rsync)(?:\s|$)/i.test(
+      value,
+    ) ||
+    /(?:&&|\|\||\$\(|`|\s--[\w-]+)/.test(value) ||
+    /(?:^|\s)(?:\.?\.?\/|~\/|\/Users\/|\/home\/|\/tmp\/)/.test(value)
+  );
+}
+
+function isHumanActivityTitle(value: string): boolean {
+  if (!value || value.length > 100 || /[\r\n]/.test(value)) return false;
+  if (/\b[0-9a-f]{8}-[0-9a-f-]{20,}\b/i.test(value)) return false;
+  if (/\b(?:exec|tool|call|assessment)[-_:][\w-]{8,}\b/i.test(value)) return false;
+  if (/^(?:mcp|function|tool)[.:_-]/i.test(value)) return false;
+  return true;
 }
 
 function savedSessionUnavailable(error: unknown): boolean {

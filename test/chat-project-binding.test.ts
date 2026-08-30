@@ -49,6 +49,27 @@ function setup(tags: string[]) {
 }
 
 describe("Anytype chat Codex project tags", () => {
+  it("uses the space Tag property when a newly joined editor sees an incomplete Chat type", async () => {
+    const { anytype, controller } = setup(["ordinary"]);
+    anytype.objects.set("chat", { properties: [], type: { properties: [] } });
+    anytype.properties = [{ id: "property-tag", key: "tag", name: "Tag", format: "multi_select" }];
+    const select = incoming({ id: "project", mentioned: true, content: { text: "/project imai" } });
+    anytype.messages.push(select);
+
+    await controller.process(conversation, wake, select);
+
+    expect(anytype.messages.at(-1)?.content?.text).toContain("Project tag set to klee:imai");
+    expect(anytype.objects.get("chat")?.properties).toEqual([
+      {
+        id: "property-tag",
+        key: "tag",
+        format: "multi_select",
+        multi_select: [expect.objectContaining({ name: "klee:imai" })],
+      },
+    ]);
+    await controller.stop();
+  });
+
   it("binds /new to the project named by this agent's tag", async () => {
     const { anytype, runtime, store, controller } = setup(["KLEE:imai", "anya:other"]);
     const message = incoming({ id: "new", mentioned: true, content: { text: "/new" } });
