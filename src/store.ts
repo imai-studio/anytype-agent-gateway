@@ -24,6 +24,7 @@ import type {
 } from "./automation/store-types.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import {
+  WORKFLOW_POLICY_VERSION,
   canonicalJson,
   canonicalWorkflowDefinition,
   workflowApprovalHash,
@@ -33,6 +34,12 @@ import {
 } from "./automation/workflow.js";
 
 const SCHEMA_VERSION = 7;
+const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
+
+function assertStoredTimestamp(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new Error(`${label} must be a non-negative safe integer`);
+}
 
 export class Store {
   readonly db: DatabaseSync;
@@ -336,6 +343,7 @@ export class Store {
       CREATE TABLE workflow_approval_subjects (
         workflow_id TEXT NOT NULL REFERENCES workflow_definitions(workflow_id) ON DELETE RESTRICT,
         approval_hash TEXT NOT NULL,
+        policy_version INTEGER NOT NULL CHECK(policy_version > 0),
         canonical_approval_json TEXT NOT NULL CHECK(json_valid(canonical_approval_json)),
         risk_tier TEXT NOT NULL CHECK(risk_tier IN ('T0','T1','T2')),
         required_capabilities_json TEXT NOT NULL DEFAULT '[]'
@@ -416,6 +424,23 @@ export class Store {
         ON normalized_events(space_id,object_id,observed_at,event_id) WHERE object_id IS NOT NULL;
       CREATE INDEX idx_normalized_events_kind
         ON normalized_events(kind,observed_at,event_id);
+
+      CREATE TRIGGER workflow_approval_subjects_no_update BEFORE UPDATE ON workflow_approval_subjects
+        BEGIN SELECT RAISE(ABORT,'workflow approval subjects are append-only'); END;
+      CREATE TRIGGER workflow_approval_subjects_no_delete BEFORE DELETE ON workflow_approval_subjects
+        BEGIN SELECT RAISE(ABORT,'workflow approval subjects are append-only'); END;
+      CREATE TRIGGER workflow_versions_no_update BEFORE UPDATE ON workflow_versions
+        BEGIN SELECT RAISE(ABORT,'workflow versions are append-only'); END;
+      CREATE TRIGGER workflow_versions_no_delete BEFORE DELETE ON workflow_versions
+        BEGIN SELECT RAISE(ABORT,'workflow versions are append-only'); END;
+      CREATE TRIGGER workflow_approval_decisions_no_update BEFORE UPDATE ON workflow_approval_decisions
+        BEGIN SELECT RAISE(ABORT,'workflow approval decisions are append-only'); END;
+      CREATE TRIGGER workflow_approval_decisions_no_delete BEFORE DELETE ON workflow_approval_decisions
+        BEGIN SELECT RAISE(ABORT,'workflow approval decisions are append-only'); END;
+      CREATE TRIGGER normalized_events_no_update BEFORE UPDATE ON normalized_events
+        BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
+      CREATE TRIGGER normalized_events_no_delete BEFORE DELETE ON normalized_events
+        BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
     `);
   }
 
@@ -1431,6 +1456,10 @@ export class Store {
   }
 
   saveWorkflowVersion(input: WorkflowVersionRecord): WorkflowVersionRecord {
+    assertStoredTimestamp(input.sourceModifiedAt, "Workflow source modification time");
+    assertStoredTimestamp(input.createdAt, "Workflow creation time");
+    if (input.sourceModifiedAt > Date.now() + MAX_FUTURE_CLOCK_SKEW_MS)
+      throw new Error("Workflow source modification time is too far in the future");
     const definition = workflowDefinitionSchema.parse(JSON.parse(input.canonicalDefinitionJson));
     const canonicalDefinitionJson = canonicalWorkflowDefinition(definition);
     const canonicalApprovalJson = canonicalJson(workflowApprovalMaterial(definition));
@@ -1483,13 +1512,14 @@ export class Store {
       this.db
         .prepare(
           `INSERT OR IGNORE INTO workflow_approval_subjects(
-            workflow_id,approval_hash,canonical_approval_json,risk_tier,
+            workflow_id,approval_hash,policy_version,canonical_approval_json,risk_tier,
             required_capabilities_json,created_at
-          ) VALUES(?,?,?,?,?,?)`,
+          ) VALUES(?,?,?,?,?,?,?)`,
         )
         .run(
           input.workflowId,
           input.approvalHash,
+          WORKFLOW_POLICY_VERSION,
           canonicalApprovalJson,
           input.riskTier,
           requiredCapabilitiesJson,
@@ -1497,11 +1527,12 @@ export class Store {
         );
       const subject = this.db
         .prepare(
-          `SELECT canonical_approval_json,risk_tier,required_capabilities_json
+          `SELECT policy_version,canonical_approval_json,risk_tier,required_capabilities_json
            FROM workflow_approval_subjects WHERE workflow_id=? AND approval_hash=?`,
         )
         .get(input.workflowId, input.approvalHash) as
         | {
+            policy_version: number;
             canonical_approval_json: string;
             risk_tier: string;
             required_capabilities_json: string;
@@ -1509,6 +1540,7 @@ export class Store {
         | undefined;
       if (
         !subject ||
+        subject.policy_version !== WORKFLOW_POLICY_VERSION ||
         subject.canonical_approval_json !== canonicalApprovalJson ||
         subject.risk_tier !== input.riskTier ||
         subject.required_capabilities_json !== requiredCapabilitiesJson
@@ -1593,35 +1625,56 @@ export class Store {
   recordWorkflowApproval(
     input: Omit<WorkflowApprovalDecision, "sequence">,
   ): WorkflowApprovalDecision {
-    const subject = this.db
-      .prepare(
-        "SELECT risk_tier FROM workflow_approval_subjects WHERE workflow_id=? AND approval_hash=?",
-      )
-      .get(input.workflowId, input.approvalHash) as { risk_tier: string } | undefined;
-    if (!subject) throw new Error("Unknown workflow approval subject");
-    if (subject.risk_tier === "T2" && input.decision === "approved" && input.mode !== "manual")
-      throw new Error("T2 workflows require explicit manual approval");
-    const result = this.db
-      .prepare(
-        `INSERT INTO workflow_approval_decisions(
-          decision_id,workflow_id,approval_hash,decision,mode,authority_hash,
-          actor_principal_digest,reason,decided_at,expires_at,supersedes_decision_id
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-      )
-      .run(
-        input.decisionId,
-        input.workflowId,
-        input.approvalHash,
-        input.decision,
-        input.mode,
-        input.authorityHash,
-        input.actorPrincipalDigest,
-        input.reason ?? null,
-        input.decidedAt,
-        input.expiresAt ?? null,
-        input.supersedesDecisionId ?? null,
-      );
-    return this.workflowApprovalBySequence(Number(result.lastInsertRowid))!;
+    for (const [label, value] of [
+      ["decision ID", input.decisionId],
+      ["authority hash", input.authorityHash],
+      ["actor principal digest", input.actorPrincipalDigest],
+    ] as const)
+      if (!value.trim()) throw new Error(`Workflow approval ${label} must not be empty`);
+    assertStoredTimestamp(input.decidedAt, "Workflow approval decision time");
+    if (input.expiresAt !== undefined) {
+      assertStoredTimestamp(input.expiresAt, "Workflow approval expiry time");
+      if (input.expiresAt <= input.decidedAt)
+        throw new Error("Workflow approval expiry must be after its decision time");
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const subject = this.db
+        .prepare(
+          "SELECT risk_tier FROM workflow_approval_subjects WHERE workflow_id=? AND approval_hash=?",
+        )
+        .get(input.workflowId, input.approvalHash) as { risk_tier: string } | undefined;
+      if (!subject) throw new Error("Unknown workflow approval subject");
+      if (subject.risk_tier === "T2" && input.decision === "approved" && input.mode !== "manual")
+        throw new Error("T2 workflows require explicit manual approval");
+      const result = this.db
+        .prepare(
+          `INSERT INTO workflow_approval_decisions(
+            decision_id,workflow_id,approval_hash,decision,mode,authority_hash,
+            actor_principal_digest,reason,decided_at,expires_at,supersedes_decision_id
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          input.decisionId,
+          input.workflowId,
+          input.approvalHash,
+          input.decision,
+          input.mode,
+          input.authorityHash,
+          input.actorPrincipalDigest,
+          input.reason ?? null,
+          input.decidedAt,
+          input.expiresAt ?? null,
+          input.supersedesDecisionId ?? null,
+        );
+      const decision = this.workflowApprovalBySequence(Number(result.lastInsertRowid));
+      if (!decision) throw new Error("Workflow approval decision was not persisted");
+      this.db.exec("COMMIT");
+      return decision;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   currentWorkflowApproval(
@@ -1649,6 +1702,8 @@ export class Store {
   }
 
   recordNormalizedEvent(input: NormalizedEventRecord): NormalizedEventRecord {
+    assertStoredTimestamp(input.observedAt, "Normalized event observation time");
+    assertStoredTimestamp(input.recordedAt, "Normalized event recording time");
     this.db
       .prepare(
         `INSERT OR IGNORE INTO normalized_events(

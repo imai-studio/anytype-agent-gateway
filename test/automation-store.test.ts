@@ -117,6 +117,23 @@ describe("automation persistence foundation", () => {
       }),
     ).toThrow("divergent immutable version");
     expect(store.workflowVersion(input.workflowId, input.versionHash)).toEqual(input);
+    expect(
+      store.db
+        .prepare(
+          "SELECT policy_version FROM workflow_approval_subjects WHERE workflow_id=? AND approval_hash=?",
+        )
+        .get(input.workflowId, input.approvalHash),
+    ).toEqual({ policy_version: 1 });
+    store.close();
+  });
+
+  it("rejects future-pinned source timestamps", () => {
+    const store = new Store(":memory:");
+    expect(() =>
+      store.saveWorkflowVersion(
+        versionRecord(undefined, { sourceModifiedAt: Date.now() + 10 * 60 * 1_000 }),
+      ),
+    ).toThrow("too far in the future");
     store.close();
   });
 
@@ -211,6 +228,54 @@ describe("automation persistence foundation", () => {
     expect(
       store.currentWorkflowApproval(version.workflowId, version.approvalHash, "authority-1", 402),
     ).toBeUndefined();
+    store.close();
+  });
+
+  it("validates approval inputs transactionally and protects audit rows from mutation", () => {
+    const store = new Store(":memory:");
+    const version = store.saveWorkflowVersion(versionRecord());
+    expect(() =>
+      store.recordWorkflowApproval({
+        decisionId: "invalid-empty-authority",
+        workflowId: version.workflowId,
+        approvalHash: version.approvalHash,
+        decision: "approved",
+        mode: "automatic",
+        authorityHash: "",
+        actorPrincipalDigest: "sha256:operator",
+        decidedAt: 300,
+      }),
+    ).toThrow("authority hash must not be empty");
+    expect(() =>
+      store.recordWorkflowApproval({
+        decisionId: "invalid-expiry",
+        workflowId: version.workflowId,
+        approvalHash: version.approvalHash,
+        decision: "approved",
+        mode: "automatic",
+        authorityHash: "authority-1",
+        actorPrincipalDigest: "sha256:operator",
+        decidedAt: 300,
+        expiresAt: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).toThrow("safe integer");
+    expect(
+      (
+        store.db.prepare("SELECT COUNT(*) AS count FROM workflow_approval_decisions").get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(0);
+    expect(() =>
+      store.db
+        .prepare("UPDATE workflow_versions SET source_text='tampered' WHERE workflow_id=?")
+        .run(version.workflowId),
+    ).toThrow("append-only");
+    expect(() =>
+      store.db
+        .prepare("DELETE FROM workflow_approval_subjects WHERE workflow_id=?")
+        .run(version.workflowId),
+    ).toThrow("append-only");
     store.close();
   });
 
