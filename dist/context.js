@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { principalFromMessage } from "./principal.js";
 export async function buildContext(anytype, config, conversation, trigger, options = {}) {
     let history = !options.newSession && config.context.historyMessages
         ? await anytype.listMessages(conversation.spaceId, conversation.chatId, config.context.historyMessages)
@@ -61,9 +62,11 @@ export async function buildContext(anytype, config, conversation, trigger, optio
         }
         : trigger;
     const attachments = await materializeAttachments(anytype, config, conversation, [contextualTrigger, ...history, ...replyAncestry], referencedObjects);
+    const actor = principalFromMessage(trigger);
     return {
         conversation,
         trigger: contextualTrigger,
+        ...(actor ? { actor } : {}),
         ...(options.newSession ? { newSession: true } : {}),
         history,
         replyAncestry,
@@ -87,7 +90,7 @@ export function formatPrompt(bundle, config, managementCommand, workspaceContext
     const boundary = `AAG_UNTRUSTED_${crypto.randomUUID()}`;
     const payload = {
         conversation: bundle.conversation,
-        sender: { participantId: bundle.trigger.creator, displayName: bundle.trigger.creator_name },
+        sender: bundle.actor ?? principalFromMessage(bundle.trigger) ?? { provenance: "unavailable" },
         currentMessage: bundle.trigger.content?.text ?? "",
         replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
         recentChannelContext: bundle.history.map(renderMessage),
@@ -210,7 +213,7 @@ export async function preparePrompt(bundle, config, sessionKey, managementComman
     }
     const payload = {
         conversation: bundle.conversation,
-        sender: { participantId: bundle.trigger.creator, displayName: bundle.trigger.creator_name },
+        sender: bundle.actor ?? principalFromMessage(bundle.trigger) ?? { provenance: "unavailable" },
         currentMessage: bundle.trigger.content?.text ?? "",
         replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
         recentChannelContext: bundle.history.map(renderMessage),

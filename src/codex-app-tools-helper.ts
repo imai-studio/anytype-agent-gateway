@@ -16,7 +16,20 @@ type ToolDescriptor = {
 };
 
 async function main(): Promise<void> {
-  const serializedInput = process.env.AAG_CODEX_APP_TOOLS_INPUT ?? (await readStdin());
+  // This file is evaluated as a standalone module by Codex Desktop, so it
+  // cannot import the shared resolver. Mirror the same conflict contract at
+  // this single process boundary without including either JSON value in logs.
+  const knotInput = process.env.KNOT_CODEX_APP_TOOLS_INPUT;
+  const aagInput = process.env.AAG_CODEX_APP_TOOLS_INPUT;
+  if (knotInput !== undefined && aagInput !== undefined && knotInput !== aagInput)
+    throw new Error(
+      "Conflicting compatibility variables: KNOT_CODEX_APP_TOOLS_INPUT and AAG_CODEX_APP_TOOLS_INPUT must resolve to the same value",
+    );
+  if (aagInput !== undefined && knotInput === undefined)
+    console.error(
+      "compatibility warning: AAG_CODEX_APP_TOOLS_INPUT is deprecated; configure KNOT_CODEX_APP_TOOLS_INPUT before Knot 1.0",
+    );
+  const serializedInput = knotInput ?? aagInput ?? (await readStdin());
   const input = JSON.parse(serializedInput) as HelperInput;
   const client = new CodexAppHostClient(input.pipePath, input.timeoutMs);
   try {

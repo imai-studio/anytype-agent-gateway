@@ -7,6 +7,7 @@ import { renderForAnytype, RunProjection } from "./projection.js";
 import { modelAllowed, parseModelCommand } from "./model-command.js";
 import { parseProjectCommand } from "./project-command.js";
 import { decideWake, mergeWakeOverride } from "./wake.js";
+import { principalAllowed, principalAuditFields, principalFromMessage } from "./principal.js";
 export class AgentController {
     anytype;
     runtime;
@@ -89,9 +90,15 @@ export class AgentController {
                 routeId: conversation.routeId,
                 messageId: message.id,
                 reason: decision.reason,
+                ...principalAuditFields(decision.actor),
             });
             return;
         }
+        this.log("message_actor_authenticated", {
+            routeId: conversation.routeId,
+            messageId: message.id,
+            ...principalAuditFields(decision.actor),
+        });
         const thread = await this.thread(conversation, message);
         const threadConversation = conversation.kind === "discussion"
             ? { ...conversation, discussionRootId: thread.rootId }
@@ -203,6 +210,7 @@ export class AgentController {
                 await active.handle.steer(this.steerPrompt(message), {
                     conversation: threadConversation,
                     message,
+                    ...(decision.actor ? { actor: decision.actor } : {}),
                     replyTargetId,
                     ...(message.mentioned === undefined ? {} : { wasMentioned: message.mentioned }),
                 });
@@ -375,11 +383,13 @@ export class AgentController {
             let lastActivityAt = Date.now();
             const prompt = await preparePrompt(context, this.config, sessionKey, conversation.managementEnabled === false
                 ? undefined
-                : this.managementCommand?.(conversation.routeId, message.creator ?? ""), { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId });
+                : decisionActorCommand(this.managementCommand, conversation.routeId, message), { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId });
             const workspacePath = this.store.sessionWorkspace(threadKey);
+            const actor = principalFromMessage(message);
             const turn = {
                 conversation,
                 message,
+                ...(actor ? { actor } : {}),
                 replyTargetId,
                 ...(message.mentioned === undefined ? {} : { wasMentioned: message.mentioned }),
                 ...(workspacePath ? { workspacePath } : {}),
@@ -733,14 +743,18 @@ export class AgentController {
         await this.sendControlMessage(conversation, replyTargetId, `Project tag set to ${tag}. Use /new to start a fresh Codex task in ${projectName}.`);
     }
     canChangeProject(actorId) {
-        return Boolean(actorId &&
-            this.config.management.allowProjectChanges &&
-            this.config.management.projectAdmins.some((admin) => sameParticipant(actorId, admin)));
+        const principal = actorId
+            ? principalFromMessage({ id: "authorization", creator: actorId })
+            : undefined;
+        return Boolean(this.config.management.allowProjectChanges &&
+            principalAllowed(principal, this.config.management.projectAdmins));
     }
     canChangeModel(actorId) {
-        return Boolean(actorId &&
-            this.config.management.allowModelChanges &&
-            this.config.management.modelAdmins.some((admin) => sameParticipant(actorId, admin)));
+        const principal = actorId
+            ? principalFromMessage({ id: "authorization", creator: actorId })
+            : undefined;
+        return Boolean(this.config.management.allowModelChanges &&
+            principalAllowed(principal, this.config.management.modelAdmins));
     }
     allowedModels(options) {
         return options.filter((option) => modelAllowed(option.id, this.config.models.allowed));
@@ -1138,6 +1152,10 @@ function mentionTargetsFrom(message) {
             targets.push({ name, participantId: mark.param });
     }
     return targets;
+}
+function decisionActorCommand(managementCommand, routeId, message) {
+    const actor = principalFromMessage(message);
+    return actor ? managementCommand?.(routeId, actor.participantId) : undefined;
 }
 function isTurnAlreadyCompleted(error) {
     return error instanceof Error && error.name === "RuntimeTurnAlreadyCompletedError";

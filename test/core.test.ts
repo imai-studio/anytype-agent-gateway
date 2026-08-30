@@ -39,6 +39,37 @@ describe("protocol boundaries", () => {
       reason: "no useful update",
     });
     expect(parseSilence("I might say [[AAG_STAY_SILENT]] later").silent).toBeUndefined();
+    expect(parseSilence("[[KNOT_STAY_SILENT: compatible]]")).toMatchObject({
+      silent: true,
+      reason: "compatible",
+    });
+  });
+
+  it("accepts Knot names for every response marker while retaining AAG markers", async () => {
+    const value = config({
+      coordination: { peers: [{ name: "Builder", participantId: "peer-1" }] },
+    });
+    expect(renderCoordination("Ask [[KNOT_MENTION:Builder]].", value)).toMatchObject({
+      text: "Ask @Builder.",
+      marks: [{ type: "mention", from: 4, to: 12, param: "peer-1" }],
+    });
+    expect(
+      renderForAnytype(
+        "[[KNOT_OBJECT:object-1|Roadmap]] [[KNOT_OBJECT_CARD:object-2|Dashboard]]",
+        value,
+      ),
+    ).toMatchObject({
+      text: "Roadmap Dashboard",
+      marks: [{ type: "object", from: 0, to: 7, param: "object-1" }],
+      attachments: [{ target: "object-2", type: "file" }],
+    });
+    const anytype = new FakeAnytype();
+    const projection = await RunProjection.create(anytype, value, conversation, "trigger");
+    await projection.finish({ text: "[[KNOT_REPLY]] quoted" });
+    expect(anytype.messages.find((message) => message.id === projection.messageId)).toMatchObject({
+      reply_to_message_id: "trigger",
+      content: { text: "quoted" },
+    });
   });
 
   it("creates only configured peer marks and enforces fan-out", () => {

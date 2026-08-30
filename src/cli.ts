@@ -23,8 +23,12 @@ import { VERSION } from "./version.js";
 import { runInitOnboarding } from "./onboarding.js";
 import { modelAllowed } from "./model-command.js";
 import { sameIdentity } from "./wake.js";
+import { PRODUCT } from "./compatibility.js";
 
-const program = new Command().name("aag").description("Anytype Agent Gateway").version(VERSION);
+const program = new Command()
+  .name(PRODUCT.current.executable)
+  .description(PRODUCT.current.name)
+  .version(VERSION);
 
 program
   .command("init")
@@ -180,12 +184,21 @@ config
   .requiredOption("--route-id <id>")
   .requiredOption("--humans <mode>")
   .option("--prefix <text>")
+  .option("--actor-id <id>")
   .action(async (options) => {
     await setRouteWake({
       configPath: options.config,
       routeId: options.routeId,
       humans: options.humans,
       ...(options.prefix ? { prefix: options.prefix } : {}),
+      ...(options.actorId
+        ? {
+            actor: {
+              participantId: options.actorId,
+              provenance: "anytype-native" as const,
+            },
+          }
+        : {}),
     });
     console.log(
       `Updated ${options.routeId} to humans=${options.humans}. The running gateway will apply it to the next message.`,
@@ -404,7 +417,7 @@ function managementCommand(
   const commands: string[] = [];
   if (config.management.allowWakeChanges)
     commands.push(
-      `Wake command: ${command} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --humans <mode>`,
+      `Wake command: ${command} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --actor-id ${shellQuote(actorId)} --humans <mode>`,
     );
   if (config.management.allowAccessChanges)
     commands.push(

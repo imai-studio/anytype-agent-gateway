@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import type { AgentConfig } from "./config.js";
 import { runProcess } from "./process.js";
+import { sameIdentity } from "./principal.js";
 import type {
   AnytypeEvent,
   AnytypeMember,
@@ -638,9 +639,4 @@ export function parseSseBlock(block: string): AnytypeEvent | undefined {
   if (!value || typeof value !== "object" || typeof (value as { type?: unknown }).type !== "string")
     throw new Error("Anytype event stream returned an invalid event envelope");
   return value as AnytypeEvent;
-}
-
-function sameIdentity(left: string, right: string): boolean {
-  if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`)) return true;
-  return left.split("_").at(-1) === right.split("_").at(-1);
 }

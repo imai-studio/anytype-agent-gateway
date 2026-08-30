@@ -22,7 +22,11 @@ import { VERSION } from "./version.js";
 import { runInitOnboarding } from "./onboarding.js";
 import { modelAllowed } from "./model-command.js";
 import { sameIdentity } from "./wake.js";
-const program = new Command().name("aag").description("Anytype Agent Gateway").version(VERSION);
+import { PRODUCT } from "./compatibility.js";
+const program = new Command()
+    .name(PRODUCT.current.executable)
+    .description(PRODUCT.current.name)
+    .version(VERSION);
 program
     .command("init")
     .description("Interactively onboard a Codex or OpenClaw agent")
@@ -145,12 +149,21 @@ config
     .requiredOption("--route-id <id>")
     .requiredOption("--humans <mode>")
     .option("--prefix <text>")
+    .option("--actor-id <id>")
     .action(async (options) => {
     await setRouteWake({
         configPath: options.config,
         routeId: options.routeId,
         humans: options.humans,
         ...(options.prefix ? { prefix: options.prefix } : {}),
+        ...(options.actorId
+            ? {
+                actor: {
+                    participantId: options.actorId,
+                    provenance: "anytype-native",
+                },
+            }
+            : {}),
     });
     console.log(`Updated ${options.routeId} to humans=${options.humans}. The running gateway will apply it to the next message.`);
 });
@@ -341,7 +354,7 @@ function managementCommand(config, configPath, routeId, actorId) {
     const command = `${shellQuote(process.execPath)} ${shellQuote(executable)}`;
     const commands = [];
     if (config.management.allowWakeChanges)
-        commands.push(`Wake command: ${command} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --humans <mode>`);
+        commands.push(`Wake command: ${command} config wake --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --actor-id ${shellQuote(actorId)} --humans <mode>`);
     if (config.management.allowAccessChanges)
         commands.push(`Access command: ${command} config access --config ${shellQuote(configPath)} --route-id ${shellQuote(routeId)} --actor-id ${shellQuote(actorId)} --operation <add|remove|replace> --participant-id <native-participant-id>`);
     return commands.join("\n");

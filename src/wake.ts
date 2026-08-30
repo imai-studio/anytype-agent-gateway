@@ -1,11 +1,20 @@
 import type { AgentConfig, WakeConfig } from "./config.js";
 import type { ChatMessage } from "./types.js";
+import {
+  principalAllowed,
+  principalFromMessage,
+  sameIdentity,
+  type AnytypePrincipal,
+} from "./principal.js";
+
+export { sameIdentity } from "./principal.js";
 
 export type WakeDecision = {
   wake: boolean;
   reason: string;
   isAgent: boolean;
   directMention: boolean;
+  actor?: AnytypePrincipal;
 };
 
 export type WakeOverride = {
@@ -54,10 +63,18 @@ export function decideWake(
   config: AgentConfig,
   options: { replyToAgent: boolean; selfParticipantId?: string },
 ): WakeDecision {
-  const creator = message.creator ?? "";
+  const actor = principalFromMessage(message);
+  if (!actor)
+    return {
+      wake: false,
+      reason: "identity-unavailable",
+      isAgent: false,
+      directMention: false,
+    };
+  const creator = actor.participantId;
   const selfParticipantId = options.selfParticipantId ?? config.agent.participantId;
   const isSelf = Boolean(creator && sameIdentity(creator, selfParticipantId));
-  if (isSelf) return { wake: false, reason: "self", isAgent: true, directMention: false };
+  if (isSelf) return { wake: false, reason: "self", isAgent: true, directMention: false, actor };
   const isAgent =
     config.coordination.agentParticipants.some((participant) =>
       sameIdentity(creator, participant),
@@ -65,10 +82,8 @@ export function decideWake(
   const directMention = isAgent
     ? isStructuredMention(message, selfParticipantId)
     : isDirectMention(message, config, selfParticipantId);
-  const allowed = wake.allowedUsers.some(
-    (participant) => participant === "*" || sameIdentity(creator, participant),
-  );
-  if (!allowed) return { wake: false, reason: "unauthorized", isAgent, directMention };
+  const allowed = principalAllowed(actor, wake.allowedUsers);
+  if (!allowed) return { wake: false, reason: "unauthorized", isAgent, directMention, actor };
   if (isAgent) {
     const result =
       wake.agents === "every-message" || (wake.agents === "direct-mention" && directMention);
@@ -77,6 +92,7 @@ export function decideWake(
       reason: result ? `agent:${wake.agents}` : "agent-policy",
       isAgent,
       directMention,
+      actor,
     };
   }
   const text = message.content?.text ?? "";
@@ -90,14 +106,10 @@ export function decideWake(
     reason: result ? `human:${wake.humans}` : "human-policy",
     isAgent,
     directMention,
+    actor,
   };
 }
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-export function sameIdentity(left: string, right: string): boolean {
-  if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`)) return true;
-  return left.split("_").at(-1) === right.split("_").at(-1);
 }

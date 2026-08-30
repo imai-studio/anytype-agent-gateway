@@ -530,8 +530,9 @@ describe("Codex ACP output and steering", () => {
     });
     expect(environment).not.toHaveProperty("AAG_ACTOR_ID");
     expect(environment.AAG_ACTOR_FILE).toBeTruthy();
-    expect(JSON.parse(await readFile(environment.AAG_ACTOR_FILE!, "utf8"))).toEqual({
+    expect(JSON.parse(await readFile(environment.AAG_ACTOR_FILE!, "utf8"))).toMatchObject({
       actorId: "",
+      provenance: "unavailable",
     });
     expect(environment.AAG_ACTOR_FILE).toContain(join(directory, "private-actors"));
     expect(environment.AAG_ACTOR_FILE).not.toContain(workspace);
@@ -596,8 +597,9 @@ describe("Codex ACP output and steering", () => {
     const environment = Object.fromEntries(
       (session?.mcpServers?.[0]?.env ?? []).map((item) => [item.name, item.value]),
     );
-    expect(JSON.parse(await readFile(environment.AAG_ACTOR_FILE!, "utf8"))).toEqual({
+    expect(JSON.parse(await readFile(environment.AAG_ACTOR_FILE!, "utf8"))).toMatchObject({
       actorId: "",
+      provenance: "unavailable",
     });
     await active.result;
     await expect(readFile(environment.AAG_ACTOR_FILE!, "utf8")).rejects.toMatchObject({

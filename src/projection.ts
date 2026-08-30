@@ -7,6 +7,7 @@ import type {
   RuntimeResult,
   TextMark,
 } from "./types.js";
+import { mentionMarker, objectCardMarker, objectMarker, replyMarker } from "./protocol-markers.js";
 
 type CycleState = "transient" | "thinking" | "text";
 
@@ -590,7 +591,7 @@ export class RunProjection {
   }
 }
 
-const nativeReplyDirective = /^\s*\[\[AAG_REPLY\]\]\s*/i;
+const nativeReplyDirective = replyMarker;
 
 function requestsNativeReply(text: string): boolean {
   return nativeReplyDirective.test(text);
@@ -649,7 +650,7 @@ export function renderCoordination(
     });
   const marks: TextMark[] = [];
   const tagged = new Set<string>();
-  const matcher = /\[\[AAG_MENTION:([^\]\n]+)\]\]/gi;
+  const matcher = new RegExp(mentionMarker.source, mentionMarker.flags);
   let rendered = "";
   let cursor = 0;
   for (let match = matcher.exec(text); match; match = matcher.exec(text)) {
@@ -757,7 +758,7 @@ function normalizeMarkdown(
         continue;
       }
     }
-    const objectCard = /^\[\[AAG_OBJECT_CARD:([^|\]\n]+)\|([^\]\n]+)\]\]/i.exec(text.slice(index));
+    const objectCard = objectCardMarker.exec(text.slice(index));
     if (objectCard) {
       const objectId = objectCard[1]!.trim();
       const label = objectCard[2]!.trim();
@@ -771,7 +772,7 @@ function normalizeMarkdown(
       index += objectCard[0].length;
       continue;
     }
-    const objectReference = /^\[\[AAG_OBJECT:([^|\]\n]+)\|([^\]\n]+)\]\]/i.exec(text.slice(index));
+    const objectReference = objectMarker.exec(text.slice(index));
     if (objectReference) {
       const objectId = objectReference[1]!.trim();
       const label = objectReference[2]!.trim();

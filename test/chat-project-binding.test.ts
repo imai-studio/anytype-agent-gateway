@@ -263,7 +263,7 @@ describe("Anytype chat Codex project tags", () => {
     await controller.stop();
   });
 
-  it("does not alter the Chat tag for an unknown project or unauthorized sender", async () => {
+  it("does not alter the Chat tag for an unknown project or spoofed admin display name", async () => {
     const { anytype, runtime, controller } = setup(["ordinary"]);
     const unknown = incoming({
       id: "unknown",
@@ -277,6 +277,7 @@ describe("Anytype chat Codex project tags", () => {
     const denied = incoming({
       id: "denied",
       creator: "human-2",
+      creator_name: "human-1",
       mentioned: true,
       content: { text: "/project imai" },
     });

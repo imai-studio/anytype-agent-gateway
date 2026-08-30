@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import YAML from "yaml";
 import { z } from "zod";
+import { resolveHeartBinary, resolveStatePath } from "./compatibility.js";
 
 const wakeSchema = z
   .object({
@@ -441,7 +442,17 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
   if (ext === ".toml" && config.spaces.some((space) => space.chatDiscovery.autoEnroll))
     throw new Error("chatDiscovery.autoEnroll supports YAML and JSON configuration files only");
   config.anytype.apiKeyFile = expandHome(config.anytype.apiKeyFile);
-  config.state.path = expandHome(config.state.path);
+  const explicitStatePath =
+    raw &&
+    typeof raw === "object" &&
+    "state" in raw &&
+    raw.state &&
+    typeof raw.state === "object" &&
+    "path" in raw.state &&
+    typeof raw.state.path === "string"
+      ? raw.state.path
+      : undefined;
+  config.state.path = resolveStatePath({ explicit: explicitStatePath });
   if (config.anytype.cli.configPath)
     config.anytype.cli.configPath = expandHome(config.anytype.cli.configPath);
   if (config.anytype.cli.dataPath)
@@ -482,6 +493,9 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
     )
       config.runtime.gateway.clientModule = expandHome(config.runtime.gateway.clientModule);
   }
+  config.anytype.heartAdapter.command = await resolveHeartBinary(
+    config.anytype.heartAdapter.command,
+  );
   return config;
 }
 

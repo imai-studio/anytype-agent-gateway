@@ -9,7 +9,8 @@ import { setRouteAccess, setRouteWake } from "./management.js";
 import { modelAllowed } from "./model-command.js";
 import { Store } from "./store.js";
 import { VERSION } from "./version.js";
-import { sameIdentity } from "./wake.js";
+import { resolveProductEnvironment } from "./compatibility.js";
+import { principalAllowed, principalFromMessage } from "./principal.js";
 
 type Request = {
   jsonrpc?: string;
@@ -51,13 +52,13 @@ export async function runMcpServer(
   if (!config.tools.anytype.enabled && !config.tools.codex.enabled)
     throw new Error("All AAG tools are disabled in this configuration");
   const anytype = await AnytypeClient.create(config);
-  const routeId = context.routeId ?? process.env.AAG_ROUTE_ID;
-  const configuredActorId = context.actorId ?? process.env.AAG_ACTOR_ID;
-  const actorFile = process.env.AAG_ACTOR_FILE;
-  const discussionRootId = process.env.AAG_DISCUSSION_ROOT_ID;
+  const routeId = context.routeId ?? resolveProductEnvironment("ROUTE_ID");
+  const configuredActorId = context.actorId ?? resolveProductEnvironment("ACTOR_ID");
+  const actorFile = resolveProductEnvironment("ACTOR_FILE");
+  const discussionRootId = resolveProductEnvironment("DISCUSSION_ROOT_ID");
   const defaultSpaceId =
     context.spaceId ??
-    process.env.AAG_SPACE_ID ??
+    resolveProductEnvironment("SPACE_ID") ??
     spaceFromRoute(routeId) ??
     soleAllowedSpace(config);
   const tools = toolDefinitions(config);
@@ -123,8 +124,14 @@ async function currentActorId(
 ): Promise<string | undefined> {
   if (!actorFile) return configuredActorId;
   try {
-    const value = JSON.parse(await readFile(actorFile, "utf8")) as { actorId?: unknown };
-    return typeof value.actorId === "string" && value.actorId ? value.actorId : undefined;
+    const value = JSON.parse(await readFile(actorFile, "utf8")) as {
+      actorId?: unknown;
+      participantId?: unknown;
+      provenance?: unknown;
+    };
+    if (value.provenance !== undefined && value.provenance !== "anytype-native") return undefined;
+    const actorId = value.participantId ?? value.actorId;
+    return typeof actorId === "string" && actorId ? actorId : undefined;
   } catch {
     return undefined;
   }
@@ -522,10 +529,10 @@ export async function callTool(
           models: current?.catalog ?? [],
         };
       if (!config.management.allowModelChanges) throw new Error("Model changes are disabled");
-      if (
-        !boundActorId ||
-        !config.management.modelAdmins.some((admin) => sameIdentity(admin, boundActorId))
-      )
+      const boundPrincipal = boundActorId
+        ? principalFromMessage({ id: "mcp-actor", creator: boundActorId })
+        : undefined;
+      if (!principalAllowed(boundPrincipal, config.management.modelAdmins))
         throw new Error("The current Anytype sender is not allowed to change models");
       const requested = required(input, "model_id");
       const reset = /^(?:default|reset)$/i.test(requested);
@@ -550,7 +557,7 @@ export async function callTool(
         ...(current?.appliedModelId ? { appliedModelId: current.appliedModelId } : {}),
         ...(current?.defaultModelId ? { defaultModelId: current.defaultModelId } : {}),
         catalog: current?.catalog ?? [],
-        updatedBy: boundActorId,
+        ...(boundActorId ? { updatedBy: boundActorId } : {}),
       });
       return {
         thread_key: threadKey,
@@ -568,10 +575,15 @@ export async function callTool(
     const routeSpaceId = spaceFromRoute(effectiveRouteId);
     if (!routeSpaceId) throw new Error("route_id does not contain a valid Anytype space");
     assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
+    const boundPrincipal = boundActorId
+      ? principalFromMessage({ id: "mcp-actor", creator: boundActorId })
+      : undefined;
+    if (!boundPrincipal) throw new Error("The current Anytype sender could not be verified");
     await setRouteWake({
       configPath,
       routeId: effectiveRouteId,
       humans: String(input.humans),
+      actor: boundPrincipal,
       ...(input.prefix ? { prefix: String(input.prefix) } : {}),
     });
     return { route_id: effectiveRouteId, humans: input.humans };
@@ -590,7 +602,7 @@ export async function callTool(
     const allowedUsers = await setRouteAccess({
       configPath,
       routeId: effectiveRouteId,
-      actorId: boundActorId,
+      actor: principalFromMessage({ id: "mcp-actor", creator: boundActorId })!,
       operation: String(input.operation),
       participantIds: requiredArray(input, "participant_ids"),
     });

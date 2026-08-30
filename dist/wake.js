@@ -1,3 +1,5 @@
+import { principalAllowed, principalFromMessage, sameIdentity, } from "./principal.js";
+export { sameIdentity } from "./principal.js";
 export function mergeWakeOverride(wake, override) {
     if (!override)
         return wake;
@@ -23,18 +25,26 @@ function isTextMention(message, config) {
     return names.some((name) => new RegExp(`(^|\\s)@${escapeRegex(name)}(?=\\s|$|[.,:;!?])`, "i").test(text));
 }
 export function decideWake(message, wake, config, options) {
-    const creator = message.creator ?? "";
+    const actor = principalFromMessage(message);
+    if (!actor)
+        return {
+            wake: false,
+            reason: "identity-unavailable",
+            isAgent: false,
+            directMention: false,
+        };
+    const creator = actor.participantId;
     const selfParticipantId = options.selfParticipantId ?? config.agent.participantId;
     const isSelf = Boolean(creator && sameIdentity(creator, selfParticipantId));
     if (isSelf)
-        return { wake: false, reason: "self", isAgent: true, directMention: false };
+        return { wake: false, reason: "self", isAgent: true, directMention: false, actor };
     const isAgent = config.coordination.agentParticipants.some((participant) => sameIdentity(creator, participant)) || config.coordination.peers.some((peer) => sameIdentity(creator, peer.participantId));
     const directMention = isAgent
         ? isStructuredMention(message, selfParticipantId)
         : isDirectMention(message, config, selfParticipantId);
-    const allowed = wake.allowedUsers.some((participant) => participant === "*" || sameIdentity(creator, participant));
+    const allowed = principalAllowed(actor, wake.allowedUsers);
     if (!allowed)
-        return { wake: false, reason: "unauthorized", isAgent, directMention };
+        return { wake: false, reason: "unauthorized", isAgent, directMention, actor };
     if (isAgent) {
         const result = wake.agents === "every-message" || (wake.agents === "direct-mention" && directMention);
         return {
@@ -42,6 +52,7 @@ export function decideWake(message, wake, config, options) {
             reason: result ? `agent:${wake.agents}` : "agent-policy",
             isAgent,
             directMention,
+            actor,
         };
     }
     const text = message.content?.text ?? "";
@@ -54,13 +65,9 @@ export function decideWake(message, wake, config, options) {
         reason: result ? `human:${wake.humans}` : "human-policy",
         isAgent,
         directMention,
+        actor,
     };
 }
 function escapeRegex(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-export function sameIdentity(left, right) {
-    if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`))
-        return true;
-    return left.split("_").at(-1) === right.split("_").at(-1);
 }

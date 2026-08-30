@@ -3,6 +3,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AgentConfig } from "./config.js";
 import type { AnytypePort, ChatMessage, ContextBundle, ConversationRef } from "./types.js";
+import { principalFromMessage } from "./principal.js";
 
 export async function buildContext(
   anytype: AnytypePort,
@@ -85,9 +86,11 @@ export async function buildContext(
     [contextualTrigger, ...history, ...replyAncestry],
     referencedObjects,
   );
+  const actor = principalFromMessage(trigger);
   return {
     conversation,
     trigger: contextualTrigger,
+    ...(actor ? { actor } : {}),
     ...(options.newSession ? { newSession: true } : {}),
     history,
     replyAncestry,
@@ -119,7 +122,7 @@ export function formatPrompt(
   const boundary = `AAG_UNTRUSTED_${crypto.randomUUID()}`;
   const payload = {
     conversation: bundle.conversation,
-    sender: { participantId: bundle.trigger.creator, displayName: bundle.trigger.creator_name },
+    sender: bundle.actor ?? principalFromMessage(bundle.trigger) ?? { provenance: "unavailable" },
     currentMessage: bundle.trigger.content?.text ?? "",
     replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
     recentChannelContext: bundle.history.map(renderMessage),
@@ -254,7 +257,7 @@ export async function preparePrompt(
 
   const payload = {
     conversation: bundle.conversation,
-    sender: { participantId: bundle.trigger.creator, displayName: bundle.trigger.creator_name },
+    sender: bundle.actor ?? principalFromMessage(bundle.trigger) ?? { provenance: "unavailable" },
     currentMessage: bundle.trigger.content?.text ?? "",
     replyAncestry: [...bundle.replyAncestry].reverse().map(renderMessage),
     recentChannelContext: bundle.history.map(renderMessage),

@@ -1,0 +1,26 @@
+version: 1
+agent:
+  name: Fixture Agent
+  participantId: _participant_fixture_agent_01
+anytype:
+  apiKeyFile: /fixture/secrets/anytype-api-key
+  heartAdapter:
+    command: aag-heart-adapter
+spaces:
+  - id: _space_fixture_01
+    chats:
+      - id: _chat_fixture_01
+        wake:
+          humans: mention-or-reply
+          agents: never
+          allowedUsers: [_participant_fixture_admin_01]
+runtime:
+  kind: codex
+  defaultProject: /fixture/projects/agent
+management:
+  allowAccessChanges: true
+  allowProjectChanges: true
+  accessAdmins: [_participant_fixture_admin_01]
+  projectAdmins: [_participant_fixture_admin_01]
+state:
+  path: /fixture/state/state.sqlite
