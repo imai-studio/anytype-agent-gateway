@@ -1,11 +1,31 @@
 # Upgrade and rollback from AAG
 
+If the old package was installed globally, remove it before installing Knot so both packages do not
+compete for the `aag` executable shim:
+
+```bash
+pnpm ls --global --depth 0
+pnpm remove --global @imai/aag
+pnpm add --global @imai/knot@0.2.0
+```
+
 Knot never moves or deletes an AAG configuration or database. Stop any foreground AAG process,
 then inspect the migration plan:
 
 ```bash
 knot migrate --dry-run
 knot migrate --dry-run --json
+```
+
+If this machine uses an agent-specific config such as `~/.config/aag/klee/agent.yaml`, select it
+explicitly. Knot preserves the relative layout as `~/.config/knot/klee/agent.yaml` and maps an
+explicit `state.path` beneath `~/.local/state/aag` to the corresponding Knot state tree. A nested
+config without an explicit `state.path` uses the shared `~/.local/state/aag` tree exactly as AAG did;
+set an explicit per-agent path when the state lives in a nested directory:
+
+```bash
+knot migrate --config ~/.config/aag/klee/agent.yaml --dry-run --json
+knot service migrate --config ~/.config/aag/klee/agent.yaml --dry-run --json
 ```
 
 `knot migrate` copies the legacy configuration, SQLite state, support files, and macOS logs to the
@@ -18,7 +38,8 @@ or converted. Existing identical destinations make the command idempotent; any d
 stops the migration. A `-wal` or `-shm` sidecar means state is not safely quiescent and must be
 resolved by cleanly stopping AAG before retrying.
 
-After a successful copy, run `knot service migrate --dry-run`, followed by `knot service migrate`.
+After a successful copy, run `knot service migrate --dry-run`, followed by `knot service migrate`
+(passing the same `--config` when one was selected).
 Service migration requires exactly the legacy definition and no Knot definition. It verifies the
 copy, disables and stops AAG, retains its definition as a timestamped `.pre-knot-*.bak`, installs
 Knot, and proves AAG is inactive while Knot is enabled and running. A failed transition restores and
@@ -33,6 +54,7 @@ Linux:
 
 ```bash
 systemctl --user disable --now knot.service
+rm -f ~/.config/systemd/user/knot.service
 mv LEGACY_BACKUP ~/.config/systemd/user/anytype-agent-gateway.service
 systemctl --user daemon-reload
 systemctl --user enable --now anytype-agent-gateway.service
@@ -42,6 +64,7 @@ macOS:
 
 ```bash
 knot service stop
+rm -f ~/Library/LaunchAgents/com.imai.knot.plist
 mv LEGACY_BACKUP ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist
 launchctl enable gui/$(id -u)/com.anytype.anytype-agent-gateway
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist
@@ -55,3 +78,28 @@ only after signal-zero proves their owner is gone.
 Both `knot-heart-adapter` and `aag-heart-adapter` are discovered. Install the new binary without
 removing the old one. The OpenClaw channel, `aag_*` MCP tools, `aag:` persisted keys, legacy response
 markers, and OpenClaw `aag` profile are not rewritten.
+
+## Troubleshooting
+
+- **AAG or Knot lock is live:** stop the named foreground process or service. Knot reclaims a stale
+  lock only after signal-zero proves the PID is gone; never delete a live lock to force startup.
+- **SQLite `-wal` or `-shm` exists:** AAG did not quiesce cleanly. Stop it and allow SQLite to
+  checkpoint/close. Do not copy only the main database while a WAL contains newer committed state.
+- **Divergent destination:** keep both trees untouched and compare the migration manifest, sizes,
+  hashes, and operator changes. Knot will not overwrite a destination that may contain newer traffic.
+- **Both service definitions exist:** disable and stop both, identify the exact timestamped legacy
+  backup and intended Knot config, then follow rollback or resume. Do not guess which identity owns
+  the database.
+- **No legacy service found:** `service migrate` requires the exact supported legacy identity. A
+  custom supervisor must be stopped and migrated manually around `knot migrate`.
+- **Heart adapter not found:** run `knot doctor`, inspect the service `PATH`, and retain either
+  `knot-heart-adapter` or `aag-heart-adapter`. Do not expose Heart gRPC beyond loopback/private transport.
+- **Unauthorized sender unexpectedly wakes:** stop Knot and treat this as a security issue. Authority
+  must come only from the immutable native Anytype participant/member ID; names and message content
+  are never evidence.
+- **npm publish does not start:** the workflow intentionally waits for the repository rename to
+  `imai-studio/knot`. Confirm `@imai` scope authorization and the npm trusted-publisher tuple in the
+  [release checklist](release-checklist.md); do not add a long-lived token as a workaround.
+
+See the [compatibility matrix](compatibility.md) for surfaces intentionally retained through the
+0.2.x/0.3.x window.

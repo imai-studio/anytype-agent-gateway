@@ -65,12 +65,12 @@ services, protocol markers, MCP names, and configured agent identities such as K
 1. **Compatibility foundation (complete):** centralized product metadata, environment/path/Heart/
    service/log resolvers, dual protocol parsing, authenticated principals, this roadmap, and a
    sanitized v0.1.3 upgrade fixture. Its release-state defaults and public names remained AAG.
-2. **Product/package rename (this PR):** package metadata, `knot` CLI plus `aag` alias, help/onboarding/docs,
+2. **Product/package rename (complete):** package metadata, `knot` CLI plus `aag` alias, help/onboarding/docs,
    source-visible names, URLs, default paths, and generated output.
-3. **Installation/service migration:** `knot migrate`, `knot service migrate`, old-service
+3. **Installation/service migration (complete):** `knot migrate`, `knot service migrate`, old-service
    exclusion, process-lock checks, copy/verify/backup/rollback behavior, dual Heart lookup, and
    OpenClaw plugin compatibility.
-4. **Release engineering/docs:** publishing and provenance, compatibility matrix, upgrade and
+4. **Release engineering/docs (this PR):** publishing and provenance, compatibility matrix, upgrade and
    rollback guides, troubleshooting, installation validation, and repository rename.
 
 Later Phase 1 PRs stack on PR 1 because their public renames depend on these contracts.

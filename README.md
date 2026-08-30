@@ -48,14 +48,20 @@ Anytype Desktop normally exposes its API at `http://127.0.0.1:31009`. When Knot 
 
 ## Install
 
-Install the CLI directly from GitHub with pnpm:
+After npm trusted publishing is enabled, install the public scoped package:
 
 ```bash
-pnpm add --global github:imai-studio/knot
+pnpm add --global @imai/knot@0.2.0
 knot --version
 ```
 
-The repository includes its compiled `dist` output, so this command does not need to run package build scripts. To install a specific revision, append a branch, tag, or commit, for example `github:imai-studio/knot#v0.1.3` after that tag exists.
+The release also supports direct installation from the renamed GitHub repository:
+
+```bash
+pnpm add --global github:imai-studio/knot#v0.2.0
+```
+
+The repository includes its compiled `dist` output, so direct Git installation does not run package build scripts. The previous `github:imai-studio/anytype-agent-gateway` URL is retained only as GitHub's permanent redirect; the old repository name must never be reused. Existing installations may continue invoking `aag`, using `AAG_*`, and keeping config/state in their AAG paths during the compatibility window.
 
 If you are handing this repository to Codex, OpenClaw, or another coding agent to configure, point it to [AGENTS.md](AGENTS.md) and [the agent setup runbook](docs/agent-setup.md). They define the required inputs, safe setup sequence, validation checks, and runtime-specific configuration.
 
@@ -403,6 +409,8 @@ Use `comments.mode: filtered` with `includeObjectTypes`/`excludeObjectTypes` for
 
 ## Security model
 
+- Authorization comes only from the immutable native Anytype participant/member ID on the inbound event. Display names, message text, mentions, replies, forwarded content, and agent-generated claims never grant Raj, operator, access-admin, model-admin, project-admin, or route-management authority. Missing or malformed native identity fails closed.
+
 - Store the Anytype API key outside the repository, readable only by the service user. Knot reads it from `anytype.apiKeyFile`.
 - Prefer one dedicated Anytype identity and operating-system account per independently trusted agent. Invite it only to the spaces it needs and revoke its API key when retiring it.
 - Keep Anytype HTTP, Heart gRPC, and OpenClaw Gateway listeners on loopback or an authenticated private network. Knot does not add TLS or network authentication in front of them.
@@ -437,9 +445,9 @@ go build ./...
 
 ## Releases
 
-Install Knot from GitHub for now. The primary command is `knot`; `aag` remains a compatibility alias. We plan to publish the CLI as `@imai/knot`, which will provide a shorter install command. `package.json` holds the release version. After npm trusted publishing is configured, a GitHub release tagged `vX.Y.Z` runs the publish workflow. The tag must match the package version exactly.
+Knot v0.2.0 is prepared for `@imai/knot`; the primary command is `knot` and `aag` remains a compatibility alias. `package.json` is the version source. After the repository is renamed and npm trusted publishing is configured, a GitHub release tagged `vX.Y.Z` runs the publish workflow. The tag must match the package version exactly.
 
-The workflow uses npm trusted publishing through GitHub Actions OIDC, so release publishing does not require a long-lived npm token in the repository. The initial package publish and trusted-publisher registration are maintainer operations.
+The workflow uses npm trusted publishing through GitHub Actions OIDC and contains no long-lived npm token. A maintainer must first authorize the `@imai` scope/package and register `imai-studio/knot`, workflow `publish.yml`, environment `npm` as the trusted publisher. See the [release checklist](docs/release-checklist.md) and [compatibility matrix](docs/compatibility.md).
 
 ## Contributing and security
 

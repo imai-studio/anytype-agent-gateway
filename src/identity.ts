@@ -25,7 +25,7 @@ export async function createIdentity(options: {
     await inherited(options.command, ["space", "join", invite], env);
   const { stdout } = await runProcess(
     options.command,
-    ["auth", "apikey", "create", `aag-${options.name}`],
+    ["auth", "apikey", "create", `knot-${options.name}`],
     { env, timeoutMs: 30_000 },
   ).catch(() => {
     throw new Error(

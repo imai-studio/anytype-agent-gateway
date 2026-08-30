@@ -12,7 +12,7 @@ export async function createIdentity(options) {
     ], env);
     for (const invite of options.invites)
         await inherited(options.command, ["space", "join", invite], env);
-    const { stdout } = await runProcess(options.command, ["auth", "apikey", "create", `aag-${options.name}`], { env, timeoutMs: 30_000 }).catch(() => {
+    const { stdout } = await runProcess(options.command, ["auth", "apikey", "create", `knot-${options.name}`], { env, timeoutMs: 30_000 }).catch(() => {
         throw new Error("Anytype CLI failed to create the revocable API key; inspect the CLI logs directly");
     });
     const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");

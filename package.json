@@ -58,9 +58,13 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "release:audit": "node scripts/release-audit.mjs",
+    "release:install": "node scripts/install-fixtures.mjs",
+    "release:redirect": "node scripts/verify-repository-redirect.mjs",
+    "release:contracts": "vitest run test/compatibility.test.ts test/legacy-upgrade-fixture.test.ts test/migration.test.ts test/principal.test.ts test/process-lock.test.ts test/service.test.ts",
+    "release:gates": "pnpm run release:audit && pnpm run release:contracts && pnpm run release:install && git diff --exit-code -- dist packages/openclaw-anytype-channel/dist",
     "smoke:codex": "tsx scripts/smoke-codex.ts",
     "check": "pnpm run format:check && pnpm run build && pnpm run typecheck && pnpm run lint && pnpm test",
-    "prepublishOnly": "pnpm run check",
     "start": "node dist/cli.js run"
   },
   "engines": {

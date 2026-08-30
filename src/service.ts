@@ -18,7 +18,12 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
 import { runProcess } from "./process.js";
 import { detectServices, logNamespace, PRODUCT } from "./compatibility.js";
-import { latestMigrationManifest, migrateInstallation, type MigrationResult } from "./migration.js";
+import {
+  latestMigrationManifest,
+  migrateInstallation,
+  resolveLegacyConfigSource,
+  type MigrationResult,
+} from "./migration.js";
 
 export const systemdServiceName = PRODUCT.services.linux.current;
 export const launchdServiceLabel = PRODUCT.services.darwin.current;
@@ -75,6 +80,7 @@ export type ServiceMigrationResult = {
 export async function migrateService(
   options: {
     home?: string;
+    legacyConfigPath?: string;
     dryRun?: boolean;
     manager?: ServiceMigrationManager;
     now?: Date;
@@ -92,6 +98,11 @@ export async function migrateService(
     throw new Error(
       "Both AAG and Knot services are enabled or running; refusing service migration",
     );
+  const migrationOptions = {
+    home,
+    dryRun: true,
+    ...(options.legacyConfigPath ? { legacyConfigPath: options.legacyConfigPath } : {}),
+  };
   if (
     !legacy.defined &&
     !legacy.enabled &&
@@ -100,7 +111,8 @@ export async function migrateService(
     current.enabled &&
     current.running
   ) {
-    const migration = await latestMigrationManifest(home);
+    const selectedConfigSource = await resolveLegacyConfigSource(home, options.legacyConfigPath);
+    const migration = await latestMigrationManifest(home, selectedConfigSource);
     if (!migration)
       throw new Error(
         "Knot is running but no verified migration manifest exists; refusing ambiguity",
@@ -118,10 +130,8 @@ export async function migrateService(
       "No exact legacy AAG service definition was found; refusing ambiguous migration",
     );
   const phases = [resumableBackup ? "resumed-after-legacy-backup" : "legacy-detected"];
-  if (options.dryRun) {
-    const migration = await migrateInstallation({ home, dryRun: true });
-    return { migration, phases, rollback };
-  }
+  const preflight = await migrateInstallation(migrationOptions);
+  if (options.dryRun) return { migration: preflight, phases, rollback };
 
   const stamp = (options.now ?? new Date()).toISOString().replace(/[:.]/gu, "-");
   let backup = resumableBackup;
@@ -137,12 +147,13 @@ export async function migrateService(
     }
     const migration = await migrateInstallation({
       home,
+      ...(options.legacyConfigPath ? { legacyConfigPath: options.legacyConfigPath } : {}),
       ...(options.now ? { now: options.now } : {}),
     });
     const migratedConfig = migration.items.find((item) => item.kind === "config");
-    const configPath = join(home, ".config", "knot", "agent.yaml");
     if (migratedConfig?.status !== "verified")
       throw new Error("Migration did not produce a verified Knot configuration");
+    const configPath = join(migratedConfig.destination, "agent.yaml");
     const loadedConfig = await loadConfig(configPath);
     const knotStateRoot = join(home, ".local", "state", "knot");
     const stateRelative = relative(knotStateRoot, loadedConfig.state.path);
@@ -190,16 +201,18 @@ export async function migrateService(
   }
 }
 
-function serviceRollbackCommands(): string[] {
-  return process.platform === "darwin"
+export function serviceRollbackCommands(platform = process.platform): string[] {
+  return platform === "darwin"
     ? [
         "knot service stop",
+        "rm -f ~/Library/LaunchAgents/com.imai.knot.plist",
         "mv <legacy-backup> ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist",
         "launchctl enable gui/$(id -u)/com.anytype.anytype-agent-gateway",
         "launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist",
       ]
     : [
         "systemctl --user disable --now knot.service",
+        "rm -f ~/.config/systemd/user/knot.service",
         "mv <legacy-backup> ~/.config/systemd/user/anytype-agent-gateway.service",
         "systemctl --user daemon-reload",
         "systemctl --user enable --now anytype-agent-gateway.service",

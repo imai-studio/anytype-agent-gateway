@@ -17,10 +17,12 @@ One long-lived Knot process appears in Anytype as one dedicated, taggable member
 Install and verify Knot:
 
 ```bash
-pnpm add --global github:imai-studio/knot
+pnpm add --global .
 knot --version
 knot --help
 ```
+
+The checkout-local command is valid before publication. After npm trusted publishing completes, use `pnpm add --global @imai/knot@0.2.0`. After the repository rename and tag exist, use `pnpm add --global github:imai-studio/knot#v0.2.0` for an exact source revision. Existing automation that still installs from `github:imai-studio/anytype-agent-gateway` depends on GitHub's permanent redirect and should be updated when convenient, not during an emergency upgrade.
 
 Do not continue if `knot --version` fails. Do not work around the failure by downloading unreviewed binaries or disabling package-manager security globally.
 

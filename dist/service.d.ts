@@ -36,10 +36,12 @@ export type ServiceMigrationResult = {
 };
 export declare function migrateService(options?: {
     home?: string;
+    legacyConfigPath?: string;
     dryRun?: boolean;
     manager?: ServiceMigrationManager;
     now?: Date;
 }): Promise<ServiceMigrationResult>;
+export declare function serviceRollbackCommands(platform?: NodeJS.Platform): string[];
 export declare function resolveInstalledService(platform: "linux" | "darwin", home: string): Promise<{
     generation: "aag" | "knot";
     identity: string;
