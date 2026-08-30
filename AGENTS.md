@@ -2,6 +2,8 @@
 
 This repository builds and operates Knot. When a user gives an automation agent this repository and asks it to connect itself to Anytype, use the runbook in [`docs/agent-setup.md`](docs/agent-setup.md).
 
+Use [`docs/workflow-recipes.md`](docs/workflow-recipes.md) when an operator asks how to configure or verify a particular chat, project, object, direct-message, scheduling, or multi-agent workflow.
+
 `README.md` and `ARCHITECTURE.md` describe released behavior. [`docs/planned-work.md`](docs/planned-work.md) and [`docs/publish-architecture.md`](docs/publish-architecture.md) describe proposals. Do not report a proposed command, service, or workflow feature as available.
 
 ## Invariants

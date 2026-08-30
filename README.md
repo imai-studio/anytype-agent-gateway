@@ -304,6 +304,7 @@ vulnerabilities through GitHub's private vulnerability reporting flow, not a pub
 | [Architecture decisions](docs/architecture-decisions.md) | Alternatives considered during the original design         |
 | [Compatibility matrix](docs/compatibility.md)            | AAG aliases, paths, environments, and migration guarantees |
 | [Upgrade from AAG](docs/upgrade-from-aag.md)             | Copy, service migration, verification, and rollback        |
+| [Workflow recipes](docs/workflow-recipes.md)             | Configure and verify common agent workflows                |
 | [Live regression runbook](docs/live-regression.md)       | Real Anytype tests for Codex and OpenClaw changes          |
 | [Roadmap](docs/knot-roadmap.md)                          | Product direction and completed migration phases           |
 | [Planned work](docs/planned-work.md)                     | Work that has not shipped                                  |

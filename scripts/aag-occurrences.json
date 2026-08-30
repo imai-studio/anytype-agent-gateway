@@ -14,6 +14,7 @@
   "docs/regression-results/2026-08-31-phase-2.md": 1,
   "docs/release-checklist.md": 12,
   "docs/upgrade-from-aag.md": 27,
+  "docs/workflow-recipes.md": 9,
   "package.json": 1,
   "packages/openclaw-anytype-channel/README.md": 2,
   "packages/openclaw-anytype-channel/src/bridge.test.ts": 4,
