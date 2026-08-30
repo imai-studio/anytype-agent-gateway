@@ -55,7 +55,7 @@ pnpm add --global github:imai-studio/anytype-agent-gateway
 aag --version
 ```
 
-The repository includes its compiled `dist` output, so this command does not need to run package build scripts. To install a specific revision, append a branch, tag, or commit, for example `github:imai-studio/anytype-agent-gateway#v0.1.0` after that tag exists.
+The repository includes its compiled `dist` output, so this command does not need to run package build scripts. To install a specific revision, append a branch, tag, or commit, for example `github:imai-studio/anytype-agent-gateway#v0.1.1` after that tag exists.
 
 If you are handing this repository to Codex, OpenClaw, or another coding agent to configure, point it to [AGENTS.md](AGENTS.md) and [the agent setup runbook](docs/agent-setup.md). They define the required inputs, safe setup sequence, validation checks, and runtime-specific configuration.
 
