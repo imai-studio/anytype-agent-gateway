@@ -5,7 +5,7 @@
 
 Knot runs one OpenClaw or Codex agent as one Anytype member. A long-lived `knot run` process watches the configured chats and object discussions, decides when that member should wake, supplies Anytype context to the runtime, and projects the run back into Anytype as an editable reply.
 
-The detailed system design is in [ARCHITECTURE.md](ARCHITECTURE.md). The early alternatives and trade-offs that shaped it are preserved in [docs/architecture-decisions.md](docs/architecture-decisions.md).
+Read [ARCHITECTURE.md](ARCHITECTURE.md) for the released system design and [docs/architecture-decisions.md](docs/architecture-decisions.md) for the choices behind it. [Planned work](docs/planned-work.md) lists unfinished work without presenting it as shipped. The proposed self-hosted web publishing service has its own [Knot Publish design](docs/publish-architecture.md).
 
 The current deployment model is deliberately simple: **one Knot process, one Anytype identity, and one runtime-backed agent per machine**. That identity may join multiple spaces and the configuration may subscribe it to multiple chats and discussion sets. Run another machine or isolated service account for another independently taggable agent.
 
@@ -278,7 +278,7 @@ OpenClaw gives ordinary cron `agentTurn` jobs a separate `agent:…:cron:…` se
 
 `knot mcp` exposes `aag_context`; object search and full reads; type, property, tag, template, collection-view, and list-member discovery; create/update/list-membership/upload tools; optional archive; route-bound wake changes; and a self-only profile-image tool. Codex ACP receives it automatically. Add the same command to OpenClaw's native MCP configuration as shown above.
 
-The discovery tools are part of the write workflow, not just metadata helpers. An agent should resolve the target type and property formats, read an existing object before editing it, preserve unrelated properties, and perform the scoped mutation. It can copy the returned `object_ref` token for a compact clickable reference or `object_card` for a full native object attachment; the returned `anytype://` URL is the fallback. That is what lets a scheduled OpenClaw job create a daily object and publish it without receiving the Anytype API key.
+Discovery is part of every write. An agent should resolve the target type and property formats, read an existing object before editing it, preserve unrelated properties, and then perform the scoped mutation. It can copy the returned `object_ref` token for a compact clickable reference or `object_card` for a full native object attachment. The returned `anytype://` URL is the fallback. A scheduled OpenClaw job can therefore create a daily object without receiving the Anytype API key.
 
 The Anytype tool server defaults to off. Turn on `tools.anytype.enabled` only after registering `knot mcp` with the harness. Object writes remain separately off; enable `allowWrite` for an agent that should create or edit objects, and list `allowedSpaceIds`. File upload fails closed unless `allowedFileRoots` is explicit, resolves symlinks, accepts regular files only, and caps each upload at 50 MiB. With those write and file permissions, `aag_set_profile_image` uses the authenticated Heart adapter to upload a PNG, JPEG, WebP, or GIF and update only the signed-in agent identity; callers cannot select another identity. Archive stays separately disabled unless explicitly enabled. The Anytype API key stays in the Knot configuration boundary and is never returned by a tool; because the harness runs under the same operating-system account, use its sandbox or a separate service account if the key file itself must be inaccessible to shell tools.
 
@@ -423,6 +423,8 @@ Use `comments.mode: filtered` with `includeObjectTypes`/`excludeObjectTypes` for
 - SQLite contains message IDs, run metadata, and discovered object/discussion metadata. Protect the state directory as workspace metadata.
 
 ## Current limitations
+
+See [planned work](docs/planned-work.md) for the ordered implementation plan. The list below describes limits in the current release.
 
 - One process owns one Anytype identity/runtime agent. Multi-agent deployments use separate machines or isolated service instances.
 - Progress is truncated to `responses.maxCharacters`. Knot projects supported rich-text marks and native Anytype object-card attachments; arbitrary rich blocks and general file attachments are not projected from model text.

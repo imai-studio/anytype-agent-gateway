@@ -3,6 +3,9 @@
 This document is the maintained product and delivery map for evolving Anytype Agent Gateway
 (AAG) into Knot. Detailed released behavior remains in [`../ARCHITECTURE.md`](../ARCHITECTURE.md),
 and security trade-offs remain in [`architecture-decisions.md`](architecture-decisions.md).
+[`planned-work.md`](planned-work.md) tracks work that has not shipped. The proposed self-hosted web
+publishing service is documented separately in
+[`publish-architecture.md`](publish-architecture.md).
 
 ## Product model
 
