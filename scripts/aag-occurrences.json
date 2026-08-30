@@ -4,7 +4,7 @@
   ".npmignore": 2,
   "AGENTS.md": 1,
   "ARCHITECTURE.md": 5,
-  "README.md": 27,
+  "README.md": 3,
   "deploy/openclaw-knot-gateway.service": 1,
   "docs/aag-compatibility-audit.md": 23,
   "docs/agent-setup.md": 5,
