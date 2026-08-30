@@ -11,10 +11,10 @@ import { HeartDiscussionAdapter } from "./discussions.js";
 import { Gateway } from "./gateway.js";
 import { createIdentity, joinSpaces } from "./identity.js";
 import { commandExists, runProcess } from "./process.js";
-import { acquireProcessLock } from "./process-lock.js";
+import { acquireCompatibleProcessLocks } from "./process-lock.js";
 import { CodexAcpDriver } from "./runtime/codex-acp.js";
 import { OpenClawDriver } from "./runtime/openclaw.js";
-import { installService, serviceCommand } from "./service.js";
+import { installService, migrateService, serviceCommand } from "./service.js";
 import { Store } from "./store.js";
 import { enrollChatRoute, setRouteAccess, setRouteWake } from "./management.js";
 import { runMcpServer } from "./mcp.js";
@@ -24,11 +24,28 @@ import { runInitOnboarding } from "./onboarding.js";
 import { modelAllowed } from "./model-command.js";
 import { sameIdentity } from "./wake.js";
 import { PRODUCT, resolveConfigPath } from "./compatibility.js";
+import { migrateInstallation } from "./migration.js";
 
 const program = new Command()
   .name(PRODUCT.current.executable)
   .description(PRODUCT.current.name)
   .version(VERSION);
+
+program
+  .command("migrate")
+  .description("Copy and verify a legacy AAG installation without modifying it")
+  .option("--dry-run", "print the migration plan without writing")
+  .option("--json", "emit a machine-readable result")
+  .action(async (options) => {
+    const result = await migrateInstallation({ dryRun: Boolean(options.dryRun) });
+    if (options.json) console.log(JSON.stringify(result));
+    else {
+      for (const item of result.items)
+        console.log(`${item.status}: ${item.source} -> ${item.destination}`);
+      if (result.manifest) console.log(`manifest: ${result.manifest}`);
+      console.log(`rollback: ${result.rollback.join(" && ")}`);
+    }
+  });
 
 program
   .command("init")
@@ -73,6 +90,11 @@ program
   .action(async (options) => {
     const configPath = selectedConfigPath(options.config);
     const config = await loadConfig(configPath);
+    const legacyConfig = configPath.includes("/.config/aag/");
+    const legacyState = config.state.path.includes("/.local/state/aag/");
+    console.log(
+      `ok: migration compatibility (config=${legacyConfig ? "legacy" : "knot"}, state=${legacyState ? "legacy" : "knot"})`,
+    );
     await access(config.anytype.apiKeyFile, constants.R_OK);
     const anytype = await AnytypeClient.create(config);
     for (const configuredSpace of config.spaces) {
@@ -155,7 +177,7 @@ program
     const selectedPath = selectedConfigPath(options.config);
     const config = await loadConfig(selectedPath);
     const anytype = await AnytypeClient.create(config);
-    const releaseLock = await acquireProcessLock(`${config.state.path}.lock`);
+    const releaseLock = await acquireCompatibleProcessLocks(config.state.path);
     let store: Store | undefined;
     try {
       store = new Store(config.state.path);
@@ -367,6 +389,15 @@ service
   .command("install")
   .requiredOption("-c, --config <path>")
   .action(async (options) => installService(selectedConfigPath(options.config)));
+service
+  .command("migrate")
+  .description("Safely replace an exact legacy AAG service with Knot")
+  .option("--dry-run", "print the service migration plan without writing")
+  .option("--json", "emit a machine-readable result")
+  .action(async (options) => {
+    const result = await migrateService({ dryRun: Boolean(options.dryRun) });
+    console.log(options.json ? JSON.stringify(result) : JSON.stringify(result, null, 2));
+  });
 for (const command of ["status", "restart", "stop", "logs"] as const)
   service.command(command).action(async () => serviceCommand(command));
 

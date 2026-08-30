@@ -1,13 +1,24 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, chmod, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
 import { runProcess } from "./process.js";
 import { detectServices, logNamespace, PRODUCT } from "./compatibility.js";
+import { latestMigrationManifest, migrateInstallation, type MigrationResult } from "./migration.js";
 
 export const systemdServiceName = PRODUCT.services.linux.current;
 export const launchdServiceLabel = PRODUCT.services.darwin.current;
@@ -41,6 +52,295 @@ export async function serviceCommand(
   throw new Error(
     "Service management supports Linux systemd user services and macOS launchd agents",
   );
+}
+
+export type ManagedServiceState = { defined: boolean; enabled: boolean; running: boolean };
+export interface ServiceMigrationManager {
+  inspect(generation: "aag" | "knot"): Promise<ManagedServiceState>;
+  stopAndDisableLegacy(): Promise<void>;
+  backupLegacy(stamp: string): Promise<string>;
+  installCurrent(configPath: string): Promise<void>;
+  stopAndDisableCurrent(): Promise<void>;
+  restoreLegacy(backup: string): Promise<void>;
+  findLegacyBackup?(): Promise<string | undefined>;
+}
+
+export type ServiceMigrationResult = {
+  migration: MigrationResult;
+  phases: string[];
+  legacyBackup?: string;
+  rollback: string[];
+};
+
+export async function migrateService(
+  options: {
+    home?: string;
+    dryRun?: boolean;
+    manager?: ServiceMigrationManager;
+    now?: Date;
+  } = {},
+): Promise<ServiceMigrationResult> {
+  const home = resolve(options.home ?? homedir());
+  const manager = options.manager ?? platformServiceMigrationManager(home);
+  const legacy = await manager.inspect("aag");
+  const current = await manager.inspect("knot");
+  const resumableBackup = !legacy.defined ? await manager.findLegacyBackup?.() : undefined;
+  const rollback = serviceRollbackCommands();
+  if (legacy.defined && current.defined)
+    throw new Error("Both AAG and Knot service definitions exist; refusing service migration");
+  if ((legacy.enabled || legacy.running) && (current.enabled || current.running))
+    throw new Error(
+      "Both AAG and Knot services are enabled or running; refusing service migration",
+    );
+  if (
+    !legacy.defined &&
+    !legacy.enabled &&
+    !legacy.running &&
+    current.defined &&
+    current.enabled &&
+    current.running
+  ) {
+    const migration = await latestMigrationManifest(home);
+    if (!migration)
+      throw new Error(
+        "Knot is running but no verified migration manifest exists; refusing ambiguity",
+      );
+    const legacyBackup = await manager.findLegacyBackup?.();
+    return {
+      migration,
+      phases: ["already-migrated", "one-healthy-process-verified"],
+      ...(legacyBackup ? { legacyBackup } : {}),
+      rollback,
+    };
+  }
+  if (!legacy.defined && !resumableBackup)
+    throw new Error(
+      "No exact legacy AAG service definition was found; refusing ambiguous migration",
+    );
+  const phases = [resumableBackup ? "resumed-after-legacy-backup" : "legacy-detected"];
+  if (options.dryRun) {
+    const migration = await migrateInstallation({ home, dryRun: true });
+    return { migration, phases, rollback };
+  }
+
+  const stamp = (options.now ?? new Date()).toISOString().replace(/[:.]/gu, "-");
+  let backup = resumableBackup;
+  let legacyStopped = Boolean(resumableBackup);
+  try {
+    if (!backup) {
+      legacyStopped = true;
+      await manager.stopAndDisableLegacy();
+      phases.push("legacy-stopped-disabled");
+      const stopped = await manager.inspect("aag");
+      if (stopped.enabled || stopped.running)
+        throw new Error("Legacy service remained enabled or running; migration stopped");
+    }
+    const migration = await migrateInstallation({
+      home,
+      ...(options.now ? { now: options.now } : {}),
+    });
+    const migratedConfig = migration.items.find((item) => item.kind === "config");
+    const configPath = join(home, ".config", "knot", "agent.yaml");
+    if (migratedConfig?.status !== "verified")
+      throw new Error("Migration did not produce a verified Knot configuration");
+    const loadedConfig = await loadConfig(configPath);
+    const knotStateRoot = join(home, ".local", "state", "knot");
+    const stateRelative = relative(knotStateRoot, loadedConfig.state.path);
+    if (stateRelative.startsWith("..") || isAbsolute(stateRelative))
+      throw new Error("Migrated configuration does not resolve state inside the Knot state root");
+    phases.push("config-verified");
+    if (!backup) {
+      backup = await manager.backupLegacy(stamp);
+      phases.push("legacy-definition-backed-up");
+    }
+    await manager.installCurrent(configPath);
+    phases.push("knot-installed-started");
+    const [oldFinal, newFinal] = await Promise.all([
+      manager.inspect("aag"),
+      manager.inspect("knot"),
+    ]);
+    if (
+      oldFinal.enabled ||
+      oldFinal.running ||
+      !newFinal.defined ||
+      !newFinal.enabled ||
+      !newFinal.running
+    )
+      throw new Error(
+        "Service migration health check did not prove exactly one enabled, running Knot service",
+      );
+    phases.push("one-healthy-process-verified");
+    return { migration, phases, legacyBackup: backup, rollback };
+  } catch (error) {
+    if (legacyStopped) {
+      const rollbackErrors: unknown[] = [];
+      await manager
+        .stopAndDisableCurrent()
+        .catch((rollbackError) => rollbackErrors.push(rollbackError));
+      await manager
+        .restoreLegacy(backup ?? "")
+        .catch((rollbackError) => rollbackErrors.push(rollbackError));
+      if (rollbackErrors.length)
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          `Service migration failed and automatic rollback was incomplete. Legacy backup: ${backup ?? "definition was not yet backed up"}. Follow the manual rollback guide.`,
+        );
+    }
+    throw error;
+  }
+}
+
+function serviceRollbackCommands(): string[] {
+  return process.platform === "darwin"
+    ? [
+        "knot service stop",
+        "mv <legacy-backup> ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist",
+        "launchctl enable gui/$(id -u)/com.anytype.anytype-agent-gateway",
+        "launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.anytype.anytype-agent-gateway.plist",
+      ]
+    : [
+        "systemctl --user disable --now knot.service",
+        "mv <legacy-backup> ~/.config/systemd/user/anytype-agent-gateway.service",
+        "systemctl --user daemon-reload",
+        "systemctl --user enable --now anytype-agent-gateway.service",
+      ];
+}
+
+function platformServiceMigrationManager(home: string): ServiceMigrationManager {
+  if (process.platform === "linux") return systemdMigrationManager(home);
+  if (process.platform === "darwin") return launchdMigrationManager(home);
+  throw new Error("Service migration supports Linux systemd and macOS launchd only");
+}
+
+function systemdMigrationManager(home: string): ServiceMigrationManager {
+  const directory = join(home, ".config", "systemd", "user");
+  const legacyPath = join(directory, PRODUCT.services.linux.legacy);
+  return {
+    async inspect(generation) {
+      const identity =
+        generation === "aag" ? PRODUCT.services.linux.legacy : PRODUCT.services.linux.current;
+      const defined = await access(join(directory, identity), constants.R_OK)
+        .then(() => true)
+        .catch(() => false);
+      const enabled = await runProcess("systemctl", ["--user", "is-enabled", "--quiet", identity])
+        .then(() => true)
+        .catch(() => false);
+      const running = await runProcess("systemctl", ["--user", "is-active", "--quiet", identity])
+        .then(() => true)
+        .catch(() => false);
+      return { defined, enabled, running };
+    },
+    async stopAndDisableLegacy() {
+      await runProcess("systemctl", ["--user", "disable", "--now", PRODUCT.services.linux.legacy]);
+    },
+    async backupLegacy(stamp) {
+      const backup = `${legacyPath}.pre-knot-${stamp}.bak`;
+      await rename(legacyPath, backup);
+      try {
+        await runProcess("systemctl", ["--user", "daemon-reload"]);
+      } catch (error) {
+        await rename(backup, legacyPath).catch(() => undefined);
+        throw error;
+      }
+      return backup;
+    },
+    installCurrent: installSystemdService,
+    async stopAndDisableCurrent() {
+      const currentPath = join(directory, PRODUCT.services.linux.current);
+      if (
+        !(await access(currentPath)
+          .then(() => true)
+          .catch(() => false))
+      )
+        return;
+      await runProcess("systemctl", [
+        "--user",
+        "disable",
+        "--now",
+        PRODUCT.services.linux.current,
+      ]).catch(() => undefined);
+      await unlink(currentPath);
+      await runProcess("systemctl", ["--user", "daemon-reload"]);
+    },
+    async restoreLegacy(backup) {
+      if (backup) await rename(backup, legacyPath);
+      await runProcess("systemctl", ["--user", "daemon-reload"]);
+      await runProcess("systemctl", ["--user", "enable", "--now", PRODUCT.services.linux.legacy]);
+    },
+    async findLegacyBackup() {
+      const matches = (await readdir(directory).catch(() => []))
+        .filter(
+          (name) =>
+            name.startsWith(`${PRODUCT.services.linux.legacy}.pre-knot-`) && name.endsWith(".bak"),
+        )
+        .sort();
+      if (matches.length > 1)
+        throw new Error("Multiple legacy systemd backups exist; refusing ambiguous resume");
+      return matches[0] ? join(directory, matches[0]) : undefined;
+    },
+  };
+}
+
+function launchdMigrationManager(home: string): ServiceMigrationManager {
+  const directory = join(home, "Library", "LaunchAgents");
+  const legacyPath = join(directory, `${PRODUCT.services.darwin.legacy}.plist`);
+  const domain = launchdDomain();
+  return {
+    async inspect(generation) {
+      const identity =
+        generation === "aag" ? PRODUCT.services.darwin.legacy : PRODUCT.services.darwin.current;
+      const defined = await access(join(directory, `${identity}.plist`), constants.R_OK)
+        .then(() => true)
+        .catch(() => false);
+      const running = await launchdJobIsLoaded(`${domain}/${identity}`);
+      const { stdout } = await runProcess("/bin/launchctl", ["print-disabled", domain]);
+      const disabled = new RegExp(
+        `"${identity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*=>\\s*(?:true|disabled)`,
+        "u",
+      ).test(stdout);
+      return { defined, enabled: defined && !disabled, running };
+    },
+    async stopAndDisableLegacy() {
+      const target = `${domain}/${PRODUCT.services.darwin.legacy}`;
+      await runProcess("/bin/launchctl", ["disable", target]);
+      if (await launchdJobIsLoaded(target))
+        await runProcess("/bin/launchctl", ["bootout", target]).catch(() => undefined);
+      await waitForLaunchdUnloaded(target);
+    },
+    async backupLegacy(stamp) {
+      const backup = `${legacyPath}.pre-knot-${stamp}.bak`;
+      await rename(legacyPath, backup);
+      return backup;
+    },
+    installCurrent: installLaunchdService,
+    async stopAndDisableCurrent() {
+      const target = `${domain}/${PRODUCT.services.darwin.current}`;
+      await runProcess("/bin/launchctl", ["disable", target]).catch(() => undefined);
+      if (await launchdJobIsLoaded(target))
+        await runProcess("/bin/launchctl", ["bootout", target]).catch(() => undefined);
+      await unlink(join(directory, `${PRODUCT.services.darwin.current}.plist`)).catch(
+        () => undefined,
+      );
+    },
+    async restoreLegacy(backup) {
+      if (backup) await rename(backup, legacyPath);
+      const target = `${domain}/${PRODUCT.services.darwin.legacy}`;
+      await runProcess("/bin/launchctl", ["enable", target]);
+      await bootstrapLaunchd(domain, legacyPath, target);
+    },
+    async findLegacyBackup() {
+      const matches = (await readdir(directory).catch(() => []))
+        .filter(
+          (name) =>
+            name.startsWith(`${PRODUCT.services.darwin.legacy}.plist.pre-knot-`) &&
+            name.endsWith(".bak"),
+        )
+        .sort();
+      if (matches.length > 1)
+        throw new Error("Multiple legacy launchd backups exist; refusing ambiguous resume");
+      return matches[0] ? join(directory, matches[0]) : undefined;
+    },
+  };
 }
 
 async function installSystemdService(configPath: string): Promise<void> {

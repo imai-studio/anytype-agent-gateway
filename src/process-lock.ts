@@ -1,6 +1,54 @@
-import { constants } from "node:fs";
+import { constants, existsSync } from "node:fs";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
+
+export function compatibleProcessLockPaths(statePath: string): string[] {
+  const current = `${statePath}.lock`;
+  const marker = statePath.includes("/.local/state/aag/")
+    ? "/.local/state/aag/"
+    : statePath.includes("/.local/state/knot/")
+      ? "/.local/state/knot/"
+      : undefined;
+  const shared = marker
+    ? join(
+        statePath.slice(0, statePath.indexOf(marker)),
+        ".local",
+        "state",
+        `.aag-knot-${basename(statePath)}.lock`,
+      )
+    : undefined;
+  const counterpart = marker
+    ? marker.includes("/aag/")
+      ? `${statePath.replace("/.local/state/aag/", "/.local/state/knot/")}.lock`
+      : `${statePath.replace("/.local/state/knot/", "/.local/state/aag/")}.lock`
+    : undefined;
+  return [
+    ...new Set(
+      [
+        current,
+        shared,
+        counterpart && existsSync(dirname(counterpart)) ? counterpart : undefined,
+      ].filter((path): path is string => Boolean(path)),
+    ),
+  ].sort();
+}
+
+export async function acquireCompatibleProcessLocks(
+  statePath: string,
+  options: Parameters<typeof acquireProcessLock>[1] = {},
+): Promise<() => Promise<void>> {
+  const releases: Array<() => Promise<void>> = [];
+  try {
+    for (const path of compatibleProcessLockPaths(statePath))
+      releases.push(await acquireProcessLock(path, options));
+    return async () => {
+      for (const release of releases.reverse()) await release();
+    };
+  } catch (error) {
+    for (const release of releases.reverse()) await release();
+    throw error;
+  }
+}
 
 type ProcessProbe = (pid: number, signal: 0) => void;
 
