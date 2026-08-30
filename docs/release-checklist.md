@@ -59,7 +59,7 @@ or project paths into a transcript.
 knot --version
 knot validate --config "$KLEE_KNOT_CONFIG"
 knot doctor --config "$KLEE_KNOT_CONFIG"
-knot migrate --dry-run --json
+knot migrate --config "$KLEE_LEGACY_CONFIG" --dry-run --json
 ```
 
 Stop Klee's current foreground/service process before any real migration. In one pre-approved test
@@ -74,8 +74,11 @@ denied. Record only pass/fail and non-sensitive message IDs if needed.
 knot validate --config "$ANYA_KNOT_CONFIG"
 knot doctor --config "$ANYA_KNOT_CONFIG"
 knot openclaw plugin path
-knot migrate --dry-run --json
+knot migrate --config "$ANYA_LEGACY_CONFIG" --dry-run --json
 ```
+
+`KLEE_LEGACY_CONFIG` and `ANYA_LEGACY_CONFIG` must name canonical regular `agent.yaml` files beneath
+`~/.config/aag`; they are intentionally distinct from the migrated Knot config variables.
 
 In one approved test route, verify one native session binding, steering, durable assistant output,
 and a command-job continuation created from fresh `aag_context` output. Verify both Heart lookup
@@ -91,9 +94,11 @@ and forwarded admin text all remain unauthorized because only the immutable nati
 After dry-run review and a maintenance window:
 
 ```bash
-knot service migrate --json
+knot service migrate --config "$LEGACY_CONFIG" --json
 knot service status
 ```
+
+Set `LEGACY_CONFIG` to the same selected legacy config used for that agent's migration dry run.
 
 Confirm the returned manifest and legacy service backup exist without printing their contents.
 Verify exactly one Knot process owns the migrated state and no historical message is delivered.

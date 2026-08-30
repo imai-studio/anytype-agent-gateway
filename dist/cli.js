@@ -31,10 +31,14 @@ const program = new Command()
 program
     .command("migrate")
     .description("Copy and verify a legacy AAG installation without modifying it")
+    .option("-c, --config <path>", "legacy AAG agent.yaml to migrate")
     .option("--dry-run", "print the migration plan without writing")
     .option("--json", "emit a machine-readable result")
     .action(async (options) => {
-    const result = await migrateInstallation({ dryRun: Boolean(options.dryRun) });
+    const result = await migrateInstallation({
+        dryRun: Boolean(options.dryRun),
+        ...(options.config ? { legacyConfigPath: resolve(options.config) } : {}),
+    });
     if (options.json)
         console.log(JSON.stringify(result));
     else {
@@ -340,10 +344,14 @@ service
 service
     .command("migrate")
     .description("Safely replace an exact legacy AAG service with Knot")
+    .option("-c, --config <path>", "legacy AAG agent.yaml to migrate")
     .option("--dry-run", "print the service migration plan without writing")
     .option("--json", "emit a machine-readable result")
     .action(async (options) => {
-    const result = await migrateService({ dryRun: Boolean(options.dryRun) });
+    const result = await migrateService({
+        dryRun: Boolean(options.dryRun),
+        ...(options.config ? { legacyConfigPath: resolve(options.config) } : {}),
+    });
     console.log(options.json ? JSON.stringify(result) : JSON.stringify(result, null, 2));
 });
 for (const command of ["status", "restart", "stop", "logs"])

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
 import { runProcess } from "./process.js";
 import { detectServices, logNamespace, PRODUCT } from "./compatibility.js";
-import { latestMigrationManifest, migrateInstallation } from "./migration.js";
+import { latestMigrationManifest, migrateInstallation, resolveLegacyConfigSource, } from "./migration.js";
 export const systemdServiceName = PRODUCT.services.linux.current;
 export const launchdServiceLabel = PRODUCT.services.darwin.current;
 const anytypeLaunchAgentName = "anytype.plist";
@@ -37,13 +37,19 @@ export async function migrateService(options = {}) {
         throw new Error("Both AAG and Knot service definitions exist; refusing service migration");
     if ((legacy.enabled || legacy.running) && (current.enabled || current.running))
         throw new Error("Both AAG and Knot services are enabled or running; refusing service migration");
+    const migrationOptions = {
+        home,
+        dryRun: true,
+        ...(options.legacyConfigPath ? { legacyConfigPath: options.legacyConfigPath } : {}),
+    };
     if (!legacy.defined &&
         !legacy.enabled &&
         !legacy.running &&
         current.defined &&
         current.enabled &&
         current.running) {
-        const migration = await latestMigrationManifest(home);
+        const selectedConfigSource = await resolveLegacyConfigSource(home, options.legacyConfigPath);
+        const migration = await latestMigrationManifest(home, selectedConfigSource);
         if (!migration)
             throw new Error("Knot is running but no verified migration manifest exists; refusing ambiguity");
         const legacyBackup = await manager.findLegacyBackup?.();
@@ -57,10 +63,9 @@ export async function migrateService(options = {}) {
     if (!legacy.defined && !resumableBackup)
         throw new Error("No exact legacy AAG service definition was found; refusing ambiguous migration");
     const phases = [resumableBackup ? "resumed-after-legacy-backup" : "legacy-detected"];
-    if (options.dryRun) {
-        const migration = await migrateInstallation({ home, dryRun: true });
-        return { migration, phases, rollback };
-    }
+    const preflight = await migrateInstallation(migrationOptions);
+    if (options.dryRun)
+        return { migration: preflight, phases, rollback };
     const stamp = (options.now ?? new Date()).toISOString().replace(/[:.]/gu, "-");
     let backup = resumableBackup;
     let legacyStopped = Boolean(resumableBackup);
@@ -75,12 +80,13 @@ export async function migrateService(options = {}) {
         }
         const migration = await migrateInstallation({
             home,
+            ...(options.legacyConfigPath ? { legacyConfigPath: options.legacyConfigPath } : {}),
             ...(options.now ? { now: options.now } : {}),
         });
         const migratedConfig = migration.items.find((item) => item.kind === "config");
-        const configPath = join(home, ".config", "knot", "agent.yaml");
         if (migratedConfig?.status !== "verified")
             throw new Error("Migration did not produce a verified Knot configuration");
+        const configPath = join(migratedConfig.destination, "agent.yaml");
         const loadedConfig = await loadConfig(configPath);
         const knotStateRoot = join(home, ".local", "state", "knot");
         const stateRelative = relative(knotStateRoot, loadedConfig.state.path);

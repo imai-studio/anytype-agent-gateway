@@ -12,11 +12,13 @@ export type MigrationResult = {
     manifest?: string;
     rollback: string[];
 };
-export declare function migrationPaths(home?: string, legacyStatePath?: string): MigrationItem[];
+export declare function migrationPaths(home?: string, legacyStatePath?: string, legacyConfigPath?: string): MigrationItem[];
 export declare function migrateInstallation(options?: {
     home?: string;
+    legacyConfigPath?: string;
     dryRun?: boolean;
     now?: Date;
     interruptAfterCopies?: number;
 }): Promise<MigrationResult>;
-export declare function latestMigrationManifest(home?: string): Promise<MigrationResult | undefined>;
+export declare function latestMigrationManifest(home?: string, expectedConfigSource?: string): Promise<MigrationResult | undefined>;
+export declare function resolveLegacyConfigSource(home?: string, requested?: string): Promise<string>;

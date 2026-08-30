@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, unlink, } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parse, stringify } from "yaml";
 import { acquireCompatibleProcessLocks } from "./process-lock.js";
@@ -18,16 +18,17 @@ const replayTables = [
     "proactive_deliveries",
     "bridge_cursors",
 ];
-export function migrationPaths(home = homedir(), legacyStatePath) {
+export function migrationPaths(home = homedir(), legacyStatePath, legacyConfigPath) {
     const defaultState = join(home, ".local", "state", "aag", "state.sqlite");
     const statePath = resolve(legacyStatePath ?? defaultState);
     const stateMarker = `${sep}.local${sep}state${sep}aag${sep}`;
     if (!statePath.includes(stateMarker))
-        throw new Error(`Legacy state path is outside the migratable AAG state tree: ${statePath}. Configure an AAG path beneath ~/.local/state/aag before migration.`);
+        throw new Error(`Legacy state path is outside the migratable AAG state tree: ${statePath}. The selected --config must set state.path beneath ~/.local/state/aag, including its per-agent directory when applicable.`);
     const stateSource = dirname(statePath);
     const stateDestination = dirname(statePath.replace(stateMarker, `${sep}.local${sep}state${sep}knot${sep}`));
+    const { configSource, configDestination } = legacyConfigLayout(home, legacyConfigPath ?? join(home, ".config", "aag", "agent.yaml"));
     const paths = [
-        ["config", join(home, ".config", "aag"), join(home, ".config", "knot")],
+        ["config", configSource, configDestination],
         ["state", stateSource, stateDestination],
         ["support", join(home, ".local", "share", "aag"), join(home, ".local", "share", "knot")],
         [
@@ -46,8 +47,9 @@ export function migrationPaths(home = homedir(), legacyStatePath) {
 export async function migrateInstallation(options = {}) {
     const home = resolve(options.home ?? homedir());
     await assertSafeHome(home);
-    const legacyState = await resolvedLegacyStatePath(home);
-    const items = migrationPaths(home, legacyState);
+    const legacyConfigPath = await resolveLegacyConfigSelection(home, options.legacyConfigPath);
+    const legacyState = await resolvedLegacyStatePath(home, legacyConfigPath);
+    const items = migrationPaths(home, legacyState, legacyConfigPath);
     for (const item of items) {
         if (!(await exists(item.source)))
             item.status = "missing";
@@ -93,18 +95,30 @@ export async function migrateInstallation(options = {}) {
         await release();
     }
 }
-export async function latestMigrationManifest(home = homedir()) {
+export async function latestMigrationManifest(home = homedir(), expectedConfigSource) {
     const directory = join(resolve(home), ".local", "state", "knot-migration-manifests");
     const names = (await readdir(directory).catch(() => []))
         .filter((name) => /^\d{4}-.*\.json$/u.test(name))
         .sort();
-    const name = names.at(-1);
-    if (!name)
-        return undefined;
-    const value = JSON.parse(await readFile(join(directory, name), "utf8"));
-    if (value.version !== 1 || value.state !== "complete" || value.dryRun)
-        throw new Error(`Invalid migration manifest: ${join(directory, name)}`);
-    return value;
+    for (const name of names.reverse()) {
+        const path = join(directory, name);
+        let value;
+        try {
+            value = JSON.parse(await readFile(path, "utf8"));
+        }
+        catch {
+            if (expectedConfigSource)
+                continue;
+            throw new Error(`Invalid migration manifest: ${path}`);
+        }
+        const configSource = value.items?.find((item) => item.kind === "config")?.source;
+        if (expectedConfigSource && configSource !== expectedConfigSource)
+            continue;
+        if (value.version !== 1 || value.state !== "complete" || value.dryRun)
+            throw new Error(`Invalid migration manifest: ${path}`);
+        return value;
+    }
+    return undefined;
 }
 async function configTransform(source, destination, contents) {
     if (basename(source) !== "agent.yaml")
@@ -217,8 +231,7 @@ async function verifySqlite(destination) {
         await rm(directory, { recursive: true, force: true });
     }
 }
-async function resolvedLegacyStatePath(home) {
-    const configPath = join(home, ".config", "aag", "agent.yaml");
+async function resolvedLegacyStatePath(home, configPath) {
     let explicit;
     if (await exists(configPath)) {
         const raw = parse(await readFile(configPath, "utf8"));
@@ -226,6 +239,69 @@ async function resolvedLegacyStatePath(home) {
             explicit = raw.state.path;
     }
     return resolveStatePath({ ...(explicit ? { explicit } : {}), home });
+}
+function legacyConfigLayout(home, configPath) {
+    const root = join(home, ".config", "aag");
+    const selectedConfig = resolve(configPath);
+    const configRelative = relative(root, selectedConfig);
+    if (configRelative === ".." ||
+        configRelative.startsWith(`..${sep}`) ||
+        isAbsolute(configRelative) ||
+        configRelative === "" ||
+        configRelative === "." ||
+        basename(selectedConfig) !== "agent.yaml")
+        throw new Error(`Legacy configuration must be an agent.yaml beneath ${root}`);
+    const configDirectoryRelative = dirname(configRelative);
+    return {
+        selectedConfig,
+        configSource: dirname(selectedConfig),
+        configDestination: configDirectoryRelative === "."
+            ? join(home, ".config", "knot")
+            : join(home, ".config", "knot", configDirectoryRelative),
+    };
+}
+async function resolveLegacyConfigSelection(home, requested) {
+    const defaultConfig = join(home, ".config", "aag", "agent.yaml");
+    const layout = legacyConfigLayout(home, requested ?? defaultConfig);
+    if (!requested && !(await exists(layout.selectedConfig))) {
+        const candidates = await nestedLegacyConfigs(join(home, ".config", "aag"));
+        if (candidates.length > 0)
+            throw new Error(`No default legacy configuration exists at ${defaultConfig}; found ${candidates.length} nested agent.yaml ${candidates.length === 1 ? `at ${candidates[0]}` : "files"}. Rerun with --config <legacy agent.yaml>.`);
+        return layout.selectedConfig;
+    }
+    const info = await lstat(layout.selectedConfig);
+    if (!info.isFile() || info.isSymbolicLink())
+        throw new Error(`Legacy configuration is not a safe regular file: ${layout.selectedConfig}`);
+    if ((await realpath(layout.selectedConfig)) !== layout.selectedConfig)
+        throw new Error(`Legacy configuration must use a canonical path: ${layout.selectedConfig}`);
+    return layout.selectedConfig;
+}
+export async function resolveLegacyConfigSource(home = homedir(), requested) {
+    const resolvedHome = resolve(home);
+    const selected = await resolveLegacyConfigSelection(resolvedHome, requested);
+    return legacyConfigLayout(resolvedHome, selected).configSource;
+}
+async function nestedLegacyConfigs(root) {
+    if (!(await exists(root)))
+        return [];
+    const rootInfo = await lstat(root);
+    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory())
+        throw new Error(`Legacy configuration root is not a safe directory: ${root}`);
+    const output = [];
+    async function visit(directory) {
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+            const path = join(directory, entry.name);
+            const info = await lstat(path);
+            if (info.isSymbolicLink())
+                continue;
+            if (info.isDirectory())
+                await visit(path);
+            else if (info.isFile() && entry.name === "agent.yaml")
+                output.push(path);
+        }
+    }
+    await visit(root);
+    return output.sort();
 }
 function sqliteSnapshot(path) {
     const db = new DatabaseSync(path);

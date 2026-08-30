@@ -17,6 +17,17 @@ knot migrate --dry-run
 knot migrate --dry-run --json
 ```
 
+If this machine uses an agent-specific config such as `~/.config/aag/klee/agent.yaml`, select it
+explicitly. Knot preserves the relative layout as `~/.config/knot/klee/agent.yaml` and maps an
+explicit `state.path` beneath `~/.local/state/aag` to the corresponding Knot state tree. A nested
+config without an explicit `state.path` uses the shared `~/.local/state/aag` tree exactly as AAG did;
+set an explicit per-agent path when the state lives in a nested directory:
+
+```bash
+knot migrate --config ~/.config/aag/klee/agent.yaml --dry-run --json
+knot service migrate --config ~/.config/aag/klee/agent.yaml --dry-run --json
+```
+
 `knot migrate` copies the legacy configuration, SQLite state, support files, and macOS logs to the
 Knot paths. It rejects symlinks and non-regular files, preserves modes, writes through same-filesystem
 temporary files/directories, fsyncs before rename, and compares file sizes and SHA-256 digests. For
@@ -27,7 +38,8 @@ or converted. Existing identical destinations make the command idempotent; any d
 stops the migration. A `-wal` or `-shm` sidecar means state is not safely quiescent and must be
 resolved by cleanly stopping AAG before retrying.
 
-After a successful copy, run `knot service migrate --dry-run`, followed by `knot service migrate`.
+After a successful copy, run `knot service migrate --dry-run`, followed by `knot service migrate`
+(passing the same `--config` when one was selected).
 Service migration requires exactly the legacy definition and no Knot definition. It verifies the
 copy, disables and stops AAG, retains its definition as a timestamped `.pre-knot-*.bak`, installs
 Knot, and proves AAG is inactive while Knot is enabled and running. A failed transition restores and

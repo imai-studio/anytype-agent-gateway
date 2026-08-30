@@ -36,6 +36,7 @@ export type ServiceMigrationResult = {
 };
 export declare function migrateService(options?: {
     home?: string;
+    legacyConfigPath?: string;
     dryRun?: boolean;
     manager?: ServiceMigrationManager;
     now?: Date;

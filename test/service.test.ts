@@ -133,6 +133,24 @@ describe.each(["systemd", "launchd"])("%s service migration harness", () => {
     expect(await manager.inspect("knot")).toEqual({ defined: true, enabled: true, running: true });
   });
 
+  it("installs the migrated service from a selected per-agent config", async () => {
+    const home = await serviceMigrationHome("klee");
+    const manager = new FakeServiceManager();
+    await migrateService({
+      home,
+      manager,
+      legacyConfigPath: join(home, ".config/aag/klee/agent.yaml"),
+    });
+    expect(manager.installedConfigPath).toBe(join(home, ".config/knot/klee/agent.yaml"));
+  });
+
+  it("fails before stopping legacy when a nested config was not selected", async () => {
+    const home = await serviceMigrationHome("klee");
+    const manager = new FakeServiceManager();
+    await expect(migrateService({ home, manager })).rejects.toThrow("Rerun with --config");
+    expect(manager.legacy).toEqual({ defined: true, enabled: true, running: true });
+  });
+
   it("fails closed when both definitions are present", async () => {
     const home = await serviceMigrationHome();
     const manager = new FakeServiceManager();
@@ -164,10 +182,11 @@ describe.each(["systemd", "launchd"])("%s service migration harness", () => {
     expect(manager.current).toEqual({ defined: true, enabled: true, running: true });
   });
 
-  it("recognizes an already migrated healthy service", async () => {
+  it("recognizes an already migrated healthy service with live destination state", async () => {
     const home = await serviceMigrationHome();
     const manager = new FakeServiceManager();
     await migrateService({ home, manager });
+    await writeFile(join(home, ".local/state/knot/state.sqlite-wal"), "live traffic");
     const result = await migrateService({ home, manager });
     expect(result.phases).toContain("already-migrated");
   });
@@ -201,6 +220,7 @@ class FakeServiceManager implements ServiceMigrationManager {
   current: ManagedServiceState = { defined: false, enabled: false, running: false };
   failInstall = false;
   backup: string | undefined;
+  installedConfigPath: string | undefined;
   async inspect(generation: "aag" | "knot"): Promise<ManagedServiceState> {
     return { ...(generation === "aag" ? this.legacy : this.current) };
   }
@@ -213,8 +233,9 @@ class FakeServiceManager implements ServiceMigrationManager {
     this.backup = "/fixture/legacy.backup";
     return this.backup;
   }
-  async installCurrent(): Promise<void> {
+  async installCurrent(configPath: string): Promise<void> {
     if (this.failInstall) throw new Error("install failed");
+    this.installedConfigPath = configPath;
     this.current = { defined: true, enabled: true, running: true };
   }
   async stopAndDisableCurrent(): Promise<void> {
@@ -229,13 +250,15 @@ class FakeServiceManager implements ServiceMigrationManager {
   }
 }
 
-async function serviceMigrationHome(): Promise<string> {
+async function serviceMigrationHome(agent?: string): Promise<string> {
   const home = await realpath(await mkdtemp(join(tmpdir(), "knot-service-migration-")));
-  await mkdir(join(home, ".config/aag"), { recursive: true });
-  await mkdir(join(home, ".local/state/aag"), { recursive: true });
-  const state = join(home, ".local/state/aag/state.sqlite");
+  const configDirectory = join(home, ".config/aag", agent ?? "");
+  const stateDirectory = join(home, ".local/state/aag", agent ?? "");
+  await mkdir(configDirectory, { recursive: true });
+  await mkdir(stateDirectory, { recursive: true });
+  const state = join(stateDirectory, "state.sqlite");
   await writeFile(
-    join(home, ".config/aag/agent.yaml"),
+    join(configDirectory, "agent.yaml"),
     `version: 1\nagent:\n  name: Fixture\n  participantId: _participant_fixture_agent_01\nanytype:\n  apiKeyFile: /fixture/key\nspaces:
   - id: _space_fixture_01\nruntime:\n  kind: codex\nstate:\n  path: ${state}\n`,
   );
