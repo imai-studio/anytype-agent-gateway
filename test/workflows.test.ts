@@ -1,3 +1,6 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { configSchema } from "../src/config.js";
 import { AgentController } from "../src/controller.js";
@@ -73,6 +76,7 @@ describe("example workflows", () => {
   });
 
   it("supplies OpenClaw with a capability bound to the authenticated Anytype turn", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "knot-openclaw-workspace-prompt-"));
     const anytype = new FakeAnytype();
     const runtime = new FakeRuntime();
     Object.defineProperty(runtime, "name", { value: "openclaw" });
@@ -82,7 +86,8 @@ describe("example workflows", () => {
       agent: { name: "AAG", participantId: "bot" },
       anytype: { apiKeyFile: "/tmp/key" },
       spaces: [{ name: "Test" }],
-      runtime: { kind: "openclaw" },
+      runtime: { kind: "openclaw", defaultProject: workspace },
+      context: { promptMode: "workspace" },
       management: { allowAccessChanges: true, accessAdmins: ["human-1"] },
     });
     const controller = new AgentController(

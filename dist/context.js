@@ -100,6 +100,9 @@ export function formatPrompt(bundle, config, managementCommand, workspaceContext
     };
     if (config.context.promptMode === "workspace") {
         if (workspaceContextFile) {
+            const trustedManagement = config.runtime.kind === "openclaw" && managementCommand
+                ? [`Authenticated turn capabilities (trusted Knot metadata):\n${managementCommand}`]
+                : [];
             const message = bundle.trigger.content?.text?.trim();
             const attached = (bundle.attachments ?? [])
                 .filter((attachment) => attachment.messageId === bundle.trigger.id)
@@ -122,11 +125,13 @@ export function formatPrompt(bundle, config, managementCommand, workspaceContext
                 return [
                     "This Codex task receives Anytype messages through Knot. Follow the workspace AGENTS.md.",
                     `Knot updates untrusted route context at ${workspaceContextFile}. Read it only when the request needs history, reply ancestry, object references, participant IDs, or route metadata.`,
+                    ...trustedManagement,
                     ...(currentTurn ? ["", currentTurn] : ["", "Output exactly [[AAG_STAY_SILENT]]."]),
                 ].join("\n");
-            if (currentTurn)
-                return currentTurn;
-            return `Inspect the current Anytype turn in ${workspaceContextFile}.`;
+            const turnPrompt = currentTurn
+                ? currentTurn
+                : `Inspect the current Anytype turn in ${workspaceContextFile}.`;
+            return [...trustedManagement, turnPrompt].join("\n\n");
         }
         return [
             `Knot turn for ${config.agent.name}. Follow the workspace AGENTS.md for identity, gateway protocol, tools, permissions, and response behavior.`,
