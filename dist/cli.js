@@ -157,7 +157,7 @@ program
     try {
         store = new Store(config.state.path);
         const configPath = resolve(selectedPath);
-        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId) => managementCommand(config, routeId), (spaceId, spaceName, chatId, chatName, wake) => enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }));
+        const gateway = new Gateway(anytype, makeRuntime(config, store, configPath), config, store, new HeartDiscussionAdapter(config), log, (routeId, capabilities) => managementCommand(config, routeId, capabilities), (spaceId, spaceName, chatId, chatName, wake) => enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }));
         const stop = () => gateway.stop({ drain: true });
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
@@ -376,12 +376,14 @@ function makeRuntime(config, store, configPath) {
 function log(event, fields = {}) {
     console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));
 }
-function managementCommand(config, routeId) {
+function managementCommand(config, routeId, capabilities) {
     const commands = [];
     if (config.management.allowWakeChanges)
-        commands.push(`Wake tool: aag_set_wake with route_id=${JSON.stringify(routeId)} and humans=<mode>`);
+        commands.push(`Wake tool: aag_set_wake with route_id=${JSON.stringify(routeId)}, humans=<mode>${capabilities?.wake ? `, and actor_capability=${JSON.stringify(capabilities.wake)}` : ""}`);
     if (config.management.allowAccessChanges)
-        commands.push(`Access tool: aag_set_access with route_id=${JSON.stringify(routeId)}, actor_id set to the authenticated sender ID from context, operation=<add|remove|replace>, and participant_ids=[<native-participant-id>]`);
+        commands.push(`Access tool: aag_set_access with route_id=${JSON.stringify(routeId)}, operation=<add|remove|replace>, participant_ids=[<native-participant-id>]${capabilities?.access ? `, and actor_capability=${JSON.stringify(capabilities.access)}` : ""}`);
+    if (config.models.enabled && config.management.allowModelChanges && capabilities?.model)
+        commands.push(`Model tool: aag_set_model with route_id=${JSON.stringify(routeId)}, model_id=<exact-model-or-default>, and actor_capability=${JSON.stringify(capabilities.model)}`);
     return commands.join("\n");
 }
 function bundledOpenClawPluginPath() {

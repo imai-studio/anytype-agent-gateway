@@ -2,7 +2,8 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { configSchema } from "../src/config.js";
+import YAML from "yaml";
+import { configSchema, loadConfig } from "../src/config.js";
 import { callTool, toolDefinitions } from "../src/mcp.js";
 import { Store } from "../src/store.js";
 import type { AnytypeClient } from "../src/anytype-client.js";
@@ -586,6 +587,7 @@ describe("AAG Anytype MCP policy", () => {
     });
     const access = toolDefinitions(managed).find((tool) => tool.name === "aag_set_access");
     expect(access?.inputSchema).not.toHaveProperty("properties.actor_id");
+    expect(access?.inputSchema).toHaveProperty("properties.actor_capability");
   });
 
   it("fails closed when participant access changes have no verified sender", async () => {
@@ -603,6 +605,67 @@ describe("AAG Anytype MCP policy", () => {
         { operation: "add", participant_ids: ["member"] },
       ),
     ).rejects.toThrow("could not be verified");
+  });
+
+  it("accepts one route-scoped capability minted for the authenticated OpenClaw turn", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "knot-mcp-capability-"));
+    const configPath = join(directory, "agent.yaml");
+    const statePath = join(directory, "state.sqlite");
+    await writeFile(
+      configPath,
+      YAML.stringify({
+        version: 1,
+        agent: { name: "Anya", participantId: "bot" },
+        anytype: { apiKeyFile: "/private/key" },
+        spaces: [
+          {
+            id: "space-1",
+            chats: [
+              {
+                id: "current-chat",
+                wake: { humans: "mention", agents: "never", allowedUsers: ["admin"] },
+              },
+            ],
+          },
+        ],
+        runtime: { kind: "openclaw" },
+        tools: { anytype: { allowWrite: false } },
+        management: { allowAccessChanges: true, accessAdmins: ["admin"] },
+        state: { path: statePath },
+      }),
+    );
+    const managed = await loadConfig(configPath);
+    const store = new Store(statePath);
+    const capability = store.issueManagementCapability(
+      "chat:space-1:current-chat",
+      "admin",
+      "access",
+    );
+    store.close();
+
+    await expect(
+      callTool(
+        client(),
+        managed,
+        configPath,
+        "chat:space-1:current-chat",
+        "space-1",
+        "aag_set_access",
+        { operation: "add", participant_ids: ["member"], actor_capability: capability },
+      ),
+    ).resolves.toMatchObject({ allowed_users: ["admin", "member"] });
+    await expect(
+      callTool(
+        client(),
+        managed,
+        configPath,
+        "chat:space-1:current-chat",
+        "space-1",
+        "aag_set_access",
+        { operation: "add", participant_ids: ["other"], actor_capability: capability },
+      ),
+    ).rejects.toThrow("could not be verified");
+    await rm(directory, { recursive: true, force: true });
   });
 
   it("keeps archive independent from general write permission", async () => {

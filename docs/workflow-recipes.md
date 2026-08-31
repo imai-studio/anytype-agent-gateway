@@ -471,6 +471,11 @@ Access changes are separate. Only an identity in `accessAdmins` may ask the agen
 replace sender IDs through `aag_set_access`. The tool rejects wildcard grants and prevents an admin
 from removing an access admin.
 
+Authorization is based on the native Anytype sender, never a display name or an ID supplied by the
+model. Codex binds the sender directly to its turn. For OpenClaw, Knot supplies an opaque,
+single-use capability scoped to that sender, route, and management action; the next human turn
+invalidates any unused capability. Do not add a static actor ID to OpenClaw's MCP configuration.
+
 The change is scoped to the current chat or discussion and applies to the next message without a
 restart. Direct-message policy stays in operator configuration and cannot be changed through route
 self-management.

@@ -1,6 +1,11 @@
 import { type AgentConfig, type WakeConfig } from "./config.js";
 import { Store } from "./store.js";
 import type { AnytypePort, ChatMessage, ConversationRef, RuntimeDriver } from "./types.js";
+export type ManagementActorCapabilities = {
+    wake?: string;
+    access?: string;
+    model?: string;
+};
 export declare class AgentController {
     private readonly anytype;
     private readonly runtime;
@@ -18,7 +23,7 @@ export declare class AgentController {
     private outboxDrain;
     private readonly outboxTimer;
     private readonly observerTimer;
-    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, log: (event: string, fields?: Record<string, unknown>) => void, discussionAnytype?: AnytypePort, managementCommand?: ((routeId: string) => string) | undefined);
+    constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, log: (event: string, fields?: Record<string, unknown>) => void, discussionAnytype?: AnytypePort, managementCommand?: ((routeId: string, capabilities?: ManagementActorCapabilities) => string) | undefined);
     process(conversation: ConversationRef, wake: WakeConfig, message: ChatMessage, options?: {
         wakeIsEffective?: boolean;
     }): Promise<void>;
@@ -36,6 +41,7 @@ export declare class AgentController {
     private resolveModel;
     private sendControlMessage;
     private steerPrompt;
+    private managementActorCommand;
     private thread;
     private agentHop;
     private port;

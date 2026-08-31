@@ -7,6 +7,7 @@ import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 import { AnytypeClient } from "./anytype-client.js";
 import { loadConfig } from "./config.js";
+import type { ManagementActorCapabilities } from "./controller.js";
 import { HeartDiscussionAdapter } from "./discussions.js";
 import { Gateway } from "./gateway.js";
 import { createIdentity, joinSpaces } from "./identity.js";
@@ -193,7 +194,7 @@ program
         store,
         new HeartDiscussionAdapter(config),
         log,
-        (routeId) => managementCommand(config, routeId),
+        (routeId, capabilities) => managementCommand(config, routeId, capabilities),
         (spaceId, spaceName, chatId, chatName, wake) =>
           enrollChatRoute({ configPath, spaceId, spaceName, chatId, chatName, wake }),
       );
@@ -440,15 +441,20 @@ function log(event: string, fields: Record<string, unknown> = {}): void {
 function managementCommand(
   config: Awaited<ReturnType<typeof loadConfig>>,
   routeId: string,
+  capabilities?: ManagementActorCapabilities,
 ): string {
   const commands: string[] = [];
   if (config.management.allowWakeChanges)
     commands.push(
-      `Wake tool: aag_set_wake with route_id=${JSON.stringify(routeId)} and humans=<mode>`,
+      `Wake tool: aag_set_wake with route_id=${JSON.stringify(routeId)}, humans=<mode>${capabilities?.wake ? `, and actor_capability=${JSON.stringify(capabilities.wake)}` : ""}`,
     );
   if (config.management.allowAccessChanges)
     commands.push(
-      `Access tool: aag_set_access with route_id=${JSON.stringify(routeId)}, actor_id set to the authenticated sender ID from context, operation=<add|remove|replace>, and participant_ids=[<native-participant-id>]`,
+      `Access tool: aag_set_access with route_id=${JSON.stringify(routeId)}, operation=<add|remove|replace>, participant_ids=[<native-participant-id>]${capabilities?.access ? `, and actor_capability=${JSON.stringify(capabilities.access)}` : ""}`,
+    );
+  if (config.models.enabled && config.management.allowModelChanges && capabilities?.model)
+    commands.push(
+      `Model tool: aag_set_model with route_id=${JSON.stringify(routeId)}, model_id=<exact-model-or-default>, and actor_capability=${JSON.stringify(capabilities.model)}`,
     );
   return commands.join("\n");
 }

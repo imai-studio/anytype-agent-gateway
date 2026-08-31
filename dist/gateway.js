@@ -1,4 +1,4 @@
-import { AgentController, messageFingerprint } from "./controller.js";
+import { AgentController, messageFingerprint, } from "./controller.js";
 import { DiscussionAnytypePort } from "./discussions.js";
 import { decideWake, mergeWakeOverride, sameIdentity } from "./wake.js";
 import { principalAuditFields, principalFromMessage, principalFromParticipantId, } from "./principal.js";

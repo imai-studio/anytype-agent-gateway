@@ -38,6 +38,7 @@ describe("example workflows", () => {
   it("does not expose route management commands in direct-message prompts", async () => {
     const anytype = new FakeAnytype();
     const runtime = new FakeRuntime();
+    Object.defineProperty(runtime, "name", { value: "openclaw" });
     const store = new Store(":memory:");
     const config = configSchema.parse({
       version: 1,
@@ -67,6 +68,46 @@ describe("example workflows", () => {
     await controller.process(directMessage, { ...wake, humans: "every-message" }, message);
     expect(runtime.starts).toHaveLength(1);
     expect(runtime.starts[0]?.prompt).not.toContain("SECRET ROUTE MANAGEMENT COMMAND");
+    await controller.stop();
+    store.close();
+  });
+
+  it("supplies OpenClaw with a capability bound to the authenticated Anytype turn", async () => {
+    const anytype = new FakeAnytype();
+    const runtime = new FakeRuntime();
+    Object.defineProperty(runtime, "name", { value: "openclaw" });
+    const store = new Store(":memory:");
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ name: "Test" }],
+      runtime: { kind: "openclaw" },
+      management: { allowAccessChanges: true, accessAdmins: ["human-1"] },
+    });
+    const controller = new AgentController(
+      anytype,
+      runtime,
+      config,
+      store,
+      () => undefined,
+      undefined,
+      (_routeId, capabilities) => `access capability=${capabilities?.access ?? "missing"}`,
+    );
+    const message = incoming({
+      id: "capability",
+      mentioned: true,
+      content: { text: "add this member" },
+    });
+    anytype.messages.push(message);
+    await controller.process(conversation, wake, message);
+
+    const prompt = runtime.starts[0]?.prompt ?? "";
+    const token = prompt.match(/capability=([0-9a-f-]{36})/i)?.[1];
+    expect(token).toBeDefined();
+    expect(store.consumeManagementCapability(token!, conversation.routeId, "access")).toBe(
+      "human-1",
+    );
     await controller.stop();
     store.close();
   });

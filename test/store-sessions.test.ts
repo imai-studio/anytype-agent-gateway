@@ -25,7 +25,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(7);
+    expect(store.schemaVersion()).toBe(8);
     expect(store.cursor("route")).toBe("order-7");
     expect(
       (
@@ -64,7 +64,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(7);
+    expect(store.schemaVersion()).toBe(8);
     expect(
       (
         store.db.prepare("PRAGMA table_info(conversation_models)").all() as Array<{ name: string }>
@@ -110,7 +110,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(7);
+    expect(store.schemaVersion()).toBe(8);
     expect(store.sessionWorkspace("chat:space:chat")).toBe("/projects/imai");
     expect(store.sessionWorkspaceSource("chat:space:chat")).toBe("explicit");
     expect(store.db.prepare("PRAGMA foreign_key_list(session_workspaces)").all()).not.toHaveLength(
@@ -177,6 +177,29 @@ describe("session persistence", () => {
       sessionEvents: true,
       protocol: "channel-v1",
     });
+    store.close();
+  });
+
+  it("binds management capabilities to one route, actor, scope, and use", () => {
+    const store = new Store(":memory:");
+    const token = store.issueManagementCapability("chat:space:chat", "participant-admin", "access");
+
+    expect(store.consumeManagementCapability(token, "chat:space:other", "access")).toBeUndefined();
+    expect(store.consumeManagementCapability(token, "chat:space:chat", "access")).toBeUndefined();
+
+    const valid = store.issueManagementCapability("chat:space:chat", "participant-admin", "access");
+    expect(store.consumeManagementCapability(valid, "chat:space:chat", "access")).toBe(
+      "participant-admin",
+    );
+    expect(store.consumeManagementCapability(valid, "chat:space:chat", "access")).toBeUndefined();
+    store.close();
+  });
+
+  it("invalidates unused management capabilities when the route receives a new turn", () => {
+    const store = new Store(":memory:");
+    const old = store.issueManagementCapability("chat:space:chat", "participant-admin", "wake");
+    store.revokeManagementCapabilities("chat:space:chat");
+    expect(store.consumeManagementCapability(old, "chat:space:chat", "wake")).toBeUndefined();
     store.close();
   });
 

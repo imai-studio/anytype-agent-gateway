@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -33,8 +33,13 @@ import {
   workflowVersionHash,
 } from "./automation/workflow.js";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
+export type ManagementCapabilityScope = "wake" | "access" | "model";
+
+function managementCapabilityHash(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 
 function assertStoredTimestamp(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 0)
@@ -87,6 +92,7 @@ export class Store {
       if (current < 5) this.migrateToVersion5();
       if (current < 6) this.migrateToVersion6();
       if (current < 7) this.migrateToVersion7();
+      if (current < 8) this.migrateToVersion8();
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -441,6 +447,21 @@ export class Store {
         BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
       CREATE TRIGGER normalized_events_no_delete BEFORE DELETE ON normalized_events
         BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
+    `);
+  }
+
+  private migrateToVersion8(): void {
+    this.db.exec(`
+      CREATE TABLE management_actor_capabilities (
+        token_hash TEXT PRIMARY KEY,
+        route_id TEXT NOT NULL,
+        participant_id TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK(scope IN ('wake','access','model')),
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_management_actor_capabilities_route
+        ON management_actor_capabilities(route_id,expires_at);
     `);
   }
 
@@ -1742,6 +1763,59 @@ export class Store {
       .prepare("SELECT * FROM workflow_approval_decisions WHERE decision_sequence=?")
       .get(sequence) as WorkflowApprovalDecisionRow | undefined;
     return row ? mapWorkflowApprovalDecision(row) : undefined;
+  }
+
+  revokeManagementCapabilities(routeId: string): void {
+    this.db
+      .prepare("DELETE FROM management_actor_capabilities WHERE route_id=? OR expires_at<=?")
+      .run(routeId, Date.now());
+  }
+
+  issueManagementCapability(
+    routeId: string,
+    participantId: string,
+    scope: ManagementCapabilityScope,
+    ttlMs = 5 * 60 * 1_000,
+  ): string {
+    const now = Date.now();
+    const token = randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO management_actor_capabilities
+          (token_hash,route_id,participant_id,scope,expires_at,created_at)
+         VALUES(?,?,?,?,?,?)`,
+      )
+      .run(managementCapabilityHash(token), routeId, participantId, scope, now + ttlMs, now);
+    return token;
+  }
+
+  consumeManagementCapability(
+    token: string,
+    routeId: string,
+    scope: ManagementCapabilityScope,
+  ): string | undefined {
+    if (!/^[0-9a-f-]{36}$/i.test(token)) return undefined;
+    const tokenHash = managementCapabilityHash(token);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT participant_id,route_id,scope,expires_at
+             FROM management_actor_capabilities WHERE token_hash=?`,
+        )
+        .get(tokenHash) as
+        { participant_id: string; route_id: string; scope: string; expires_at: number } | undefined;
+      this.db
+        .prepare("DELETE FROM management_actor_capabilities WHERE token_hash=?")
+        .run(tokenHash);
+      this.db.exec("COMMIT");
+      if (!row || row.route_id !== routeId || row.scope !== scope || row.expires_at <= Date.now())
+        return undefined;
+      return row.participant_id;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   close(): void {

@@ -1,11 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalWorkflowDefinition, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
+function managementCapabilityHash(token) {
+    return createHash("sha256").update(token).digest("hex");
+}
 function assertStoredTimestamp(value, label) {
     if (!Number.isSafeInteger(value) || value < 0)
         throw new Error(`${label} must be a non-negative safe integer`);
@@ -52,6 +55,8 @@ export class Store {
                 this.migrateToVersion6();
             if (current < 7)
                 this.migrateToVersion7();
+            if (current < 8)
+                this.migrateToVersion8();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -386,6 +391,20 @@ export class Store {
         BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
       CREATE TRIGGER normalized_events_no_delete BEFORE DELETE ON normalized_events
         BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
+    `);
+    }
+    migrateToVersion8() {
+        this.db.exec(`
+      CREATE TABLE management_actor_capabilities (
+        token_hash TEXT PRIMARY KEY,
+        route_id TEXT NOT NULL,
+        participant_id TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK(scope IN ('wake','access','model')),
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_management_actor_capabilities_route
+        ON management_actor_capabilities(route_id,expires_at);
     `);
     }
     isInitialized(routeId) {
@@ -1182,6 +1201,44 @@ export class Store {
             .prepare("SELECT * FROM workflow_approval_decisions WHERE decision_sequence=?")
             .get(sequence);
         return row ? mapWorkflowApprovalDecision(row) : undefined;
+    }
+    revokeManagementCapabilities(routeId) {
+        this.db
+            .prepare("DELETE FROM management_actor_capabilities WHERE route_id=? OR expires_at<=?")
+            .run(routeId, Date.now());
+    }
+    issueManagementCapability(routeId, participantId, scope, ttlMs = 5 * 60 * 1_000) {
+        const now = Date.now();
+        const token = randomUUID();
+        this.db
+            .prepare(`INSERT INTO management_actor_capabilities
+          (token_hash,route_id,participant_id,scope,expires_at,created_at)
+         VALUES(?,?,?,?,?,?)`)
+            .run(managementCapabilityHash(token), routeId, participantId, scope, now + ttlMs, now);
+        return token;
+    }
+    consumeManagementCapability(token, routeId, scope) {
+        if (!/^[0-9a-f-]{36}$/i.test(token))
+            return undefined;
+        const tokenHash = managementCapabilityHash(token);
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const row = this.db
+                .prepare(`SELECT participant_id,route_id,scope,expires_at
+             FROM management_actor_capabilities WHERE token_hash=?`)
+                .get(tokenHash);
+            this.db
+                .prepare("DELETE FROM management_actor_capabilities WHERE token_hash=?")
+                .run(tokenHash);
+            this.db.exec("COMMIT");
+            if (!row || row.route_id !== routeId || row.scope !== scope || row.expires_at <= Date.now())
+                return undefined;
+            return row.participant_id;
+        }
+        catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+        }
     }
     close() {
         this.db.close();

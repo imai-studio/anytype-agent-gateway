@@ -1,5 +1,9 @@
 import type { AgentConfig, WakeConfig } from "./config.js";
-import { AgentController, messageFingerprint } from "./controller.js";
+import {
+  AgentController,
+  messageFingerprint,
+  type ManagementActorCapabilities,
+} from "./controller.js";
 import { DiscussionAnytypePort, HeartDiscussionAdapter } from "./discussions.js";
 import { Store } from "./store.js";
 import type { AnytypePort, ChatMessage, ConversationRef, RuntimeDriver } from "./types.js";
@@ -64,7 +68,7 @@ export class Gateway {
     private readonly store: Store,
     private readonly discussions: HeartDiscussionAdapter,
     private readonly log: (event: string, fields?: Record<string, unknown>) => void,
-    managementCommand?: (routeId: string) => string,
+    managementCommand?: (routeId: string, capabilities?: ManagementActorCapabilities) => string,
     private readonly enrollChat?: (
       spaceId: string,
       spaceName: string,

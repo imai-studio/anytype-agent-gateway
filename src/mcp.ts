@@ -7,7 +7,7 @@ import { createCodexTask } from "./codex-task.js";
 import { loadConfig, type AgentConfig } from "./config.js";
 import { setRouteAccess, setRouteWake } from "./management.js";
 import { modelAllowed } from "./model-command.js";
-import { Store } from "./store.js";
+import { Store, type ManagementCapabilityScope } from "./store.js";
 import { VERSION } from "./version.js";
 import { resolveProductEnvironment } from "./compatibility.js";
 import {
@@ -252,6 +252,9 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
                   enum: ["mention", "mention-or-reply", "every-message", "prefix", "disabled"],
                 },
                 prefix: stringSchema(),
+                actor_capability: stringSchema(
+                  "Opaque, single-use capability supplied by Knot for this authenticated turn",
+                ),
               },
               ["humans"],
             ),
@@ -275,6 +278,9 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
                   items: { type: "string" },
                   minItems: 1,
                 },
+                actor_capability: stringSchema(
+                  "Opaque, single-use capability supplied by Knot for this authenticated turn",
+                ),
               },
               ["operation", "participant_ids"],
             ),
@@ -305,6 +311,9 @@ export function toolDefinitions(config: AgentConfig): Tool[] {
                 route_id: stringSchema(),
                 discussion_root_id: stringSchema(),
                 model_id: stringSchema("Exact model ID from aag_list_models, or default"),
+                actor_capability: stringSchema(
+                  "Opaque, single-use capability supplied by Knot for this authenticated turn",
+                ),
               },
               ["model_id"],
             ),
@@ -524,7 +533,13 @@ export async function callTool(
           models: current?.catalog ?? [],
         };
       if (!config.management.allowModelChanges) throw new Error("Model changes are disabled");
-      const boundPrincipal = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
+      const boundPrincipal = verifiedManagementPrincipal(
+        config,
+        effectiveRouteId,
+        "model",
+        input,
+        boundActorId,
+      );
       if (!principalAllowed(boundPrincipal, config.management.modelAdmins))
         throw new Error("The current Anytype sender is not allowed to change models");
       const requested = required(input, "model_id");
@@ -550,7 +565,7 @@ export async function callTool(
         ...(current?.appliedModelId ? { appliedModelId: current.appliedModelId } : {}),
         ...(current?.defaultModelId ? { defaultModelId: current.defaultModelId } : {}),
         catalog: current?.catalog ?? [],
-        ...(boundActorId ? { updatedBy: boundActorId } : {}),
+        ...(boundPrincipal ? { updatedBy: boundPrincipal.participantId } : {}),
       });
       return {
         thread_key: threadKey,
@@ -568,7 +583,13 @@ export async function callTool(
     const routeSpaceId = spaceFromRoute(effectiveRouteId);
     if (!routeSpaceId) throw new Error("route_id does not contain a valid Anytype space");
     assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
-    const boundPrincipal = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
+    const boundPrincipal = verifiedManagementPrincipal(
+      config,
+      effectiveRouteId,
+      "wake",
+      input,
+      boundActorId,
+    );
     if (!boundPrincipal) throw new Error("The current Anytype sender could not be verified");
     await setRouteWake({
       configPath,
@@ -586,7 +607,13 @@ export async function callTool(
     const routeSpaceId = spaceFromRoute(effectiveRouteId);
     if (!routeSpaceId) throw new Error("route_id does not contain a valid Anytype space");
     assertSpaceAllowed(config, routeSpaceId, defaultSpaceId);
-    const boundPrincipal = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
+    const boundPrincipal = verifiedManagementPrincipal(
+      config,
+      effectiveRouteId,
+      "access",
+      input,
+      boundActorId,
+    );
     if (!boundPrincipal) throw new Error("The current Anytype sender could not be verified");
     const allowedUsers = await setRouteAccess({
       configPath,
@@ -726,6 +753,26 @@ export async function callTool(
     return withLink(await anytype.archiveObject(spaceId, required(input, "object_id")), spaceId);
   }
   throw rpcError(-32602, `Unknown tool: ${name}`);
+}
+
+function verifiedManagementPrincipal(
+  config: AgentConfig,
+  routeId: string,
+  scope: ManagementCapabilityScope,
+  input: Record<string, any>,
+  boundActorId?: string,
+) {
+  const directlyBound = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
+  if (directlyBound) return directlyBound;
+  const token = typeof input.actor_capability === "string" ? input.actor_capability : "";
+  if (!token) return undefined;
+  const store = new Store(config.state.path);
+  try {
+    const participantId = store.consumeManagementCapability(token, routeId, scope);
+    return principalFromParticipantId(participantId);
+  } finally {
+    store.close();
+  }
 }
 
 function assertSpaceAllowed(

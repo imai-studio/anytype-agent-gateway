@@ -75,6 +75,8 @@ export class AgentController {
     async processClaimed(conversation, wake, message, wakeIsEffective) {
         if (this.store.isResponse(message.id))
             return;
+        if (this.runtimeName() === "openclaw" && principalFromMessage(message))
+            this.store.revokeManagementCapabilities(conversation.routeId);
         const effectiveWake = wakeIsEffective
             ? wake
             : mergeWakeOverride(wake, this.store.wakeOverride(conversation.routeId));
@@ -207,7 +209,9 @@ export class AgentController {
             }
             try {
                 active.projection.addMentionTargets(mentionTargetsFrom(message));
-                await active.handle.steer(this.steerPrompt(message), {
+                await active.handle.steer(this.steerPrompt(message, conversation.managementEnabled === false
+                    ? undefined
+                    : this.managementActorCommand(conversation.routeId, message)), {
                     conversation: threadConversation,
                     message,
                     ...(decision.actor ? { actor: decision.actor } : {}),
@@ -383,7 +387,7 @@ export class AgentController {
             let lastActivityAt = Date.now();
             const prompt = await preparePrompt(context, this.config, sessionKey, conversation.managementEnabled === false
                 ? undefined
-                : decisionActorCommand(this.managementCommand, conversation.routeId, message), { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId });
+                : this.managementActorCommand(conversation.routeId, message), { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId });
             const workspacePath = this.store.sessionWorkspace(threadKey);
             const actor = principalFromMessage(message);
             const turn = {
@@ -775,7 +779,7 @@ export class AgentController {
         });
         this.store.markControlMessage(messageId);
     }
-    steerPrompt(message) {
+    steerPrompt(message, managementCommand) {
         const payload = JSON.stringify({
             creator: message.creator_name ?? message.creator ?? "unknown",
             text: message.content?.text ?? "",
@@ -785,7 +789,25 @@ export class AgentController {
             "--- BEGIN AAG FOLLOW-UP JSON ---",
             payload,
             "--- END AAG FOLLOW-UP JSON ---",
+            ...(managementCommand
+                ? [`Authenticated turn capabilities (trusted Knot metadata):\n${managementCommand}`]
+                : []),
         ].join("\n");
+    }
+    managementActorCommand(routeId, message) {
+        const actor = principalFromMessage(message);
+        if (!actor || !this.managementCommand)
+            return undefined;
+        if (this.runtimeName() !== "openclaw")
+            return this.managementCommand(routeId);
+        const capabilities = {};
+        if (this.config.management.allowWakeChanges)
+            capabilities.wake = this.store.issueManagementCapability(routeId, actor.participantId, "wake");
+        if (this.config.management.allowAccessChanges)
+            capabilities.access = this.store.issueManagementCapability(routeId, actor.participantId, "access");
+        if (this.config.models.enabled && this.config.management.allowModelChanges)
+            capabilities.model = this.store.issueManagementCapability(routeId, actor.participantId, "model");
+        return this.managementCommand(routeId, capabilities);
     }
     async thread(conversation, message) {
         if (conversation.kind === "chat")
@@ -1148,10 +1170,6 @@ function mentionTargetsFrom(message) {
             targets.push({ name, participantId: mark.param });
     }
     return targets;
-}
-function decisionActorCommand(managementCommand, routeId, message) {
-    const actor = principalFromMessage(message);
-    return actor ? managementCommand?.(routeId) : undefined;
 }
 function isTurnAlreadyCompleted(error) {
     return error instanceof Error && error.name === "RuntimeTurnAlreadyCompletedError";

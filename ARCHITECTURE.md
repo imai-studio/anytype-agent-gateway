@@ -76,6 +76,8 @@ For an object discussion, the owning object is added to referenced-object contex
 
 A runtime is not given the Anytype API key or OpenClaw Gateway token in the prompt. Knot supplies a policy-mediated MCP surface for allowed Anytype search/get/create/update/list/upload/archive operations. Codex ACP receives it during session creation; OpenClaw receives the same server through its native MCP configuration. Space, write, archive, and real-path upload policy are evaluated inside Knot. Strong protection from a harness shell still requires an OS/runtime sandbox because the processes normally share one service account.
 
+Management mutations require native sender provenance. Codex ACP binds that provenance through a private per-turn actor file. Because OpenClaw uses a long-lived MCP process, Knot instead mints opaque single-use capabilities bound to the authenticated participant, exact route, and one management scope. A new human turn revokes unused capabilities for that route; a successful tool authorization consumes its capability. The model can relay the capability but cannot choose or forge the participant identity it represents.
+
 ## Run projection and steering
 
 Before the runtime starts, `RunProjection` sends `responses.workingText` as a reply and applies `responses.workingReaction` to the triggering user message. This gives the user an immediate durable acknowledgement without making the agent react to itself.
