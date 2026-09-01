@@ -19,6 +19,7 @@ export class Gateway {
     abort = new AbortController();
     routeIds = new Set();
     tasks = new Set();
+    auxiliaryTasks = new Set();
     controller;
     discussionAnytype;
     terminal;
@@ -91,12 +92,12 @@ export class Gateway {
             }
             if (this.config.directMessages.enabled)
                 this.track(this.discoverDirectMessages(this.config.directMessages));
+            if (!this.tasks.size)
+                throw new Error("Configuration produced no chat or discussion routes");
             if (this.config.automation.enabled && this.config.automation.execution)
                 this.track(new WorkflowRunner(this.store, this.config.automation, this.log).run(this.abort.signal));
             if (this.config.automation.enabled && this.config.automation.observation)
                 this.trackAuxiliary(new WorkflowObserver(this.anytype, this.store, this.config.automation, this.log).run(this.abort.signal), "workflow_observer_stopped");
-            if (!this.tasks.size)
-                throw new Error("Configuration produced no chat or discussion routes");
             await this.terminal;
         }
         finally {
@@ -104,7 +105,7 @@ export class Gateway {
             if (this.pruneTimer)
                 clearInterval(this.pruneTimer);
             this.pruneTimer = undefined;
-            await Promise.allSettled([...this.tasks]);
+            await Promise.allSettled([...this.tasks, ...this.auxiliaryTasks]);
             await this.controller.stop({ drain: this.drainOnStop });
         }
     }
@@ -134,8 +135,8 @@ export class Gateway {
             if (!this.abort.signal.aborted)
                 this.log(failureEvent, { errorCode: "unexpected_failure" });
         });
-        this.tasks.add(guarded);
-        void guarded.finally(() => this.tasks.delete(guarded));
+        this.auxiliaryTasks.add(guarded);
+        void guarded.finally(() => this.auxiliaryTasks.delete(guarded));
     }
     async runRoute(route) {
         const { conversation } = route;

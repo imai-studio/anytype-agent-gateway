@@ -1119,7 +1119,7 @@ describe("durable workflow runner", () => {
 
     expect(queue.run(run.runId)?.state).toBe("succeeded");
     const stored = store.workflowVersion(run.workflowId, run.versionHash)!;
-    expect(JSON.parse(stored.canonicalDefinitionJson).metadata.labels).toEqual({
+    expect(JSON.parse(stored.storedDefinitionJson).metadata.labels).toEqual({
       message: "safe",
       prompt: "classification",
     });
@@ -1298,7 +1298,7 @@ describe("durable workflow runner", () => {
     const queue = new WorkflowQueue(store);
     const run = delivery(queue, store, config, definition, "workflow-schema-rejected");
     const version = store.workflowVersion(run.workflowId, run.versionHash)!;
-    const invalid = JSON.parse(version.canonicalDefinitionJson) as {
+    const invalid = JSON.parse(version.storedDefinitionJson) as {
       spec: { steps: Array<Record<string, unknown>> };
     };
     invalid.spec.steps[0]!.unsupported = true;

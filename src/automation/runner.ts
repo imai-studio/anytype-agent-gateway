@@ -703,11 +703,11 @@ function storedVersionFailure(error: unknown): { event: string; reason: string }
 function parseStoredVersion(version: WorkflowVersionRecord): StoredWorkflowDefinition {
   let raw: JsonValue;
   try {
-    raw = JSON.parse(version.canonicalDefinitionJson) as JsonValue;
+    raw = JSON.parse(version.storedDefinitionJson) as JsonValue;
   } catch (cause) {
     throw new WorkflowIntegrityError("Stored workflow definition is not JSON", { cause });
   }
-  if (canonicalJson(raw) !== version.canonicalDefinitionJson)
+  if (canonicalJson(raw) !== version.storedDefinitionJson)
     throw new WorkflowIntegrityError("Stored workflow definition is not canonical JSON");
   const sensitiveText = new Map<string, string>();
   let materialized: JsonValue;
@@ -743,7 +743,7 @@ function parseStoredVersion(version: WorkflowVersionRecord): StoredWorkflowDefin
     if (
       workflowVersionHash(definition) !== version.versionHash ||
       workflowApprovalHash(definition) !== version.approvalHash ||
-      canonicalJson(workflowApprovalMaterial(definition)) !== version.canonicalApprovalJson
+      canonicalJson(workflowApprovalMaterial(definition)) !== version.storedApprovalJson
     )
       throw new WorkflowIntegrityError(
         "Stored workflow hashes no longer match the immutable definition",
@@ -752,7 +752,7 @@ function parseStoredVersion(version: WorkflowVersionRecord): StoredWorkflowDefin
     const approval = JSON.parse(canonicalJson(workflowApprovalMaterial(definition))) as JsonValue;
     for (const [path, digest] of sensitiveText)
       setJsonPath(approval, path.split("/"), { redacted: true, digest });
-    if (canonicalJson(approval) !== version.canonicalApprovalJson)
+    if (canonicalJson(approval) !== version.storedApprovalJson)
       throw new WorkflowIntegrityError(
         "Stored workflow approval projection does not match the redacted definition",
       );
@@ -836,8 +836,8 @@ function verifyRefetchedDefinition(
   if (
     workflowVersionHash(definition) !== version.versionHash ||
     workflowApprovalHash(definition) !== version.approvalHash ||
-    canonicalStoredWorkflowDefinition(definition) !== version.canonicalDefinitionJson ||
-    canonicalStoredWorkflowApproval(definition) !== version.canonicalApprovalJson ||
+    canonicalStoredWorkflowDefinition(definition) !== version.storedDefinitionJson ||
+    canonicalStoredWorkflowApproval(definition) !== version.storedApprovalJson ||
     policy.riskTier !== version.riskTier ||
     canonicalJson(policy.requiredCapabilities) !== canonicalJson(version.requiredCapabilities)
   )

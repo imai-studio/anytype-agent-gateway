@@ -161,6 +161,7 @@ export class Gateway {
       }
       if (this.config.directMessages.enabled)
         this.track(this.discoverDirectMessages(this.config.directMessages));
+      if (!this.tasks.size) throw new Error("Configuration produced no chat or discussion routes");
       if (this.config.automation.enabled && this.config.automation.execution)
         this.track(
           new WorkflowRunner(this.store, this.config.automation, this.log).run(this.abort.signal),
@@ -172,8 +173,6 @@ export class Gateway {
           ),
           "workflow_observer_stopped",
         );
-      if (!this.tasks.size && !this.auxiliaryTasks.size)
-        throw new Error("Configuration produced no chat, discussion, or automation routes");
       await this.terminal;
     } finally {
       this.abort.abort();
