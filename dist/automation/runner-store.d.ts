@@ -64,6 +64,7 @@ export declare class WorkflowQueue {
     expireRunDeadlines(now?: number, limit?: number): number;
     cancelRun(runId: string, actorPrincipalDigest: string, reason: string, now?: number, audit?: Omit<WorkflowOperatorAuditRecord, "sequence" | "createdAt">): boolean;
     retryRun(runId: string, authorityHash: string, actorPrincipalDigest: string, reasonCode: string, auditId: string, now?: number): boolean;
+    private maximumRunMilliseconds;
     pauseRunForApproval(runId: string, reason: string, now?: number): boolean;
     resumeRunWithAuthority(runId: string, authorityHash: string, now?: number): boolean;
     deadLetterRun(runId: string, error: string, now?: number): boolean;

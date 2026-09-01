@@ -409,6 +409,37 @@ describe("durable workflow runner", () => {
     store.close();
   });
 
+  it("dispatches a manual event only to the workflow named in its payload", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const selected = saveVersion(store, workflow("Selected manual workflow"), "manual-selected");
+    saveVersion(store, workflow("Other manual workflow"), "manual-other");
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      undefined,
+      () => 500,
+    );
+    runner.queue.initializeMatcher(250);
+    recordEvent(store, selected.workflowId);
+
+    expect(runner.matchEventsOnce(500)).toBe(1);
+    expect(runner.queue.pendingDeliveries(10, 500)).toEqual([
+      expect.objectContaining({ workflowId: selected.workflowId }),
+    ]);
+    expect(runner.dispatchOnce(500)).toBe(1);
+    expect(runner.queue.runs()).toEqual([
+      expect.objectContaining({ workflowId: selected.workflowId }),
+    ]);
+    expect(
+      store.db
+        .prepare("SELECT COUNT(*) AS count FROM workflow_deliveries WHERE workflow_id=?")
+        .get("manual-other"),
+    ).toEqual({ count: 0 });
+    store.close();
+  });
+
   it("atomically persists event deliveries with the matcher cursor", () => {
     const store = new Store(":memory:");
     const config = runnerConfig();

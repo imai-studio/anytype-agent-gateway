@@ -83,9 +83,11 @@ export async function workflowApprovalAction(input) {
     await withOperator(input.agentConfigFile, ({ store, config }) => {
         requireConfirmed(input.yes);
         const actorPrincipalDigest = authorizedActor(config, input.actorDigest);
-        const version = requireActiveVersion(store, input.workflowId);
-        if (version.approvalHash !== input.approvalHash)
+        const version = input.action === "revoke" ? undefined : requireActiveVersion(store, input.workflowId);
+        if (version && version.approvalHash !== input.approvalHash)
             throw new Error("Approval hash does not match the active workflow version");
+        if (input.action === "revoke")
+            requireWorkflow(store, input.workflowId);
         const now = input.now ?? Date.now();
         const latest = store.latestWorkflowApproval(input.workflowId, input.approvalHash);
         if (input.action === "revoke" && latest?.decision !== "approved")
@@ -140,6 +142,7 @@ export async function workflowManualRun(input) {
         requireConfirmed(input.yes);
         const actorPrincipalDigest = authorizedActor(config, input.actorDigest);
         const version = requireActiveVersion(store, input.workflowId);
+        requireManualTrigger(version);
         if (version.approvalHash !== input.approvalHash)
             throw new Error("Approval hash does not match the active workflow version");
         if (store.workflowOperatorOverride(input.workflowId)?.enabled === false)
@@ -365,6 +368,26 @@ function requireActiveVersion(store, workflowId) {
     if (!version)
         throw new Error("Active workflow version is missing");
     return version;
+}
+function requireManualTrigger(version) {
+    let stored;
+    try {
+        stored = JSON.parse(version.storedDefinitionJson);
+    }
+    catch (cause) {
+        throw new Error("Active workflow version is not valid JSON", { cause });
+    }
+    const spec = stored && typeof stored === "object" && !Array.isArray(stored)
+        ? stored.spec
+        : undefined;
+    if (spec?.enabled !== true)
+        throw new Error("Workflow is not enabled by its definition");
+    if (!Array.isArray(spec.triggers) ||
+        !spec.triggers.some((trigger) => trigger !== null &&
+            typeof trigger === "object" &&
+            !Array.isArray(trigger) &&
+            trigger.kind === "manual"))
+        throw new Error("Workflow has no manual trigger");
 }
 function safeRun(run) {
     return {

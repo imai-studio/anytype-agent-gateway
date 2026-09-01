@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { evaluateWorkflowPolicy, workflowAuthorityHash } from "../src/automation/policy.js";
+import { WorkflowRunner } from "../src/automation/runner.js";
 import { WorkflowQueue } from "../src/automation/runner-store.js";
 import {
   canonicalJson,
@@ -33,7 +34,7 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 
-function setup() {
+function setup(definitionOverride?: ReturnType<typeof workflowDefinitionSchema.parse>) {
   const directory = mkdtempSync(join(tmpdir(), "knot-workflow-operator-"));
   temporaryDirectories.push(directory);
   const statePath = join(directory, "state.sqlite");
@@ -57,22 +58,25 @@ function setup() {
   };
   writeFileSync(configPath, JSON.stringify(raw));
   const config = configSchema.parse(raw);
-  const definition = workflowDefinitionSchema.parse({
-    apiVersion: "knot.imai.studio/v1alpha1",
-    kind: "KnotWorkflow",
-    metadata: { name: "Operator test" },
-    spec: {
-      triggers: [{ kind: "manual" }],
-      steps: [{ id: "shape", kind: "transform" }],
-      capabilities: [],
-      retry: {
-        attempts: 1,
-        initialDelaySeconds: 1,
-        maximumDelaySeconds: 1,
-        multiplier: 1,
+  const definition =
+    definitionOverride ??
+    workflowDefinitionSchema.parse({
+      apiVersion: "knot.imai.studio/v1alpha1",
+      kind: "KnotWorkflow",
+      metadata: { name: "Operator test" },
+      spec: {
+        enabled: true,
+        triggers: [{ kind: "manual" }],
+        steps: [{ id: "shape", kind: "transform" }],
+        capabilities: [],
+        retry: {
+          attempts: 1,
+          initialDelaySeconds: 1,
+          maximumDelaySeconds: 1,
+          multiplier: 1,
+        },
       },
-    },
-  });
+    });
   const policy = evaluateWorkflowPolicy(definition, { sourceSpaceId: "space-1" });
   const store = new Store(statePath);
   const version = store.saveWorkflowVersion({
@@ -93,6 +97,7 @@ function setup() {
     editorProvenance: "anytype-native",
     createdAt: 200,
   });
+  new WorkflowQueue(store).initializeMatcher(200);
   store.close();
   return { configPath, statePath, config, definition, version };
 }
@@ -103,6 +108,94 @@ function lines() {
 }
 
 describe("workflow operator CLI", () => {
+  it("refuses manual events that the active definition cannot dispatch", async () => {
+    for (const [definition, message] of [
+      [
+        workflowDefinitionSchema.parse({
+          apiVersion: "knot.imai.studio/v1alpha1",
+          kind: "KnotWorkflow",
+          metadata: { name: "Disabled manual" },
+          spec: {
+            enabled: false,
+            triggers: [{ kind: "manual" }],
+            steps: [{ id: "shape", kind: "transform" }],
+            capabilities: [],
+          },
+        }),
+        "not enabled",
+      ],
+      [
+        workflowDefinitionSchema.parse({
+          apiVersion: "knot.imai.studio/v1alpha1",
+          kind: "KnotWorkflow",
+          metadata: { name: "Scheduled only" },
+          spec: {
+            enabled: true,
+            triggers: [{ kind: "schedule", schedule: "0 * * * *" }],
+            steps: [{ id: "shape", kind: "transform" }],
+            capabilities: [],
+          },
+        }),
+        "no manual trigger",
+      ],
+    ] as const) {
+      const state = setup(definition);
+      await workflowApprovalAction({
+        agentConfigFile: state.configPath,
+        workflowId: "workflow-1",
+        approvalHash: state.version.approvalHash,
+        action: "approve",
+        yes: true,
+        now: 300,
+      });
+      await expect(
+        workflowManualRun({
+          agentConfigFile: state.configPath,
+          workflowId: "workflow-1",
+          approvalHash: state.version.approvalHash,
+          yes: true,
+          now: 400,
+        }),
+      ).rejects.toThrow(message);
+      const store = new Store(state.statePath);
+      expect(new WorkflowQueue(store).recentEvents()).toEqual([]);
+      store.close();
+    }
+  });
+
+  it("can revoke the exact current approval after a workflow becomes invalid", async () => {
+    const state = setup();
+    await workflowApprovalAction({
+      agentConfigFile: state.configPath,
+      workflowId: "workflow-1",
+      approvalHash: state.version.approvalHash,
+      action: "approve",
+      yes: true,
+      now: 300,
+    });
+    const store = new Store(state.statePath);
+    store.db
+      .prepare("UPDATE workflow_definitions SET state='invalid' WHERE workflow_id=?")
+      .run("workflow-1");
+    store.close();
+
+    await workflowApprovalAction({
+      agentConfigFile: state.configPath,
+      workflowId: "workflow-1",
+      approvalHash: state.version.approvalHash,
+      action: "revoke",
+      reasonCode: "invalid-definition",
+      yes: true,
+      now: 301,
+    });
+
+    const finalStore = new Store(state.statePath);
+    expect(
+      finalStore.latestWorkflowApproval("workflow-1", state.version.approvalHash),
+    ).toMatchObject({ decision: "revoked" });
+    finalStore.close();
+  });
+
   it("requires an exact allowlisted actor and confirmation and audits durable controls", async () => {
     const state = setup();
     await expect(
@@ -144,29 +237,17 @@ describe("workflow operator CLI", () => {
     });
     const runStore = new Store(state.statePath);
     const runQueue = new WorkflowQueue(runStore);
-    const event = runQueue.recentEvents(1)[0]!;
-    const authorityHash = workflowAuthorityHash(state.config.automation);
-    const delivery = runQueue.createDelivery(
-      {
-        deliveryId: "delivery-cancel",
-        workflowId: "workflow-1",
-        versionHash: state.version.versionHash,
-        eventId: event.eventId,
-        eventDedupeKey: event.dedupeKey,
-        approvalHash: state.version.approvalHash,
-        authorityHash,
-        actorPrincipalDigest: workflowPrincipalDigest("operator"),
-        actorProvenance: "operator-cli",
-      },
-      425,
+    const runner = new WorkflowRunner(
+      runStore,
+      state.config.automation,
+      () => {},
+      undefined,
+      () => 425,
     );
-    const run = runQueue.dispatchDelivery(
-      delivery.deliveryId,
-      state.definition,
-      { maximumConcurrentRuns: 4, maximumRunsPerHour: 60 },
-      authorityHash,
-      425,
-    )!;
+    expect(runner.matchEventsOnce(425)).toBe(1);
+    expect(runner.dispatchOnce(425)).toBe(1);
+    const run = runQueue.runs()[0]!;
+    expect(run).toMatchObject({ workflowId: "workflow-1" });
     runStore.close();
     await workflowRunMutation({
       agentConfigFile: state.configPath,
@@ -371,5 +452,130 @@ describe("workflow operator CLI", () => {
       true,
     );
     finalStore.close();
+  });
+
+  it("refreshes every step deadline from the immutable workflow run budget", async () => {
+    const definition = workflowDefinitionSchema.parse({
+      apiVersion: "knot.imai.studio/v1alpha1",
+      kind: "KnotWorkflow",
+      metadata: { name: "Retry deadline test" },
+      spec: {
+        enabled: true,
+        triggers: [{ kind: "manual" }],
+        steps: [
+          { id: "first", kind: "transform", timeoutSeconds: 60 },
+          { id: "second", kind: "transform", dependsOn: ["first"], timeoutSeconds: 60 },
+        ],
+        capabilities: [],
+        budget: { maximumRunSeconds: 1_800 },
+        retry: {
+          attempts: 1,
+          initialDelaySeconds: 1,
+          maximumDelaySeconds: 1,
+          multiplier: 1,
+        },
+      },
+    });
+    const state = setup(definition);
+    const store = new Store(state.statePath);
+    const queue = new WorkflowQueue(store);
+    const authorityHash = workflowAuthorityHash(state.config.automation);
+    store.recordWorkflowApproval({
+      decisionId: "approval-deadline",
+      workflowId: "workflow-1",
+      approvalHash: state.version.approvalHash,
+      decision: "approved",
+      mode: "manual",
+      authorityHash,
+      actorPrincipalDigest: workflowPrincipalDigest("operator"),
+      decidedAt: 300,
+    });
+    const event = store.recordNormalizedEvent({
+      eventId: "event-deadline",
+      dedupeKey: "event-deadline",
+      kind: "manual.run",
+      source: "manual",
+      spaceId: "space-1",
+      editor: {
+        principalDigest: workflowPrincipalDigest("operator"),
+        provenance: "operator-cli",
+      },
+      observedAt: 400,
+      payload: { workflowId: "workflow-1" },
+      causalDepth: 0,
+      recordedAt: 400,
+    });
+    const delivery = queue.createDelivery(
+      {
+        deliveryId: "delivery-deadline",
+        workflowId: "workflow-1",
+        versionHash: state.version.versionHash,
+        eventId: event.eventId,
+        eventDedupeKey: event.dedupeKey,
+        approvalHash: state.version.approvalHash,
+        authorityHash,
+        actorPrincipalDigest: workflowPrincipalDigest("operator"),
+        actorProvenance: "operator-cli",
+      },
+      400,
+    );
+    const run = queue.dispatchDelivery(
+      delivery.deliveryId,
+      definition,
+      { maximumConcurrentRuns: 4, maximumRunsPerHour: 60 },
+      authorityHash,
+      400,
+    )!;
+    const first = queue.claimStep("worker-first", new Set([authorityHash]), 60_000, 500)!;
+    queue.startStep(run.runId, "first", first.attempt.fencingToken, 501);
+    queue.completeStep(run.runId, "first", first.attempt.fencingToken, { ok: true }, 502);
+    const second = queue.claimStep("worker-second", new Set([authorityHash]), 60_000, 503)!;
+    queue.startStep(run.runId, "second", second.attempt.fencingToken, 504);
+    queue.failStep(
+      run.runId,
+      "second",
+      second.attempt.fencingToken,
+      "terminal",
+      definition.spec.retry,
+      false,
+      505,
+    );
+    store.close();
+
+    const retryAt = 3_000_000;
+    await workflowRunMutation({
+      agentConfigFile: state.configPath,
+      runId: run.runId,
+      action: "retry",
+      reasonCode: "operator-retry",
+      yes: true,
+      now: retryAt,
+    });
+
+    const retriedStore = new Store(state.statePath);
+    const retriedQueue = new WorkflowQueue(retriedStore);
+    expect(retriedQueue.steps(run.runId)).toEqual([
+      expect.objectContaining({
+        stepId: "first",
+        state: "succeeded",
+        runDeadlineAt: retryAt + 1_800_000,
+      }),
+      expect.objectContaining({
+        stepId: "second",
+        state: "ready",
+        runDeadlineAt: retryAt + 1_800_000,
+      }),
+    ]);
+    expect(retriedQueue.expireRunDeadlines(retryAt + 1, 10)).toBe(0);
+    expect(
+      retriedQueue.claimStep("worker-retry", new Set([authorityHash]), 60_000, retryAt + 2),
+    ).toMatchObject({
+      step: {
+        stepId: "second",
+        runDeadlineAt: retryAt + 1_800_000,
+        leaseHardExpiresAt: retryAt + 60_002,
+      },
+    });
+    retriedStore.close();
   });
 });

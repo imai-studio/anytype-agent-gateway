@@ -57,6 +57,8 @@ separate effect workers remain proposed.
 
 - Add HTTP through named local connections and secret references.
 - Add richer closed transforms only when their complete input and output schemas can be approved.
+- Add native Anytype approval, disable, retry, and cancellation controls; the shipped operator CLI
+  remains the local administrative surface.
 
 ### 5. Anytype authoring
 

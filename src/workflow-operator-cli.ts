@@ -3,7 +3,11 @@ import type { AgentConfig } from "./config.js";
 import { loadConfig } from "./config.js";
 import { workflowAuthorityHash } from "./automation/policy.js";
 import { WorkflowQueue } from "./automation/runner-store.js";
-import type { WorkflowApprovalDecisionKind, WorkflowRunState } from "./automation/store-types.js";
+import type {
+  WorkflowApprovalDecisionKind,
+  WorkflowRunState,
+  WorkflowVersionRecord,
+} from "./automation/store-types.js";
 import { canonicalJson, workflowPrincipalDigest, type JsonValue } from "./automation/workflow.js";
 import { Store } from "./store.js";
 
@@ -112,9 +116,11 @@ export async function workflowApprovalAction(
   await withOperator(input.agentConfigFile, ({ store, config }) => {
     requireConfirmed(input.yes);
     const actorPrincipalDigest = authorizedActor(config, input.actorDigest);
-    const version = requireActiveVersion(store, input.workflowId);
-    if (version.approvalHash !== input.approvalHash)
+    const version =
+      input.action === "revoke" ? undefined : requireActiveVersion(store, input.workflowId);
+    if (version && version.approvalHash !== input.approvalHash)
       throw new Error("Approval hash does not match the active workflow version");
+    if (input.action === "revoke") requireWorkflow(store, input.workflowId);
     const now = input.now ?? Date.now();
     const latest = store.latestWorkflowApproval(input.workflowId, input.approvalHash);
     if (input.action === "revoke" && latest?.decision !== "approved")
@@ -182,6 +188,7 @@ export async function workflowManualRun(
     requireConfirmed(input.yes);
     const actorPrincipalDigest = authorizedActor(config, input.actorDigest);
     const version = requireActiveVersion(store, input.workflowId);
+    requireManualTrigger(version);
     if (version.approvalHash !== input.approvalHash)
       throw new Error("Approval hash does not match the active workflow version");
     if (store.workflowOperatorOverride(input.workflowId)?.enabled === false)
@@ -452,6 +459,31 @@ function requireActiveVersion(store: Store, workflowId: string) {
   const version = store.workflowVersion(workflowId, workflow.activeVersionHash);
   if (!version) throw new Error("Active workflow version is missing");
   return version;
+}
+
+function requireManualTrigger(version: WorkflowVersionRecord): void {
+  let stored: unknown;
+  try {
+    stored = JSON.parse(version.storedDefinitionJson);
+  } catch (cause) {
+    throw new Error("Active workflow version is not valid JSON", { cause });
+  }
+  const spec =
+    stored && typeof stored === "object" && !Array.isArray(stored)
+      ? (stored as { spec?: { enabled?: unknown; triggers?: unknown } }).spec
+      : undefined;
+  if (spec?.enabled !== true) throw new Error("Workflow is not enabled by its definition");
+  if (
+    !Array.isArray(spec.triggers) ||
+    !spec.triggers.some(
+      (trigger) =>
+        trigger !== null &&
+        typeof trigger === "object" &&
+        !Array.isArray(trigger) &&
+        (trigger as { kind?: unknown }).kind === "manual",
+    )
+  )
+    throw new Error("Workflow has no manual trigger");
 }
 
 function safeRun(run: ReturnType<WorkflowQueue["run"]> extends infer T ? NonNullable<T> : never) {

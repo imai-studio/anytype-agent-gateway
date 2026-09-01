@@ -46,9 +46,11 @@ payloads, diffs, step results, and error strings are represented by digests in C
 An operator retry reuses the same run and stable effect keys. It is allowed only for a failed or
 dead-letter run under the current active version, approval, and authority, with no active step lease
 and no `running` or `outcome_unknown` effect receipt. Completed steps remain completed and completed
-effects replay their receipt. A failed pre-effect receipt may run again. An uncertain external
-outcome always requires reconciliation rather than automatic repetition. A durable disable
-override removes the workflow from dispatch and closes the claim fence checked before effects.
+effects replay their receipt. Retry gives every step one new deadline derived from the immutable
+approved `maximumRunSeconds` budget. A failed pre-effect receipt may run again only under a new
+fenced attempt; the stable receipt remains the replay barrier. An uncertain external outcome always
+requires reconciliation rather than automatic repetition. A durable disable override removes the
+workflow from dispatch and closes the claim fence checked before effects.
 
 The current Anytype port cannot create native object types or properties. Knot therefore does not
 fake `Knot Workflow`, approval, run, or connection-reference types with ordinary objects. An

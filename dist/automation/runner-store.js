@@ -716,11 +716,16 @@ export class WorkflowQueue {
             const steps = this.store.db
                 .prepare("SELECT step_id,state,dependencies_json FROM workflow_steps WHERE run_id=?")
                 .all(runId);
+            const runDeadlineAt = now + this.maximumRunMilliseconds(run.workflowId, run.versionHash);
             const states = new Map(steps.map((step) => [step.step_id, step.state]));
+            this.store.db
+                .prepare(`UPDATE workflow_steps SET run_deadline_at=?,authority_hash=?,updated_at=?
+           WHERE run_id=?`)
+                .run(runDeadlineAt, authorityHash, now, runId);
             const update = this.store.db.prepare(`UPDATE workflow_steps SET state=?,available_at=?,lease_owner=NULL,
          fencing_token=NULL,lease_started_at=NULL,
          lease_expires_at=NULL,lease_hard_expires_at=NULL,result_json=NULL,error=NULL,
-         run_deadline_at=?+timeout_seconds*1000,authority_hash=?,updated_at=?
+         authority_hash=?,updated_at=?
          WHERE run_id=? AND step_id=? AND state!='succeeded'`);
             for (const step of steps) {
                 if (step.state === "succeeded")
@@ -729,7 +734,7 @@ export class WorkflowQueue {
                 const state = dependencies.every((dependency) => states.get(dependency) === "succeeded")
                     ? "ready"
                     : "blocked";
-                update.run(state, now, now, authorityHash, now, runId, step.step_id);
+                update.run(state, now, authorityHash, now, runId, step.step_id);
             }
             this.store.db
                 .prepare(`UPDATE workflow_runs SET state='pending',authority_hash=?,error=NULL,
@@ -752,6 +757,27 @@ export class WorkflowQueue {
             this.store.db.exec("ROLLBACK");
             throw error;
         }
+    }
+    maximumRunMilliseconds(workflowId, versionHash) {
+        const version = this.store.workflowVersion(workflowId, versionHash);
+        if (!version)
+            throw new Error("Workflow retry version is missing");
+        let stored;
+        try {
+            stored = JSON.parse(version.storedDefinitionJson);
+        }
+        catch (cause) {
+            throw new Error("Workflow retry version is not valid JSON", { cause });
+        }
+        const maximumRunSeconds = stored && typeof stored === "object" && !Array.isArray(stored)
+            ? stored.spec?.budget
+                ?.maximumRunSeconds
+            : undefined;
+        if (!Number.isSafeInteger(maximumRunSeconds) ||
+            maximumRunSeconds < 1 ||
+            maximumRunSeconds > 604_800)
+            throw new Error("Workflow retry version has an invalid maximum run budget");
+        return maximumRunSeconds * 1_000;
     }
     pauseRunForApproval(runId, reason, now = Date.now()) {
         this.store.db.exec("BEGIN IMMEDIATE");

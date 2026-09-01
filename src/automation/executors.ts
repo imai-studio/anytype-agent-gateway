@@ -638,9 +638,12 @@ class WorkflowEffectReceipts {
         .prepare(
           `UPDATE workflow_effect_receipts SET state='running',fencing_token=?,started_at=?,
            completed_at=NULL,error=NULL,updated_at=?
-           WHERE effect_key=? AND state IN ('prepared','failed')`,
+           WHERE effect_key=? AND (
+             state='prepared' OR
+             (state='failed' AND completed_at IS NOT NULL AND fencing_token!=?)
+           )`,
         )
-        .run(claim.attempt.fencingToken, now, now, effectKey).changes;
+        .run(claim.attempt.fencingToken, now, now, effectKey, claim.attempt.fencingToken).changes;
       if (changed !== 1) throw new Error("Workflow effect receipt could not be started");
       this.store.db.exec("COMMIT");
       return { kind: "execute", effectKey };
