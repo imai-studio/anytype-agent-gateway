@@ -307,7 +307,22 @@ An interactive agent uses a constrained MCP tool. The tool accepts a configured 
 slug, title, typed document, assets, and visibility. It returns the publication ID, committed
 version, content hash, and public URL. Knot can then post that URL in Anytype.
 
-The CLI should provide operator commands without bypassing local policy:
+The first local client provides connector setup and diagnostics without bypassing local policy:
+
+```text
+knot cloud login
+knot cloud pair
+knot cloud status
+knot cloud doctor
+knot cloud revoke
+```
+
+The commands generate a private local Ed25519 key, consume a human-created one-time pairing, and
+inspect local and protocol state. Remote connector revocation remains a dashboard action because it
+requires an authenticated owner or admin. The local client also implements signed command claim,
+lease extension, result, and rejection calls, but it does not execute a command.
+
+Publication commands remain proposed until the publication routes and local durable outbox ship:
 
 ```text
 knot publish connect <url>
