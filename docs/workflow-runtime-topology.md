@@ -215,8 +215,8 @@ pending -> running -> waiting -> succeeded
 ```
 
 `waiting` means no worker owns the run because it waits for a retry timer, schedule time, approval,
-or an upstream step. `dead_letter` means automatic progress stopped and an operator must inspect the
-run.
+source refetch, or an upstream step. `dead_letter` means automatic progress stopped and an operator
+must inspect the run.
 
 Step states are:
 
@@ -225,6 +225,7 @@ blocked -> ready -> leased -> running -> succeeded
                                   -> waiting_retry -> ready
                                   -> waiting_timer -> ready
                                   -> waiting_approval -> ready
+                                  -> source_refetch_required -> ready
                                   -> failed
                                   -> cancelled
                                   -> dead_letter
@@ -235,6 +236,11 @@ or dead-letter dependency prevents downstream execution. Fan-out and joins use t
 
 Attempts are immutable records. A retry appends another attempt. It never clears the error or
 receipt from an earlier attempt.
+
+`source_refetch_required` records why Knot refused to execute a redacted definition. A read-only
+resolver can move the step back to `ready` only after it matches the stored source revision, native
+editor, version hash, approval hash, and local policy. The runner keeps refetched text in memory and
+never writes it to SQLite or logs.
 
 ## Leases and fencing
 

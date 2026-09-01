@@ -32,6 +32,7 @@ export declare class WorkflowQueue {
     pendingDeliveries(limit: number): WorkflowDeliveryRecord[];
     isActiveVersion(workflowId: string, versionHash: string): boolean;
     cancelDelivery(deliveryId: string): boolean;
+    deadLetterDelivery(deliveryId: string): boolean;
     dispatchDelivery(deliveryId: string, definition: WorkflowDefinition, limits: {
         maximumConcurrentRuns: number;
         maximumRunsPerHour: number;
@@ -39,8 +40,13 @@ export declare class WorkflowQueue {
     claimStep(workerId: string, allowedAuthorityHashes: ReadonlySet<string>, leaseMilliseconds: number, now?: number): WorkflowClaim | undefined;
     startStep(runId: string, stepId: string, fencingToken: string, now?: number): boolean;
     heartbeat(runId: string, stepId: string, fencingToken: string, leaseMilliseconds: number, now?: number): boolean;
+    claimIsCurrent(runId: string, stepId: string, fencingToken: string, now?: number): boolean;
     completeStep(runId: string, stepId: string, fencingToken: string, result: JsonValue, now?: number): boolean;
     failStep(runId: string, stepId: string, fencingToken: string, error: string, retry: WorkflowRetryPolicy, retryable: boolean, now?: number): boolean;
+    requireSourceRefetch(runId: string, stepId: string, fencingToken: string, reason: string, now?: number): boolean;
+    resumeSourceRefetchStep(runId: string, stepId: string, now?: number): boolean;
+    deferSourceRefetch(runId: string, stepId: string, reason: string, availableAt: number, now?: number): boolean;
+    sourceRefetchSteps(now?: number, limit?: number): WorkflowStepRecord[];
     recoverExpiredLeases(retryFor: (runId: string, stepId: string) => WorkflowRetryPolicy, now?: number): number;
     expireRunDeadlines(now?: number): number;
     cancelRun(runId: string, actorPrincipalDigest: string, reason: string, now?: number): boolean;

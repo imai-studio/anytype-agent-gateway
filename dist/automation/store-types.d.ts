@@ -71,8 +71,8 @@ export interface WorkflowApprovalDecision {
 }
 export type WorkflowDeliveryState = "pending" | "dispatched" | "cancelled" | "dead_letter";
 export type WorkflowRunState = "pending" | "running" | "waiting" | "succeeded" | "failed" | "cancelled" | "dead_letter";
-export type WorkflowStepState = "blocked" | "ready" | "leased" | "running" | "succeeded" | "waiting_retry" | "waiting_timer" | "waiting_approval" | "failed" | "cancelled" | "dead_letter";
-export type WorkflowAttemptState = "running" | "succeeded" | "retry" | "failed" | "dead_letter";
+export type WorkflowStepState = "blocked" | "ready" | "leased" | "running" | "succeeded" | "waiting_retry" | "waiting_timer" | "waiting_approval" | "source_refetch_required" | "failed" | "cancelled" | "dead_letter";
+export type WorkflowAttemptState = "running" | "succeeded" | "retry" | "source_refetch_required" | "failed" | "dead_letter";
 export interface WorkflowDeliveryRecord {
     deliveryId: string;
     workflowId: string;

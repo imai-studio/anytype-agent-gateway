@@ -10,7 +10,8 @@ The repository contains the Phase 2 contracts, additive SQLite foundation, read-
 definition observer, and durable local runner core. The runner dispatches normalized events,
 persists runs and dependency-ordered steps, recovers leases, retries with durable deadlines,
 records cancellation, and dead-letters work that cannot continue. Effect execution is not
-available. The remaining work should follow this order.
+available. Definitions with prompt or message text stop in `source_refetch_required` because the
+gateway does not install a read-only source resolver. The remaining work should follow this order.
 
 The foundation rejects hard-delete and raw external URL steps, requires named local connections,
 checks verified editor identity, intersects definition budgets with local caps, and stores source

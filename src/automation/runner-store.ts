@@ -190,6 +190,19 @@ export class WorkflowQueue {
     );
   }
 
+  deadLetterDelivery(deliveryId: string): boolean {
+    return (
+      Number(
+        this.store.db
+          .prepare(
+            `UPDATE workflow_deliveries SET state='dead_letter'
+             WHERE delivery_id=? AND state='pending'`,
+          )
+          .run(deliveryId).changes,
+      ) === 1
+    );
+  }
+
   dispatchDelivery(
     deliveryId: string,
     definition: WorkflowDefinition,
@@ -410,6 +423,18 @@ export class WorkflowQueue {
     );
   }
 
+  claimIsCurrent(runId: string, stepId: string, fencingToken: string, now = Date.now()): boolean {
+    return Boolean(
+      this.store.db
+        .prepare(
+          `SELECT 1 FROM workflow_steps
+           WHERE run_id=? AND step_id=? AND state IN ('leased','running')
+             AND fencing_token=? AND lease_expires_at>?`,
+        )
+        .get(runId, stepId, fencingToken, now),
+    );
+  }
+
   completeStep(
     runId: string,
     stepId: string,
@@ -553,6 +578,131 @@ export class WorkflowQueue {
     }
   }
 
+  requireSourceRefetch(
+    runId: string,
+    stepId: string,
+    fencingToken: string,
+    reason: string,
+    now = Date.now(),
+  ): boolean {
+    this.store.db.exec("BEGIN IMMEDIATE");
+    try {
+      const step = this.store.db
+        .prepare("SELECT * FROM workflow_steps WHERE run_id=? AND step_id=?")
+        .get(runId, stepId) as StepRow | undefined;
+      if (
+        !step ||
+        step.state !== "running" ||
+        step.fencing_token !== fencingToken ||
+        (step.lease_expires_at ?? 0) <= now
+      ) {
+        this.store.db.exec("COMMIT");
+        return false;
+      }
+      const changed = this.store.db
+        .prepare(
+          `UPDATE workflow_attempts SET state='source_refetch_required',completed_at=?,error=?
+           WHERE run_id=? AND step_id=? AND fencing_token=? AND state='running'`,
+        )
+        .run(now, reason, runId, stepId, fencingToken);
+      if (Number(changed.changes) !== 1) {
+        this.store.db.exec("COMMIT");
+        return false;
+      }
+      this.store.db
+        .prepare(
+          `UPDATE workflow_steps SET state='source_refetch_required',error=?,lease_owner=NULL,
+           fencing_token=NULL,lease_started_at=NULL,lease_expires_at=NULL,
+           lease_hard_expires_at=NULL,available_at=?,updated_at=?
+           WHERE run_id=? AND step_id=? AND state='running'`,
+        )
+        .run(reason, now, now, runId, stepId);
+      this.store.db
+        .prepare(
+          `UPDATE workflow_runs SET state='waiting',error=?,updated_at=?
+           WHERE run_id=? AND state IN ('pending','running','waiting')`,
+        )
+        .run(reason, now, runId);
+      this.store.db.exec("COMMIT");
+      return true;
+    } catch (cause) {
+      this.store.db.exec("ROLLBACK");
+      throw cause;
+    }
+  }
+
+  resumeSourceRefetchStep(runId: string, stepId: string, now = Date.now()): boolean {
+    this.store.db.exec("BEGIN IMMEDIATE");
+    try {
+      const step = this.store.db
+        .prepare("SELECT * FROM workflow_steps WHERE run_id=? AND step_id=?")
+        .get(runId, stepId) as StepRow | undefined;
+      if (!step || step.state !== "source_refetch_required") {
+        this.store.db.exec("COMMIT");
+        return false;
+      }
+      const dependencies = parseJson<string[]>(step.dependencies_json);
+      const states = new Map(
+        (
+          this.store.db
+            .prepare("SELECT step_id,state FROM workflow_steps WHERE run_id=?")
+            .all(runId) as Array<{ step_id: string; state: string }>
+        ).map((row) => [row.step_id, row.state]),
+      );
+      const nextState = dependencies.every((dependency) => states.get(dependency) === "succeeded")
+        ? "ready"
+        : "blocked";
+      this.store.db
+        .prepare(
+          `UPDATE workflow_steps SET state=?,available_at=?,error=NULL,updated_at=?
+           WHERE run_id=? AND step_id=? AND state='source_refetch_required'`,
+        )
+        .run(nextState, now, now, runId, stepId);
+      this.store.db
+        .prepare(
+          `UPDATE workflow_runs SET state='running',error=NULL,updated_at=?
+           WHERE run_id=? AND state='waiting'`,
+        )
+        .run(now, runId);
+      this.store.db.exec("COMMIT");
+      return true;
+    } catch (cause) {
+      this.store.db.exec("ROLLBACK");
+      throw cause;
+    }
+  }
+
+  deferSourceRefetch(
+    runId: string,
+    stepId: string,
+    reason: string,
+    availableAt: number,
+    now = Date.now(),
+  ): boolean {
+    return (
+      Number(
+        this.store.db
+          .prepare(
+            `UPDATE workflow_steps SET error=?,available_at=?,updated_at=?
+             WHERE run_id=? AND step_id=? AND state='source_refetch_required'`,
+          )
+          .run(reason, availableAt, now, runId, stepId).changes,
+      ) === 1
+    );
+  }
+
+  sourceRefetchSteps(now = Date.now(), limit = 100): WorkflowStepRecord[] {
+    return (
+      this.store.db
+        .prepare(
+          `SELECT * FROM workflow_steps
+           WHERE state='source_refetch_required' AND available_at<=?
+           ORDER BY available_at,updated_at,run_id,position LIMIT ?`,
+        )
+        .all(now, limit) as unknown as StepRow[]
+    ).map(mapStep);
+  }
+
   recoverExpiredLeases(
     retryFor: (runId: string, stepId: string) => WorkflowRetryPolicy,
     now = Date.now(),
@@ -619,7 +769,8 @@ export class WorkflowQueue {
         .prepare(
           `UPDATE workflow_steps SET state='cancelled',error='Run cancelled',updated_at=?
            WHERE run_id=? AND state IN (
-             'blocked','ready','waiting_retry','waiting_timer','waiting_approval'
+             'blocked','ready','waiting_retry','waiting_timer','waiting_approval',
+             'source_refetch_required'
            )`,
         )
         .run(now, runId);
@@ -960,7 +1111,9 @@ export class WorkflowQueue {
         .run(now, now, runId);
     else {
       const waiting = states.some((state) =>
-        ["waiting_retry", "waiting_timer", "waiting_approval"].includes(state),
+        ["waiting_retry", "waiting_timer", "waiting_approval", "source_refetch_required"].includes(
+          state,
+        ),
       );
       this.store.db
         .prepare("UPDATE workflow_runs SET state=?,updated_at=? WHERE run_id=?")

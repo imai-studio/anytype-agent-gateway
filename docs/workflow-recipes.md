@@ -11,6 +11,10 @@ contracts and remaining implementation work are in
 [`workflow-runtime-contract.md`](workflow-runtime-contract.md) and
 [`planned-work.md`](planned-work.md).
 
+Definitions may contain prompts and approval messages, but Knot stores only their digests. The
+current gateway has no source resolver. Such a run stops in `source_refetch_required` before any
+executor receives definition text.
+
 ## Before you start
 
 Complete the [agent setup runbook](agent-setup.md) first. Each recipe assumes that:

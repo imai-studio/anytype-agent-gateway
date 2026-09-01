@@ -1,6 +1,7 @@
 import type { AgentConfig } from "../config.js";
 import type { Store } from "../store.js";
 import { WorkflowQueue, type WorkflowClaim } from "./runner-store.js";
+import type { WorkflowVersionRecord } from "./store-types.js";
 import { type JsonValue, type WorkflowDefinition } from "./workflow.js";
 type RunnerConfig = AgentConfig["automation"];
 export type WorkflowStepExecution = {
@@ -14,6 +15,15 @@ export type WorkflowStepExecution = {
 export interface WorkflowStepExecutor {
     execute(claim: WorkflowClaim, definition: WorkflowDefinition): Promise<WorkflowStepExecution>;
 }
+export interface WorkflowSourceSnapshot {
+    definitionSource: string;
+    sourceModifiedAt: number;
+    editorParticipantId: string;
+    editorProvenance: "anytype-native" | "authenticated-chat" | "operator-cli";
+}
+export interface WorkflowSourceResolver {
+    refetch(version: WorkflowVersionRecord): Promise<WorkflowSourceSnapshot | undefined>;
+}
 export declare class NoEffectWorkflowStepExecutor implements WorkflowStepExecutor {
     execute(claim: WorkflowClaim, definition: WorkflowDefinition): Promise<WorkflowStepExecution>;
 }
@@ -23,9 +33,10 @@ export declare class WorkflowRunner {
     private readonly log;
     private readonly executor;
     private readonly now;
+    private readonly sourceResolver?;
     readonly queue: WorkflowQueue;
     private readonly workerIds;
-    constructor(store: Store, config: RunnerConfig, log: (event: string, fields?: Record<string, unknown>) => void, executor?: WorkflowStepExecutor, now?: () => number);
+    constructor(store: Store, config: RunnerConfig, log: (event: string, fields?: Record<string, unknown>) => void, executor?: WorkflowStepExecutor, now?: () => number, sourceResolver?: WorkflowSourceResolver | undefined);
     run(signal: AbortSignal): Promise<void>;
     tickOnce(): Promise<void>;
     matchEventsOnce(now?: number): number;
@@ -35,5 +46,7 @@ export declare class WorkflowRunner {
     private authorize;
     private ensureAutomaticApproval;
     private retryFor;
+    private resumeSourceRefetchSteps;
+    private definitionForExecution;
 }
 export {};

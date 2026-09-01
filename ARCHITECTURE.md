@@ -43,12 +43,15 @@ durable per-space page cursor and reconciliation boundary survive restarts. The 
 runtime, writes Anytype, or performs external effects.
 
 When `automation.execution` is also enabled, a durable local runner matches normalized events to
-enabled workflow versions. SQLite owns deliveries, runs, dependency-ordered steps, attempts, retry
+enabled workflow versions. SQLite stores deliveries, runs, dependency-ordered steps, attempts, retry
 deadlines, cancellation requests, claim leases, and fencing tokens. Every dispatch and resume
 rechecks the immutable editor provenance, current local authority, and exact approval hash. The
 shipped executor boundary can complete only an empty transform step. Agent, Anytype, HTTP,
 notification, and other effect executors remain unavailable, so the runner dead-letters those steps
-without contacting an external system.
+without contacting an external system. SQLite stores digests in place of author prompt and message
+text. A step that needs that text enters `source_refetch_required`. An executor may resume it only
+after a read-only resolver refetches the definition and matches its source revision, editor, version
+hash, approval hash, and policy against the immutable record.
 
 Every route has a stable key:
 

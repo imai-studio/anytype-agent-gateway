@@ -1,14 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
+import YAML from "yaml";
 import type { AgentConfig } from "../config.js";
 import type { Store } from "../store.js";
-import { evaluateWorkflowAuthority, type WorkflowAuthorityEvaluation } from "./policy.js";
+import {
+  evaluateWorkflowAuthority,
+  evaluateWorkflowPolicy,
+  type WorkflowAuthorityEvaluation,
+} from "./policy.js";
 import { WorkflowQueue, type WorkflowClaim, type WorkflowRetryPolicy } from "./runner-store.js";
 import type { NormalizedEventRecord, WorkflowVersionRecord } from "./store-types.js";
 import {
   type JsonValue,
   type WorkflowDefinition,
+  canonicalJson,
+  canonicalStoredWorkflowApproval,
+  canonicalStoredWorkflowDefinition,
+  workflowApprovalHash,
+  workflowApprovalMaterial,
   workflowDefinitionSchema,
   workflowPrincipalDigest,
+  workflowSourceDigest,
+  workflowVersionHash,
 } from "./workflow.js";
 
 type RunnerConfig = AgentConfig["automation"];
@@ -19,6 +31,20 @@ export type WorkflowStepExecution =
 export interface WorkflowStepExecutor {
   execute(claim: WorkflowClaim, definition: WorkflowDefinition): Promise<WorkflowStepExecution>;
 }
+
+export interface WorkflowSourceSnapshot {
+  definitionSource: string;
+  sourceModifiedAt: number;
+  editorParticipantId: string;
+  editorProvenance: "anytype-native" | "authenticated-chat" | "operator-cli";
+}
+
+export interface WorkflowSourceResolver {
+  refetch(version: WorkflowVersionRecord): Promise<WorkflowSourceSnapshot | undefined>;
+}
+
+const SOURCE_REFETCH_REQUIRED =
+  "source_refetch_required: workflow text is not stored; refetch and reverify the source before execution";
 
 export class NoEffectWorkflowStepExecutor implements WorkflowStepExecutor {
   async execute(
@@ -47,6 +73,7 @@ export class WorkflowRunner {
     private readonly log: (event: string, fields?: Record<string, unknown>) => void,
     private readonly executor: WorkflowStepExecutor = new NoEffectWorkflowStepExecutor(),
     private readonly now: () => number = Date.now,
+    private readonly sourceResolver?: WorkflowSourceResolver,
   ) {
     this.queue = new WorkflowQueue(store);
     this.workerIds = Array.from(
@@ -71,6 +98,7 @@ export class WorkflowRunner {
   async tickOnce(): Promise<void> {
     const now = this.now();
     const initialized = this.queue.initializeMatcher(now);
+    const sourceResumed = await this.resumeSourceRefetchSteps(now);
     const revoked = this.reauthorizeActiveRuns(now);
     const expired = this.queue.expireRunDeadlines(now);
     const recovered = this.queue.recoverExpiredLeases(
@@ -92,7 +120,7 @@ export class WorkflowRunner {
       claimed += 1;
       await this.executeClaim(claim);
     }
-    if (matched || dispatched || recovered || revoked || expired || claimed)
+    if (matched || dispatched || recovered || revoked || expired || claimed || sourceResumed)
       this.log("workflow_runner_tick_complete", {
         matched,
         dispatched,
@@ -100,6 +128,7 @@ export class WorkflowRunner {
         revoked,
         expired,
         claimed,
+        sourceResumed,
       });
   }
 
@@ -110,7 +139,15 @@ export class WorkflowRunner {
     for (const event of events) {
       if (!isControlPlaneEvent(event)) {
         for (const version of this.queue.activeWorkflowVersions()) {
-          const definition = parseDefinition(version);
+          let definition: WorkflowDefinition;
+          try {
+            definition = parseStoredVersion(version).definition;
+          } catch {
+            this.log("workflow_version_integrity_failed", {
+              workflowIdDigest: stableId("workflow-log", version.workflowId),
+            });
+            continue;
+          }
           if (!definition.spec.enabled || !matchesAnyTrigger(version.workflowId, definition, event))
             continue;
           const authorization = this.authorize(version, definition);
@@ -156,7 +193,16 @@ export class WorkflowRunner {
       }
       const version = this.store.workflowVersion(delivery.workflowId, delivery.versionHash);
       if (!version) continue;
-      const definition = parseDefinition(version);
+      let definition: WorkflowDefinition;
+      try {
+        definition = parseStoredVersion(version).definition;
+      } catch {
+        this.queue.deadLetterDelivery(delivery.deliveryId);
+        this.log("workflow_version_integrity_failed", {
+          workflowIdDigest: stableId("workflow-log", delivery.workflowId),
+        });
+        continue;
+      }
       const authorization = this.authorize(version, definition);
       if (!authorization?.evaluation.allowed) continue;
       this.ensureAutomaticApproval(version, authorization.evaluation, now);
@@ -191,7 +237,68 @@ export class WorkflowRunner {
       this.queue.deadLetterRun(claim.run.runId, "Workflow version is unavailable", now);
       return;
     }
-    const definition = parseDefinition(version);
+    let stored: StoredWorkflowDefinition;
+    try {
+      stored = parseStoredVersion(version);
+    } catch {
+      this.queue.deadLetterRun(
+        claim.run.runId,
+        "workflow_version_integrity_failed: stored definition, approval, or policy did not match its immutable hashes",
+        this.now(),
+      );
+      return;
+    }
+    const resolution = await this.definitionForExecution(version, stored);
+    if (!resolution.ok) {
+      this.queue.requireSourceRefetch(
+        claim.run.runId,
+        claim.step.stepId,
+        claim.attempt.fencingToken,
+        resolution.reason,
+        this.now(),
+      );
+      return;
+    }
+    const definition = resolution.definition;
+    const authorization = this.authorize(version, definition);
+    const approval = authorization?.evaluation.allowed
+      ? this.store.currentWorkflowApproval(
+          version.workflowId,
+          version.approvalHash,
+          authorization.evaluation.authorityHash,
+          this.now(),
+        )
+      : undefined;
+    if (
+      !authorization?.evaluation.allowed ||
+      authorization.evaluation.authorityHash !== claim.run.authorityHash ||
+      !approval
+    ) {
+      if (
+        !this.queue.claimIsCurrent(
+          claim.run.runId,
+          claim.step.stepId,
+          claim.attempt.fencingToken,
+          this.now(),
+        )
+      )
+        return;
+      this.queue.pauseRunForApproval(
+        claim.run.runId,
+        "Source revalidation changed the workflow authority or exact approval",
+        this.now(),
+      );
+      return;
+    }
+    if (
+      !this.queue.claimIsCurrent(
+        claim.run.runId,
+        claim.step.stepId,
+        claim.attempt.fencingToken,
+        this.now(),
+      )
+    )
+      return;
     const execution = await this.executor.execute(claim, definition);
     const finishedAt = this.now();
     if (execution.ok)
@@ -223,7 +330,20 @@ export class WorkflowRunner {
           revoked += 1;
         continue;
       }
-      const definition = parseDefinition(version);
+      let definition: WorkflowDefinition;
+      try {
+        definition = parseStoredVersion(version).definition;
+      } catch {
+        if (
+          this.queue.deadLetterRun(
+            run.runId,
+            "workflow_version_integrity_failed: stored definition, approval, or policy did not match its immutable hashes",
+            now,
+          )
+        )
+          revoked += 1;
+        continue;
+      }
       const authorization = this.authorize(version, definition);
       if (!authorization?.evaluation.allowed) {
         if (
@@ -311,12 +431,207 @@ export class WorkflowRunner {
     if (!run) throw new Error("Unknown workflow run");
     const version = this.store.workflowVersion(run.workflowId, run.versionHash);
     if (!version) throw new Error("Workflow version is unavailable");
-    return retryForDefinition(parseDefinition(version), stepId);
+    return retryForDefinition(parseStoredVersion(version).definition, stepId);
+  }
+
+  private async resumeSourceRefetchSteps(now: number): Promise<number> {
+    if (!this.sourceResolver) return 0;
+    let resumed = 0;
+    const retryAt = now + Math.max(5_000, this.config.runner.pollIntervalMilliseconds * 10);
+    for (const step of this.queue.sourceRefetchSteps(now, this.config.runner.batchSize)) {
+      const run = this.queue.run(step.runId);
+      if (!run) continue;
+      const version = this.store.workflowVersion(run.workflowId, run.versionHash);
+      if (!version) continue;
+      let stored: StoredWorkflowDefinition;
+      try {
+        stored = parseStoredVersion(version);
+      } catch {
+        this.queue.deadLetterRun(
+          run.runId,
+          "workflow_version_integrity_failed: stored definition, approval, or policy did not match its immutable hashes",
+          now,
+        );
+        continue;
+      }
+      const resolution = await this.definitionForExecution(version, stored);
+      if (!resolution.ok) {
+        this.queue.deferSourceRefetch(step.runId, step.stepId, resolution.reason, retryAt, now);
+        continue;
+      }
+      const authorization = this.authorize(version, resolution.definition);
+      if (!authorization?.evaluation.allowed) {
+        this.queue.deferSourceRefetch(
+          step.runId,
+          step.stepId,
+          "source_reverification_failed: current local authority rejected the refetched definition",
+          retryAt,
+          now,
+        );
+        continue;
+      }
+      const approval = this.store.currentWorkflowApproval(
+        version.workflowId,
+        version.approvalHash,
+        authorization.evaluation.authorityHash,
+        now,
+      );
+      if (!approval) {
+        this.queue.deferSourceRefetch(
+          step.runId,
+          step.stepId,
+          "source_reverification_failed: no exact approval exists for the refetched definition",
+          retryAt,
+          now,
+        );
+        continue;
+      }
+      if (this.queue.resumeSourceRefetchStep(step.runId, step.stepId, now)) resumed += 1;
+    }
+    return resumed;
+  }
+
+  private async definitionForExecution(
+    version: WorkflowVersionRecord,
+    stored: StoredWorkflowDefinition,
+  ): Promise<{ ok: true; definition: WorkflowDefinition } | { ok: false; reason: string }> {
+    if (!stored.sensitiveText.size) return { ok: true, definition: stored.definition };
+    if (!this.sourceResolver) return { ok: false, reason: SOURCE_REFETCH_REQUIRED };
+    let snapshot: WorkflowSourceSnapshot | undefined;
+    try {
+      snapshot = await this.sourceResolver.refetch(version);
+    } catch {
+      return { ok: false, reason: SOURCE_REFETCH_REQUIRED };
+    }
+    if (!snapshot) return { ok: false, reason: SOURCE_REFETCH_REQUIRED };
+    try {
+      return { ok: true, definition: verifyRefetchedDefinition(version, snapshot) };
+    } catch {
+      return {
+        ok: false,
+        reason:
+          "source_reverification_failed: refetched workflow source did not match the stored version, approval, editor, and revision hashes",
+      };
+    }
   }
 }
 
-function parseDefinition(version: WorkflowVersionRecord): WorkflowDefinition {
-  return workflowDefinitionSchema.parse(JSON.parse(version.canonicalDefinitionJson));
+type StoredWorkflowDefinition = {
+  definition: WorkflowDefinition;
+  sensitiveText: ReadonlyMap<string, string>;
+};
+
+function parseStoredVersion(version: WorkflowVersionRecord): StoredWorkflowDefinition {
+  const raw = JSON.parse(version.canonicalDefinitionJson) as JsonValue;
+  if (canonicalJson(raw) !== version.canonicalDefinitionJson)
+    throw new Error("Stored workflow definition is not canonical JSON");
+  const sensitiveText = new Map<string, string>();
+  const materialized = materializeStoredDefinition(raw, [], sensitiveText);
+  const definition = workflowDefinitionSchema.parse(materialized);
+  const policy = evaluateWorkflowPolicy(definition, { sourceSpaceId: version.spaceId });
+  if (
+    policy.riskTier !== version.riskTier ||
+    canonicalJson(policy.requiredCapabilities) !== canonicalJson(version.requiredCapabilities)
+  )
+    throw new Error("Stored workflow policy no longer matches the immutable version record");
+  if (
+    !/^sha256:[a-f0-9]{64}$/.test(version.versionHash) ||
+    !/^sha256:[a-f0-9]{64}$/.test(version.approvalHash) ||
+    !/^sha256:[a-f0-9]{64}$/.test(version.sourceDigest)
+  )
+    throw new Error("Stored workflow digest is invalid");
+  if (!sensitiveText.size) {
+    if (
+      workflowVersionHash(definition) !== version.versionHash ||
+      workflowApprovalHash(definition) !== version.approvalHash ||
+      canonicalJson(workflowApprovalMaterial(definition)) !== version.canonicalApprovalJson
+    )
+      throw new Error("Stored workflow hashes no longer match the immutable definition");
+  } else {
+    const approval = JSON.parse(canonicalJson(workflowApprovalMaterial(definition))) as JsonValue;
+    for (const [path, digest] of sensitiveText)
+      setJsonPath(approval, path.split("/"), { redacted: true, digest });
+    if (canonicalJson(approval) !== version.canonicalApprovalJson)
+      throw new Error("Stored workflow approval projection does not match the redacted definition");
+  }
+  return { definition, sensitiveText };
+}
+
+function materializeStoredDefinition(
+  value: JsonValue,
+  path: string[],
+  sensitiveText: Map<string, string>,
+): JsonValue {
+  if (Array.isArray(value))
+    return value.map((item, index) =>
+      materializeStoredDefinition(item, [...path, String(index)], sensitiveText),
+    );
+  if (!value || typeof value !== "object") return value;
+  const result: Record<string, JsonValue> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    const nestedPath = [...path, key];
+    if (key === "prompt" || key === "message") {
+      if (!isRedactedText(nested))
+        throw new Error("Stored workflow contains plaintext sensitive text");
+      const pointer = nestedPath.join("/");
+      sensitiveText.set(pointer, nested.digest);
+      result[key] = `[${key} unavailable until source refetch]`;
+    } else result[key] = materializeStoredDefinition(nested, nestedPath, sensitiveText);
+  }
+  return result;
+}
+
+function isRedactedText(value: JsonValue): value is { redacted: true; digest: string } {
+  return (
+    !Array.isArray(value) &&
+    value !== null &&
+    typeof value === "object" &&
+    Object.keys(value).length === 2 &&
+    value.redacted === true &&
+    typeof value.digest === "string" &&
+    /^sha256:[a-f0-9]{64}$/.test(value.digest)
+  );
+}
+
+function setJsonPath(target: JsonValue, path: string[], value: JsonValue): void {
+  let current = target;
+  for (const part of path.slice(0, -1)) {
+    if (!current || typeof current !== "object")
+      throw new Error("Redacted workflow path is absent from approval material");
+    current = Array.isArray(current) ? current[Number(part)]! : current[part]!;
+  }
+  const final = path.at(-1);
+  if (!final || !current || typeof current !== "object")
+    throw new Error("Redacted workflow path is invalid");
+  if (Array.isArray(current)) current[Number(final)] = value;
+  else current[final] = value;
+}
+
+function verifyRefetchedDefinition(
+  version: WorkflowVersionRecord,
+  snapshot: WorkflowSourceSnapshot,
+): WorkflowDefinition {
+  if (
+    snapshot.sourceModifiedAt !== version.sourceModifiedAt ||
+    snapshot.editorProvenance !== version.editorProvenance ||
+    workflowPrincipalDigest(snapshot.editorParticipantId) !== version.editorPrincipalDigest ||
+    workflowSourceDigest(snapshot.definitionSource) !== version.sourceDigest
+  )
+    throw new Error("Refetched workflow source identity or revision changed");
+  const definition = workflowDefinitionSchema.parse(
+    YAML.parse(snapshot.definitionSource, { maxAliasCount: 0 }),
+  );
+  const policy = evaluateWorkflowPolicy(definition, { sourceSpaceId: version.spaceId });
+  if (
+    workflowVersionHash(definition) !== version.versionHash ||
+    workflowApprovalHash(definition) !== version.approvalHash ||
+    canonicalStoredWorkflowDefinition(definition) !== version.canonicalDefinitionJson ||
+    canonicalStoredWorkflowApproval(definition) !== version.canonicalApprovalJson ||
+    policy.riskTier !== version.riskTier ||
+    canonicalJson(policy.requiredCapabilities) !== canonicalJson(version.requiredCapabilities)
+  )
+    throw new Error("Refetched workflow source does not match the immutable version");
+  return definition;
 }
 
 function retryForDefinition(definition: WorkflowDefinition, stepId: string): WorkflowRetryPolicy {

@@ -576,10 +576,10 @@ export class Store {
         step_id TEXT NOT NULL,
         position INTEGER NOT NULL CHECK(position >= 0),
         kind TEXT NOT NULL,
-        state TEXT NOT NULL CHECK(state IN (
-          'blocked','ready','leased','running','succeeded','waiting_retry','waiting_timer',
-          'waiting_approval','failed','cancelled','dead_letter'
-        )),
+         state TEXT NOT NULL CHECK(state IN (
+           'blocked','ready','leased','running','succeeded','waiting_retry','waiting_timer',
+           'waiting_approval','source_refetch_required','failed','cancelled','dead_letter'
+         )),
         dependencies_json TEXT NOT NULL CHECK(json_valid(dependencies_json)),
         timeout_seconds INTEGER NOT NULL CHECK(timeout_seconds > 0),
         run_deadline_at INTEGER NOT NULL CHECK(run_deadline_at >= 0),
@@ -608,7 +608,9 @@ export class Store {
         attempt_number INTEGER NOT NULL CHECK(attempt_number > 0),
         worker_id TEXT NOT NULL,
         fencing_token TEXT NOT NULL,
-        state TEXT NOT NULL CHECK(state IN ('running','succeeded','retry','failed','dead_letter')),
+         state TEXT NOT NULL CHECK(state IN (
+           'running','succeeded','retry','source_refetch_required','failed','dead_letter'
+         )),
         started_at INTEGER NOT NULL,
         completed_at INTEGER,
         error TEXT,

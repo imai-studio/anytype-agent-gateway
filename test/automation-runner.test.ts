@@ -3,10 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { evaluateWorkflowPolicy, workflowAuthorityHash } from "../src/automation/policy.js";
-import { WorkflowRunner } from "../src/automation/runner.js";
+import {
+  WorkflowRunner,
+  type WorkflowSourceResolver,
+  type WorkflowStepExecutor,
+} from "../src/automation/runner.js";
 import { WorkflowQueue } from "../src/automation/runner-store.js";
 import {
   canonicalJson,
+  canonicalStoredWorkflowDefinition,
   canonicalWorkflowDefinition,
   workflowApprovalHash,
   workflowApprovalMaterial,
@@ -511,6 +516,222 @@ describe("durable workflow runner", () => {
     expect(runner.queue.counts().deadLetters).toBe(1);
     const row = store.db.prepare("SELECT error FROM workflow_runs").get() as { error: string };
     expect(row.error).toContain("No effect executor is installed");
+    store.close();
+  });
+
+  it("parks a run when redacted workflow text requires a verified source refetch", async () => {
+    const config = runnerConfig({
+      allowedCapabilities: ["agent.invoke"],
+      maximumRiskTier: "T1",
+    });
+    const store = new Store(":memory:");
+    const definition = workflow("Agent", {
+      steps: [
+        {
+          id: "agent",
+          kind: "agent",
+          dependsOn: [],
+          config: { prompt: "private operator prompt" },
+        },
+      ],
+      capabilities: ["agent.invoke"],
+    });
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, definition, "workflow-source-required");
+    let calls = 0;
+    const executor: WorkflowStepExecutor = {
+      async execute() {
+        calls += 1;
+        return { ok: true, result: null };
+      },
+    };
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      executor,
+      () => 500,
+    );
+
+    await runner.tickOnce();
+
+    expect(calls).toBe(0);
+    expect(queue.run(run.runId)).toMatchObject({
+      state: "waiting",
+      error:
+        "source_refetch_required: workflow text is not stored; refetch and reverify the source before execution",
+    });
+    expect(queue.steps(run.runId)[0]).toMatchObject({
+      state: "source_refetch_required",
+    });
+    expect(queue.attempts(run.runId, "agent")[0]).toMatchObject({
+      state: "source_refetch_required",
+    });
+    store.close();
+  });
+
+  it("refetches and revalidates redacted source before handing it to an executor", async () => {
+    const config = runnerConfig({
+      allowedCapabilities: ["agent.invoke"],
+      maximumRiskTier: "T1",
+    });
+    const store = new Store(":memory:");
+    const definition = workflow("Agent", {
+      steps: [
+        {
+          id: "agent",
+          kind: "agent",
+          dependsOn: [],
+          config: { prompt: "private operator prompt" },
+        },
+      ],
+      capabilities: ["agent.invoke"],
+    });
+    const definitionSource = canonicalWorkflowDefinition(definition);
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, definition, "workflow-refetched");
+    let receivedPrompt: string | undefined;
+    const executor: WorkflowStepExecutor = {
+      async execute(_claim, completeDefinition) {
+        const step = completeDefinition.spec.steps[0];
+        receivedPrompt = step?.kind === "agent" ? step.config?.prompt : undefined;
+        return { ok: true, result: { accepted: true } };
+      },
+    };
+    const resolver: WorkflowSourceResolver = {
+      async refetch() {
+        return {
+          definitionSource,
+          sourceModifiedAt: 100,
+          editorParticipantId: "operator",
+          editorProvenance: "anytype-native",
+        };
+      },
+    };
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      executor,
+      () => 500,
+      resolver,
+    );
+
+    await runner.tickOnce();
+
+    expect(receivedPrompt).toBe("private operator prompt");
+    expect(queue.run(run.runId)?.state).toBe("succeeded");
+    expect(queue.steps(run.runId)[0]).toMatchObject({
+      state: "succeeded",
+      result: { accepted: true },
+    });
+    store.close();
+  });
+
+  it("keeps a parked run closed when refetched source fails exact hash checks", async () => {
+    const config = runnerConfig({
+      allowedCapabilities: ["agent.invoke"],
+      maximumRiskTier: "T1",
+    });
+    const store = new Store(":memory:");
+    const definition = workflow("Agent", {
+      steps: [
+        {
+          id: "agent",
+          kind: "agent",
+          dependsOn: [],
+          config: { prompt: "approved prompt" },
+        },
+      ],
+      capabilities: ["agent.invoke"],
+    });
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, definition, "workflow-refetch-mismatch");
+    const changed = workflow("Agent", {
+      steps: [
+        {
+          id: "agent",
+          kind: "agent",
+          dependsOn: [],
+          config: { prompt: "changed prompt" },
+        },
+      ],
+      capabilities: ["agent.invoke"],
+    });
+    const resolver: WorkflowSourceResolver = {
+      async refetch() {
+        return {
+          definitionSource: canonicalWorkflowDefinition(changed),
+          sourceModifiedAt: 100,
+          editorParticipantId: "operator",
+          editorProvenance: "anytype-native",
+        };
+      },
+    };
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      undefined,
+      () => 500,
+      resolver,
+    );
+
+    await runner.tickOnce();
+
+    expect(queue.run(run.runId)).toMatchObject({
+      state: "waiting",
+      error:
+        "source_reverification_failed: refetched workflow source did not match the stored version, approval, editor, and revision hashes",
+    });
+    expect(queue.steps(run.runId)[0]?.state).toBe("source_refetch_required");
+    store.close();
+  });
+
+  it("dead-letters a run when stored policy material no longer matches its hashes", async () => {
+    const config = runnerConfig();
+    const store = new Store(":memory:");
+    const definition = workflow();
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, definition, "workflow-tampered");
+    const changed = workflow("Workflow one", {
+      retry: {
+        attempts: 4,
+        initialDelaySeconds: 1,
+        maximumDelaySeconds: 2,
+        multiplier: 2,
+      },
+    });
+    store.db.exec("DROP TRIGGER workflow_versions_no_update");
+    store.db
+      .prepare(
+        `UPDATE workflow_versions SET canonical_definition_json=?
+         WHERE workflow_id=? AND version_hash=?`,
+      )
+      .run(canonicalStoredWorkflowDefinition(changed), run.workflowId, run.versionHash);
+    let calls = 0;
+    const executor: WorkflowStepExecutor = {
+      async execute() {
+        calls += 1;
+        return { ok: true, result: null };
+      },
+    };
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      executor,
+      () => 500,
+    );
+
+    await runner.tickOnce();
+
+    expect(calls).toBe(0);
+    expect(queue.run(run.runId)).toMatchObject({
+      state: "dead_letter",
+      error:
+        "workflow_version_integrity_failed: stored definition, approval, or policy did not match its immutable hashes",
+    });
     store.close();
   });
 });

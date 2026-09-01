@@ -116,10 +116,12 @@ export type WorkflowStepState =
   | "waiting_retry"
   | "waiting_timer"
   | "waiting_approval"
+  | "source_refetch_required"
   | "failed"
   | "cancelled"
   | "dead_letter";
-export type WorkflowAttemptState = "running" | "succeeded" | "retry" | "failed" | "dead_letter";
+export type WorkflowAttemptState =
+  "running" | "succeeded" | "retry" | "source_refetch_required" | "failed" | "dead_letter";
 
 export interface WorkflowDeliveryRecord {
   deliveryId: string;
