@@ -1,12 +1,14 @@
 # Workflow runtime foundation
 
-This document freezes the Phase 2 foundation contract. Knot has a read-only observer for workflow
-definition objects, a durable local runner core, and a closed typed executor catalog. It does not
-yet observe workflow target data, expose a raw HTTP executor, or bootstrap authoring types.
+This document freezes the Phase 2 contract. Knot has a read-only observer for workflow-definition
+objects, a durable local runner, source refetch, a closed typed executor catalog, effect receipts,
+and local operator controls. The feature remains disabled by default while the representative soak
+is pending. It does not observe workflow target data, expose a raw HTTP executor, or bootstrap
+authoring types.
 
-The companion [process topology](workflow-runtime-topology.md) defines ownership, leases, crash
-recovery, timers, cancellation, effects, shutdown, retention, and restore behavior for the code that
-will implement this contract.
+The companion [process topology](workflow-runtime-topology.md) defines process ownership, leases,
+crash recovery, cancellation, effects, shutdown, retention, and restore behavior. It marks future
+timer, source, and projection rules separately.
 
 ## Trust planes
 

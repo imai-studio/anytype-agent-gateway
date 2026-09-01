@@ -1,121 +1,64 @@
 # Planned work
 
-This file lists work that has not shipped. Released behavior belongs in `README.md` and
-`ARCHITECTURE.md`. A design in this file does not make a command, service, API, or compatibility
-promise.
+This file lists gaps. Released behavior belongs in [`../README.md`](../README.md) and
+[`../ARCHITECTURE.md`](../ARCHITECTURE.md). A design or implementation branch does not make a local
+command, Cloud route, or compatibility promise available.
 
-## Phase 2 workflow runtime
+## Workflow runtime
 
-The repository contains the Phase 2 contracts, additive SQLite foundation, read-only workflow
-definition observer, and durable local runner core. The runner dispatches normalized events,
-persists runs and dependency-ordered steps, recovers leases, retries with durable deadlines,
-records cancellation, and dead-letters work that cannot continue. The gateway installs a read-only
-Anytype source resolver and a closed executor catalog. The catalog includes bounded Anytype
-read/query/write/upsert/materialize operations, declarative JSON-pointer transforms, notifications
-through named local chat connections, capability-narrowed agent invocation through Codex ACP, and
-T2 `publish.web`. Generic workflow effects have additive durable receipts and refuse to
-guess after a crash leaves an external outcome unknown. Raw HTTP, JavaScript, shell, and filesystem
-authority remain unavailable. OpenClaw workflow-agent invocation stays disabled until its adapter
-can enforce a workflow-only tool and filesystem boundary. Conversation and native scheduled
-OpenClaw runs are unchanged. The remaining work should follow this order.
+The observer, durable runner, closed executors, source resolver, effect receipts, and operator CLI
+are implemented behind default-off automation gates. The remaining work is:
 
-The foundation rejects hard-delete and raw external URL steps, requires named local connections,
-checks verified editor identity, intersects definition budgets with local caps, and stores source
-digests instead of raw definition text. Normalized events use closed enums and bounded payloads.
-The definition observer discovers configured workflow objects, checks native editor identity and
-local authority, stores immutable versions, and emits deduplicated definition events. It does not
-observe workflow target objects. The runner ignores those control-plane definition events and waits
-for normalized target, chat, schedule, or manual events.
+- run the representative 72-hour soak and live Anytype regression suite before changing any default;
+- ingest target-object changes, collection membership, authorized chat events, and schedules
+  through one normalized path;
+- add activation baselines, explicit backfill, coalescing, self-write suppression, and global or
+  per-space API budgets to those new sources;
+- add durable workflow schedule and sleep timers plus cost accounting;
+- add a complete policy/effect audit view beyond the redacted local operator log;
+- add generic HTTP only through named local connections with fixed destinations, methods, limits,
+  redirect policy, and secret references;
+- enable OpenClaw workflow-agent steps only after its adapter can enforce a workflow-only tool and
+  filesystem boundary;
+- provision native Anytype workflow, approval, run, and connection-reference types, then project
+  bounded status without self-trigger loops;
+- add ingestion templates, deterministic collection or dashboard materialization, and experimental
+  one-way mirrors with explicit property grants and provenance.
 
-### 1. Infrastructure specification
+Arbitrary JavaScript, shell, filesystem steps, two-way mirrors, ACL bypass, shared SQLite,
+active-active execution, and a second Codex/OpenClaw scheduler are not planned for this phase.
 
-The proposed process and recovery contract is in
-[`workflow-runtime-topology.md`](workflow-runtime-topology.md). It fixes queue ownership, leases,
-fencing, crash recovery, timers, cancellation, effect receipts, retention, backup restoration, and
-single-host operation. Reviewing that design is the gate for the observer and runner work below.
+## Knot Cloud production
 
-The topology document is the design contract for the shipped definition observer, durable runner,
-and generic workflow effect receipts. Anytype status projections, target-data observation, and
-separate effect workers remain proposed.
+The imai-operated deployment currently releases only its invitation-only console, health endpoint,
+protocol metadata endpoint, restricted Neon access, and private R2 provider check. Its exact contract
+is the [Knot Cloud release record](https://github.com/imai-studio/knot-cloud/blob/main/docs/releases.md).
 
-### 2. Remaining observation and reconciliation
+The local repository contains signed connector, publication, asset, Relay, and `publish.web` clients.
+They remain unusable with the imai deployment until the matching Cloud routes, migrations, provider
+configuration, and canaries appear in that release record. Remaining Cloud release work includes:
 
-- Extend the normalized event path from workflow definitions to target objects, collection
-  membership, authorized chat messages, schedules, and manual requests.
-- Use Heart events or streams only to reduce latency.
-- Add first-activation baselines, optional backfill, coalescing, and self-write suppression.
-- Add global and per-space API budgets to the existing fair, bounded definition polling.
+- connector pairing and signed claim, lease, result, and revocation routes;
+- publication upload, an isolated public-content domain, reader routes, rollback, disable, and
+  destructive unpublish;
+- consumer API-key management and typed asynchronous Anytype operations;
+- transactional event and webhook delivery through the existing local runner;
+- production tenant quotas, RLS probes, replay protection, cache-revocation checks, audit evidence,
+  and provider smoke tests;
+- separately reviewed custom domains, authenticated readers, billing, media derivatives, and hosted
+  connectors.
 
-### 3. Runner completion
+Cloud may deliver typed intent. It cannot approve a local workflow, grant a project or space, assert
+an Anytype sender, choose a credential, or bypass the local executor catalog.
 
-- Add durable timer events and per-step waiting timers.
-- Extend the current concurrency, hourly-rate, step, and causal-depth checks with cost accounting.
-- Add a complete policy-decision and effect audit view beyond the shipped redacted local operator
-  audit.
+## Gateway gaps
 
-### 4. Steps and approvals
-
-- Add HTTP through named local connections and secret references.
-- Add richer closed transforms only when their complete input and output schemas can be approved.
-- Add native Anytype approval, disable, retry, and cancellation controls; the shipped operator CLI
-  remains the local administrative surface.
-
-### 5. Anytype authoring
-
-- Bootstrap the Knot workflow, approval, run, and connection-reference types.
-- Project bounded run status into Anytype without creating self-trigger loops.
-
-### 6. Data products and operations
-
-- Add ingestion templates and deterministic collection or dashboard materialization.
-- Add experimental one-way mirrors with explicit property grants and provenance.
-- Build simulation, fault injection, end-to-end tests, and a representative 72-hour soak.
-
-Phase 2 does not include arbitrary JavaScript steps, two-way mirrors, ACL bypass, hosted
-multi-tenancy, or a second scheduler for Codex and OpenClaw.
-
-## Knot Cloud
-
-Knot Cloud is a proposed imai-operated and self-hostable Next.js service. Its reference deployment
-runs on Vercel. Knot Publish accepts authenticated document snapshots from local Knot installations
-and serves removable, versioned public pages. A typed Anytype data API creates durable operations
-that paired local connectors may execute only after applying local policy. The complete proposal is
-in [`publish-architecture.md`](publish-architecture.md).
-
-The suggested delivery order is:
-
-1. Freeze the threat model, document schema, signing and protocol negotiation, idempotency,
-   destructive unpublish, typed Anytype operations, relay state machine, provenance, and audit
-   fixtures. Prove the Vercel reference topology without shipping a public API.
-2. Launch invitation-only email accounts, connector pairing, Knot Publish, private object storage,
-   isolated public-content domains, rollback, disable, destructive unpublish, quotas, and the local
-   Knot outbox client.
-3. Add scoped consumer keys and the asynchronous typed Anytype data API through paired connectors.
-   Keep arbitrary prompts, shell, filesystem, model-tool, and network execution out of the protocol.
-4. Add transactional events and channel workflows through the Phase 2 runner rather than a second
-   scheduler.
-5. Extend the released bounded publish CLI and MCP surface only alongside compatible Cloud
-   contracts. The local surface has no runtime URL, credential, HTML, or filesystem-path input.
-6. Extend the implemented T2 `publish.web` step only alongside compatible Cloud contracts and
-   operational evidence.
-7. Add custom domains, authenticated readers, billing, media workers, and isolated hosted connectors
-   only after their individual security and operational gates pass.
-
-The Knot Cloud repository and hosted foundation exist. The local release candidate includes private
-Ed25519 setup, pairing, signed command transport, durable publication operations, and a default-off
-cloud-to-local workflow bridge. The bridge requires the Cloud side to emit an authenticated actor
-digest; a principal-kind-only envelope remains incompatible. Production activation and the full
-remote Anytype data API integration therefore remain release-gated. The publication commands,
-asset checkpoints, outbox, and constrained MCP tool work only against a deployment whose release
-notes include the matching routes.
-
-## Gateway work not included in the current release
-
-- A Codex app-server adapter that can observe native scheduled and externally continued tasks.
+- A Codex app-server adapter for native scheduled and externally continued tasks.
 - A Windows service installer.
-- A supported active-active or multi-host deployment for one identity and state database.
-- A distributed queue or exactly-once delivery guarantee.
-- A public-API replacement for the private Heart discussion compatibility adapter.
+- A supported multi-host deployment for one identity and state database.
+- A distributed queue or cross-machine exactly-once guarantee.
+- A public-API replacement for the private Heart discussion adapter.
 
-These gaps should stay visible in documentation and diagnostics. Do not paper over them with a
-second scheduler, shared SQLite files, display-name authorization, or broad network listeners.
+Keep these gaps visible in guides and diagnostics. Do not hide them behind display-name
+authorization, broad network listeners, a second scheduler, or ordinary Anytype objects pretending
+to be native workflow types.

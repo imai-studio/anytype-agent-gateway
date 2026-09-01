@@ -1,10 +1,10 @@
 # Architecture decisions and design history
 
-See [`knot-roadmap.md`](knot-roadmap.md) for the product model, staged compatibility migration, and
-future workflow-runtime architecture built on these decisions.
+See [`knot-roadmap.md`](knot-roadmap.md) for delivery status and
+[`planned-work.md`](planned-work.md) for remaining gaps.
 
-The proposed [workflow runtime process topology](workflow-runtime-topology.md) records the concrete
-single-process and recovery rules for Phase 2. It is an implementation gate, not released behavior.
+The [workflow runtime process topology](workflow-runtime-topology.md) records the single-process and
+recovery rules for the default-off Phase 2 preview and marks future extensions separately.
 
 This document records the trade-offs considered before implementation. It complements [ARCHITECTURE.md](../ARCHITECTURE.md), which describes the resulting system in detail.
 
@@ -71,10 +71,10 @@ OpenClaw intentionally isolates a normal cron `agentTurn` under a cron-run sessi
 
 Codex ACP does not currently expose Codex desktop scheduled tasks or external session observation. Knot reports that limitation instead of pretending to schedule a job. Equivalent Codex support belongs in a native Codex app-server adapter.
 
-The proposed Phase 2 workflow runner has its own durable `schedule.tick` events. Those timers start
-Knot workflows. They do not schedule route-bound Codex or OpenClaw turns, and they do not replace
-either runtime's native scheduler. The [workflow runtime process topology](workflow-runtime-topology.md)
-defines that boundary.
+The planned workflow schedule adapter will create durable `schedule.tick` events. Those timers will
+start Knot workflows. They will not schedule route-bound Codex or OpenClaw turns or replace either
+runtime's native scheduler. The
+[workflow runtime process topology](workflow-runtime-topology.md) defines that boundary.
 
 ## Anytype mutations use scoped tools
 

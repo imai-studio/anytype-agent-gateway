@@ -4,7 +4,16 @@ This repository builds and operates Knot. When a user gives an automation agent 
 
 Use [`docs/workflow-recipes.md`](docs/workflow-recipes.md) when an operator asks how to configure or verify a particular chat, project, object, direct-message, scheduling, or multi-agent workflow.
 
-`README.md` and `ARCHITECTURE.md` describe released behavior. [`docs/planned-work.md`](docs/planned-work.md) and [`docs/publish-architecture.md`](docs/publish-architecture.md) describe proposals. Do not report a proposed command, service, or workflow feature as available.
+`README.md`, `ARCHITECTURE.md`, and [`docs/workflow-recipes.md`](docs/workflow-recipes.md) describe
+released behavior and explicitly marked default-off previews. [`docs/planned-work.md`](docs/planned-work.md)
+lists gaps. [`docs/publish-architecture.md`](docs/publish-architecture.md) separates the local
+implementation, the Cloud production release record, and future design. A proposed command,
+service, or workflow is unavailable until its implementation and setup instructions move into the
+released documentation.
+
+When a release changes that boundary, update the released guide and remove the matching item from
+planned work in the same pull request. Do not leave readers to infer availability from a roadmap or
+an open pull request.
 
 ## Invariants
 
@@ -24,7 +33,11 @@ knot --version
 
 Use the checkout-local command while preparing the release. After npm trusted publishing completes, use `pnpm add --global @imai/knot@0.2.0`. After the `v0.2.0` tag exists, the exact-source form is `pnpm add --global github:imai-studio/knot#v0.2.0`. Keep the former `imai-studio/anytype-agent-gateway` URL available through GitHub's repository redirect for compatibility.
 
-Ask the operator for values the machine cannot discover safely: runtime (`codex` or `openclaw`), dedicated Anytype member name, invite links, selected chats and discussions, authorized participant IDs, project paths, wake policy, and permission policy. Follow `docs/agent-setup.md` to create or reuse the identity. Write configuration outside the repository. Run `knot validate` and `knot doctor`, prove the foreground workflow, and only then install the service.
+Ask the operator for values the machine cannot discover safely: runtime (`codex` or `openclaw`),
+dedicated Anytype member name, invite links, selected chats and discussions, authorized participant
+IDs, project paths, wake policy, and permission policy. Follow `docs/agent-setup.md` to create or
+reuse the identity. Write configuration outside the repository. Run `knot validate` and `knot
+doctor`, prove the foreground workflow, and only then install the service.
 
 ## Repository checks
 

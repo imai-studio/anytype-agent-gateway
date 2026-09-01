@@ -1,9 +1,8 @@
 # Run cloud commands through a local Knot workflow runtime
 
-Status: release-candidate behavior. It is disabled by default and requires a Knot Cloud deployment
-whose command envelope includes an authenticated `actor.principalDigest` and `actor.digestVersion`.
-Do not enable it against
-an older Cloud contract.
+Status: default-off local preview. It requires a Knot Cloud release whose command envelope includes
+an authenticated `actor.principalDigest` and `actor.digestVersion`. The imai production release does
+not currently expose those command routes. Do not enable the bridge against an older contract.
 
 Knot Cloud never connects to the laptop. A paired connector signs an outbound claim request, writes
 the returned command to the agent's private SQLite state, checks local policy, and then runs the

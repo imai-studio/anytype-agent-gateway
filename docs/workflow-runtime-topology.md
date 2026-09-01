@@ -1,8 +1,9 @@
 # Workflow runtime process topology
 
-Status: process contract for Phase 2. The workflow definition observer and durable runner core are
-implemented. Target-object observation, effect executors, receipts, and status projection remain
-proposed.
+Status: process and recovery contract for the default-off Phase 2 preview. The definition observer,
+durable runner, source resolver, closed executors, effect receipts, and local operator controls are
+implemented. Target-data observation, workflow schedules, and Anytype status projection remain
+planned.
 
 This document fixes the process and recovery rules for the workflow runtime. Later implementation
 PRs may add tables and modules, but they must keep these rules unless a new architecture decision
@@ -10,20 +11,22 @@ changes them.
 
 ## Scope
 
-The Phase 2 runtime runs inside the existing Knot service. The current release has two long-lived
-supervisors:
+The Phase 2 runtime runs inside the existing Knot service. When its gates are enabled, two
+long-lived supervisors run beside the chat gateway:
 
-- the observer turns Anytype changes, chat messages, schedules, and manual requests into normalized
-  events;
+- the observer turns verified workflow-definition changes into normalized events;
 - the runner matches events to approved workflow versions and advances durable step attempts.
+
+The operator CLI can add a manual event. The default-off Cloud bridge can add typed Cloud command
+events. Target-object, collection, chat, and schedule adapters have not shipped.
 
 The observer and runner do not replace the current chat gateway. The gateway keeps its route,
 session, steering, and response projection behavior. Workflow agent steps call the existing runtime
 drivers through a separate execution path and persist their results before later steps begin.
 
-OpenClaw still owns OpenClaw cron jobs, heartbeats, and native session continuations. A Knot schedule
-creates a `schedule.tick` event for a Knot workflow. It does not create or emulate a native Codex or
-OpenClaw scheduled task.
+OpenClaw still owns OpenClaw cron jobs, heartbeats, and native session continuations. A future Knot
+schedule will create a `schedule.tick` event for a Knot workflow. It will not create or emulate a
+native Codex or OpenClaw scheduled task.
 
 ## Deployment boundary
 
@@ -37,15 +40,13 @@ Knot service process
   chat gateway supervisor
   workflow observer supervisor
     adaptive reconciliation scheduler
-    chat event adapter
-    optional Heart hint adapter
-    schedule and manual event adapters
   workflow runner supervisor
     delivery dispatcher
     bounded worker pool
     retry and timer scanner
-    effect executor
-    Anytype status projector
+    source resolver
+    closed typed executors and receipts
+    optional Cloud command extension
   Codex or OpenClaw runtime driver
 ```
 
@@ -65,17 +66,17 @@ reduce latency, but no correctness decision may depend on them surviving a resta
 
 Each fact has one owner.
 
-| State                                                                                                                                | Owner                                                          | Notes                                                                                                   |
-| ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Workflow YAML, display name, enabled choice, approval requests, and visible run summaries                                            | Anytype                                                        | This is untrusted intent and operator visibility. Anytype status is not execution truth.                |
-| Allowed authors, spaces, projects, capabilities, connections, secret names, risk tier, budgets, and feature gates                    | Local configuration                                            | Anytype content cannot add or widen a grant.                                                            |
-| Connection credentials and secret values                                                                                             | Local files, environment, or an approved local secret provider | SQLite, Anytype, prompts, status objects, and logs store names or digests only.                         |
-| Parsed immutable workflow versions and approval hashes                                                                               | SQLite                                                         | A behavior change creates another version. It never rewrites an old version.                            |
-| Approval decisions and the authority hash used for each decision                                                                     | SQLite                                                         | T2 approval must name an authenticated local or native Anytype actor and use manual mode.               |
-| Snapshots, normalized events, workflow deliveries, runs, steps, attempts, timers, effects, receipts, audit records, and dead letters | SQLite                                                         | These records drive recovery.                                                                           |
-| Current Anytype objects and collection membership                                                                                    | Anytype                                                        | SQLite snapshots are observations used for diffing. Reconciliation re-reads Anytype.                    |
-| Runtime memory and model state                                                                                                       | Codex or OpenClaw                                              | Knot stores the session binding and the persisted workflow step result needed for retries.              |
-| External HTTP state                                                                                                                  | The named external system                                      | Knot stores request and response digests plus an idempotency receipt, not a second copy of that system. |
+| State                                                                                                                              | Owner                                                          | Notes                                                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Workflow YAML, display name, enabled choice, approval requests, and visible run summaries                                          | Anytype                                                        | This is untrusted intent and operator visibility. Anytype status is not execution truth.          |
+| Allowed authors, spaces, projects, capabilities, connections, secret names, risk tier, budgets, and feature gates                  | Local configuration                                            | Anytype content cannot add or widen a grant.                                                      |
+| Connection credentials and secret values                                                                                           | Local files, environment, or an approved local secret provider | SQLite, Anytype, prompts, status objects, and logs store names or digests only.                   |
+| Parsed immutable workflow versions and approval hashes                                                                             | SQLite                                                         | A behavior change creates another version. It never rewrites an old version.                      |
+| Approval decisions and the authority hash used for each decision                                                                   | SQLite                                                         | T2 approval must name an authenticated local or native Anytype actor and use manual mode.         |
+| Normalized events, workflow deliveries, runs, steps, attempts, retry deadlines, effects, receipts, audit records, and dead letters | SQLite                                                         | These records drive current recovery. Target snapshots and schedule timers remain planned.        |
+| Current Anytype objects and collection membership                                                                                  | Anytype                                                        | SQLite snapshots are observations used for diffing. Reconciliation re-reads Anytype.              |
+| Runtime memory and model state                                                                                                     | Codex or OpenClaw                                              | Knot stores the session binding and the persisted workflow step result needed for retries.        |
+| Future external HTTP state                                                                                                         | The named external system                                      | A future executor may store digests and an idempotency receipt, not a second copy of that system. |
 
 Anytype object metadata does not prove who edited a workflow unless the Anytype transport exposes an
 immutable native editor identity. A display name or a user-editable `Created by` property never
@@ -91,26 +92,25 @@ Knot starts the workflow runtime in this order:
 2. Acquire every compatible legacy and current process lock.
 3. Open SQLite, enable foreign keys and WAL mode, and run additive migrations.
 4. Create and report the pre-migration backup when the schema changes.
-5. Reconcile incomplete attempts, expired leases, due retry timers, current authority, and prior
-   shutdown markers.
-6. Start the runner dispatcher, bounded workers, and effect worker if `automation.execution` is
-   enabled.
-7. Start the bounded Anytype projection outbox worker.
-8. Start polling and reconciliation if `automation.observation` is enabled.
-9. Attach chat SSE and optional Heart hints after the reconciliation scheduler is ready.
-10. Report the service as ready.
+5. Reconcile incomplete attempts, interrupted effects, expired leases, due retry deadlines, current
+   authority, and prior shutdown markers.
+6. Start the runner dispatcher, bounded workers, source resolver, and closed executors if
+   `automation.execution` is enabled.
+7. Start the optional Cloud command extension when its separate gate is enabled.
+8. Start definition polling and reconciliation if `automation.observation` is enabled.
+9. Report the service as ready.
 
-The current release performs the queue recovery and runner startup steps when
-`automation.execution` is enabled. It skips the effect worker and Anytype projection worker because
-neither has shipped.
+Any future target observer, schedule adapter, effect worker, or Anytype status projector must join
+this ownership and recovery order. It may not introduce another scheduler or queue.
 
-The runner will start before new observations so recovered work does not wait behind a burst of fresh
-events. Observation still uses a baseline on first activation, so enabling a workflow does not turn
-existing objects into historical events unless its approved definition requests backfill.
+The runner starts before new definition observations so recovered work does not wait behind a burst
+of fresh events. Future target observers must baseline their first activation so enabling a
+workflow does not turn existing objects into historical events unless its approved definition
+requests backfill.
 
-Observation may run while execution is disabled. In that mode it stores snapshots and events but
-creates no workflow deliveries. Enabling execution records the current event watermark for each
-workflow. Older events stay observational history unless the approved workflow requests backfill.
+Definition observation may run while execution is disabled. In that mode it stores definitions and
+events but creates no workflow runs. Enabling execution starts from the current matcher watermark;
+definition control-plane events do not trigger effects.
 
 If recovery fails, Knot does not start observation or execution. The chat gateway may only continue
 when configuration explicitly allows a degraded gateway-only mode and the failure does not involve
@@ -140,19 +140,19 @@ A restart resumes the saved page. Re-reading a page is safe, and an
 interrupted write is repaired by the event dedupe key on the next pass. Heart-assisted target fetch,
 property-level snapshot diffs, collection reconciliation, and self-write suppression remain planned.
 
-Chat SSE uses the gateway's reconnect and REST catch-up behavior, then converts eligible messages
-to the normalized workflow event contract. It does not skip route sender authorization. A workflow
-chat trigger still needs an explicit local space, route, and sender grant.
+The proposed workflow chat adapter will reuse the gateway's reconnect and REST catch-up behavior.
+It must pass eligible messages through the normalized event contract without skipping route sender
+authorization. A future workflow chat trigger still needs an explicit local space, route, and
+sender grant.
 
-The observer writes an origin effect key on Knot-authored changes. The next snapshot records the
-new source state but suppresses a matching self-write event unless the approved workflow enables
-self-writes. Compatible changes to one object may share one coalescing window. The stored event
-keeps the first and last observed revisions so coalescing cannot erase the fact that a change
-occurred.
+Future target observers must record an origin effect key on Knot-authored changes and suppress a
+matching self-write event unless the approved workflow enables self-writes. Coalescing must retain
+the first and last observed revisions so it cannot erase the fact that a change occurred.
 
 ## Normalized event ingestion
 
-Every event source uses one versioned schema. Event kinds and source names come from closed enums.
+Every implemented event source uses one versioned schema. Event kinds and source names come from
+closed enums.
 The parser rejects unknown fields, unsafe object keys, oversized payloads, invalid timestamps, and
 causal depth above the local limit. It records verified editor provenance and a native source
 revision when the source supplies them. Display metadata is not a fallback identity.
@@ -165,7 +165,8 @@ observation order the same result without treating a timestamp as unique.
 The observer computes two identities:
 
 - `event_id` identifies the immutable observed fact;
-- `dedupe_key` identifies equivalent delivery input across polling, chat, Heart, and recovery.
+- `dedupe_key` identifies equivalent delivery input across retries and recovery. Future adapters
+  must use the same key when polling, chat, or Heart observes the same fact.
 
 The event transaction commits before delivery matching. A durable matcher scans events after its
 stored cursor and creates delivery rows for matching approved workflow versions. It advances the
@@ -262,25 +263,22 @@ its lease.
 
 The recovery scan handles an expired lease by inspecting durable effect receipts:
 
-- no effect was prepared, so it appends a retry attempt;
-- a retry-safe effect has a committed receipt, so it records the step result without repeating the
-  effect;
-- a prepared effect can be reconciled by stable external key, so it reconciles and records the
-  outcome;
-- an effect has an unknown outcome and no safe reconciliation method, so it moves the step to
-  `dead_letter`.
+- no receipt row exists, so it appends a retry attempt;
+- a `succeeded` receipt replays its stored bounded result without repeating the effect;
+- a receipt left in `running` or `outcome_unknown` moves the run to `dead_letter` for operator
+  reconciliation.
 
 The worker ID helps diagnostics. Only the fencing token grants the right to commit.
 
-## Timers and schedules
+## Retry deadlines and planned schedules
 
-SQLite owns timer deadlines. JavaScript timers only wake the scanner near the next deadline.
+SQLite owns retry deadlines. JavaScript timers only wake the scanner near the next deadline.
 
-Retry, timeout, approval-expiry, and sleep timers use absolute UTC instants. On startup, the scanner
-processes every due control timer in bounded batches. Reprocessing a timer is safe because its
-transition uses a unique timer ID and a compare-and-swap state update.
+The current runner stores retry availability and run or step deadlines as absolute UTC instants.
+Startup and the bounded scanner recover due work from SQLite.
 
-An approved schedule trigger stores its cron expression, IANA timezone, active workflow version,
+Workflow schedule, sleep, and approval-expiry timers remain planned. The contract for that extension
+is: an approved schedule trigger stores its cron expression, IANA timezone, active workflow version,
 and next nominal instant. First activation starts at the next future instant. It does not create old
 ticks. After downtime, Knot emits one `schedule.tick` event for the latest missed nominal instant,
 then advances to the next future instant. Older missed ticks do not backfill under schema version 1.
@@ -299,8 +297,8 @@ dispatcher stops leasing new steps for that run. Workers check cancellation befo
 before preparing each effect.
 
 For an active agent step, Knot calls the runtime driver's cancel method and waits for the bounded
-shutdown result. For an HTTP or Anytype request already sent, cancellation cannot undo the external
-effect. The worker records any result or unknown outcome before it releases the lease. Cancellation
+shutdown result. Cancellation cannot undo an Anytype, notification, or publication request already
+sent. The worker records any result or unknown outcome before it releases the lease. Cancellation
 then prevents later steps.
 
 A service shutdown is not user cancellation. Shutdown stops new leases and lets active workers
@@ -309,35 +307,33 @@ does not gain a false `cancelled` state merely because the process stopped.
 
 ## Effects and receipts
 
-Every external write uses a stable effect key derived from:
+Every generic external write uses one stable key:
 
 ```text
-workflow approval hash
-run ID
-step ID
-canonical normalized input digest
+workflow:<run ID>:<step ID>
 ```
 
-Knot writes an effect record before the call. The record contains the operation kind, named
-connection or Anytype target, request digest, authority hash, policy decision ID, attempt ID, and
-idempotency strategy. It does not contain secret values.
+Before the call, Knot creates one immutable receipt row for that run and step. Its operation digest
+binds the step kind and configuration, approval hash, authority hash, and executor-specific
+discriminator. A retry cannot reuse the key for different approved content. The row also stores the
+current fencing token, state, bounded result, and bounded error; it does not store secret values.
 
-The effect worker re-evaluates current local authority before sending the request. A queued effect
+The executor re-evaluates current local authority before sending the request. A queued effect
 whose grant was removed records a policy denial and does not call the external system.
 
-After the call, Knot appends a receipt with the external ID or stable key, status, bounded response
-metadata, and response digest. Step output is stored separately and is subject to size and secret
-redaction limits.
+After the call, Knot changes the fenced row to `succeeded`, `failed`, or `outcome_unknown`. A
+succeeded retry replays its stored bounded result. A process restart changes any still-running
+effect to `outcome_unknown` and dead-letters the run instead of repeating the call.
 
-Anytype create, upsert, and materialize effects use stable external keys and reconcile before a
-retry. Update and archive effects record the target revision when the API exposes one. A repeated
-effect must converge on the same Anytype state.
+Anytype writes, upserts, materialization, notifications, and Codex workflow invocation use that
+receipt boundary. Upsert requires one exact type/name match and refuses ambiguity. A completed
+effect replays its receipt; an interrupted effect with an unknown outcome does not run again.
 
-HTTP effects use named local connections. The connection fixes scheme, host, port, path rules,
-methods, redirect policy, DNS and private-address policy, timeouts, body limits, and secret refs. A
-workflow cannot supply a new host at runtime. Knot does not automatically retry a non-idempotent
-HTTP request unless the connection declares downstream idempotency support and the request carries
-the stable effect key.
+Generic HTTP effects are not implemented. A future HTTP executor must use named local connections
+that fix scheme, host, port, path rules, methods, redirect policy, DNS and private-address policy,
+timeouts, body limits, and secret refs. A workflow may not supply a new host at runtime. A
+non-idempotent request may not retry unless the connection declares downstream idempotency support
+and the request carries the stable effect key.
 
 An effect with an unknown outcome remains visible. Knot never changes `unknown` to `failed` merely
 to make it retryable.
@@ -346,17 +342,17 @@ to make it retryable.
 
 The transaction boundary determines recovery behavior:
 
-| Crash point                                                      | Recovery                                                                            |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Before an observed event commits                                 | Reconciliation observes it again.                                                   |
-| After the event commits but before a delivery exists             | The startup delivery reconciliation creates the missing delivery.                   |
-| After a delivery commits but before a run exists                 | The dispatcher creates the run with the delivery's unique key.                      |
-| While a step owns a lease but before effect preparation          | Lease expiry creates a retry attempt.                                               |
-| After effect preparation but before the external call            | Recovery uses the prepared record and the executor's retry rules.                   |
-| After the external call but before its receipt commits           | Recovery reconciles by stable key or dead-letters an unknown non-idempotent result. |
-| After a receipt commits but before the step succeeds             | Recovery reads the receipt and completes the step without repeating the effect.     |
-| After the step succeeds but before downstream steps become ready | Dependency reconciliation marks the downstream steps ready.                         |
-| During Anytype status projection                                 | The projection outbox retries the same bounded projection with its effect key.      |
+| Crash point                                                      | Recovery                                                                        |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Before an observed event commits                                 | Reconciliation observes it again.                                               |
+| After the event commits but before a delivery exists             | The startup delivery reconciliation creates the missing delivery.               |
+| After a delivery commits but before a run exists                 | The dispatcher creates the run with the delivery's unique key.                  |
+| While a step owns a lease but before effect preparation          | Lease expiry creates a retry attempt.                                           |
+| After effect preparation but before the external call            | A running receipt becomes unknown; recovery dead-letters instead of guessing.   |
+| After the external call but before its receipt commits           | The unknown receipt dead-letters the run instead of repeating the effect.       |
+| After a receipt commits but before the step succeeds             | Recovery reads the receipt and completes the step without repeating the effect. |
+| After the step succeeds but before downstream steps become ready | Dependency reconciliation marks the downstream steps ready.                     |
+| During a future Anytype status projection                        | Its outbox must retry the same bounded projection with its effect key.          |
 
 Startup recovery is idempotent. Running it twice produces the same queue state.
 
@@ -364,16 +360,16 @@ Startup recovery is idempotent. Running it twice produces the same queue state.
 
 SIGINT and SIGTERM start one bounded shutdown sequence:
 
-1. Mark the service unready and reject new manual workflow commands.
-2. Stop schedule scans, object scans, chat workflow ingestion, and Heart hints.
-3. Finish or roll back the observer transaction in progress.
-4. Stop leasing new workflow steps.
-5. Signal active workers to checkpoint and stop before the shutdown deadline.
-6. Flush committed effect receipts, audit entries, and projection outbox acknowledgements.
-7. Stop the workflow effect and projection workers.
-8. Run the existing chat-controller shutdown and close runtime drivers.
-9. Close SQLite.
-10. Release the process lock.
+1. Abort definition observation and optional Cloud command polling.
+2. Finish or roll back the observer transaction in progress.
+3. Stop leasing new workflow steps and abort active executor signals.
+4. Let active workers commit fenced results or retain recoverable leases until the shutdown deadline.
+5. Stop the existing chat controller and close runtime drivers.
+6. Close SQLite.
+7. Release the process lock.
+
+Future schedule, target-observation, and projection workers must stop before SQLite closes and must
+leave only durable, recoverable state.
 
 Knot does not wait forever for an external call. At the deadline it leaves the attempt leased and
 records the last known effect state when possible. Startup recovery resolves it after the lease
@@ -438,15 +434,14 @@ or target identity.
 Display names, mentions, replies, object text, and cloud-provided participant IDs never grant
 authority.
 
-## Implementation gates
+## Activation and extension gates
 
-The next implementation layers may proceed after review accepts this document and the contract
-hardening PR removes the known unsafe placeholders in the foundation schema.
+The preview remains disabled by default until the representative 72-hour soak and live Anytype
+regression suite pass. The existing test suite covers definition restart recovery, revision
+deduplication, same-timestamp ordering, archive reconciliation, unverified editors, bounded backoff,
+leases, source refetch, closed executors, receipts, cancellation, operator controls, and safe retry.
 
-The definition observer tests prove restart recovery, duplicate revision deduplication,
-same-timestamp digest ordering, explicit and reconciled archives, disabled definitions, unverified
-editors, and bounded backoff. Before target-data observation or execution ships, tests must also
-prove:
+Before a new source, timer, or executor ships, tests must also prove:
 
 - one process owns the database and a second process cannot poll or lease;
 - every crash point in the recovery table preserves the logical run and effect evidence;

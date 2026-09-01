@@ -6,6 +6,11 @@ This runbook tells a coding agent how to connect its Codex or OpenClaw runtime t
 
 One long-lived Knot process appears in Anytype as one dedicated, taggable member. A mention, reply, prefix, or configured every-message route wakes one Codex or OpenClaw runtime. Knot reacts to the triggering user message, posts an immediate reply, edits it while work progresses, handles same-thread follow-ups as steering, and removes the reaction when the run finishes.
 
+This runbook covers the Anytype agent connection. The Phase 2 observer, runner, closed executors,
+and operator CLI are a separate default-off preview. Cloud pairing and publishing use
+[`cloud-connector.md`](cloud-connector.md) and [`cloud-publishing.md`](cloud-publishing.md). Those
+clients require routes that the selected Cloud deployment lists as released.
+
 ## 1. Verify prerequisites
 
 - macOS or Linux, Node.js 24 or newer, and pnpm 11 or newer.
@@ -28,7 +33,7 @@ Do not continue if `knot --version` fails. Do not work around the failure by dow
 
 ## 2. Collect operator decisions
 
-Ask only for values that cannot be discovered safely:
+Ask for these values. Do not try to infer them from display names or repository contents.
 
 1. Runtime: `codex` or `openclaw`.
 2. Dedicated Anytype member name.

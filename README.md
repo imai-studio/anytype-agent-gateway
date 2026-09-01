@@ -14,6 +14,10 @@ process represents one agent identity.
 > from this checkout while the release is being prepared. The latest tagged compatibility release
 > is `v0.1.3` under the former Anytype Agent Gateway name.
 
+The Phase 2 workflow runtime and Cloud command bridge on `main` are disabled by default while their
+representative soak and production Cloud routes are pending. The separate Cloud release record, not
+repository code alone, determines which hosted routes are available.
+
 [Quick start](#quick-start) · [How it works](#how-it-works) ·
 [Configuration](#configuration) · [Documentation](#documentation) ·
 [Contributing](CONTRIBUTING.md)
@@ -31,18 +35,18 @@ capable agent runtimes. Knot connects them without replacing either side:
 
 ## Highlights
 
-| Area          | Released behavior                                                                         |
-| ------------- | ----------------------------------------------------------------------------------------- |
-| Conversations | Chats, direct messages, and object discussion threads                                     |
-| Wake policy   | Mention, mention or reply, every message, prefix, or disabled per route                   |
-| Sessions      | One persisted session per conversation, `/new`, steering, and model selection             |
-| Responses     | Editable streaming replies, working reactions, milestones, and multi-part output          |
-| Projects      | Codex project binding through `agent-name:project-name` Anytype Chat tags                 |
-| Anytype tools | Scoped object search, reads, writes, uploads, collection membership, and profile images   |
-| Media         | Message attachments and media embedded in referenced Anytype objects                      |
-| Recovery      | REST catch-up, event streaming, SQLite state, deduplication, and outbound retries         |
-| Runtimes      | Codex over ACP and OpenClaw through its Gateway plus native Anytype channel               |
-| Automation    | Opt-in durable workflows with closed Anytype, transform, notify, Codex, and publish steps |
+| Area          | Released behavior                                                                             |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| Conversations | Chats, direct messages, and object discussion threads                                         |
+| Wake policy   | Mention, mention or reply, every message, prefix, or disabled per route                       |
+| Sessions      | One persisted session per conversation, `/new`, steering, and model selection                 |
+| Responses     | Editable streaming replies, working reactions, milestones, and multi-part output              |
+| Projects      | Codex project binding through `agent-name:project-name` Anytype Chat tags                     |
+| Anytype tools | Scoped object search, reads, writes, uploads, collection membership, and profile images       |
+| Media         | Message attachments and media embedded in referenced Anytype objects                          |
+| Recovery      | REST catch-up, event streaming, SQLite state, deduplication, and outbound retries             |
+| Runtimes      | Codex over ACP and OpenClaw through its Gateway plus native Anytype channel                   |
+| Automation    | Default-off workflow preview with closed Anytype, transform, notify, Codex, and publish steps |
 
 Claude Code is not supported in the current release.
 
@@ -310,12 +314,12 @@ vulnerabilities through GitHub's private vulnerability reporting flow, not a pub
 | [Publish through Knot Cloud](docs/cloud-publishing.md)         | Typed documents, assets, durable retries, and lifecycle control |
 | [Workflow recipes](docs/workflow-recipes.md)                   | Configure and verify common agent workflows                     |
 | [Live regression runbook](docs/live-regression.md)             | Real Anytype tests for Codex and OpenClaw changes               |
-| [Roadmap](docs/knot-roadmap.md)                                | Product direction and completed migration phases                |
-| [Planned work](docs/planned-work.md)                           | Work that has not shipped                                       |
-| [Workflow runtime topology](docs/workflow-runtime-topology.md) | Phase 2 observer, runner, and proposed effect process contract  |
-| [Knot Cloud proposal](docs/publish-architecture.md)            | Hosted and self-hostable Cloud and Publish design               |
+| [Roadmap](docs/knot-roadmap.md)                                | Compact delivery status and activation gates                    |
+| [Planned work](docs/planned-work.md)                           | Gaps that have not shipped                                      |
+| [Workflow runtime topology](docs/workflow-runtime-topology.md) | Process ownership, recovery, and proposed extensions            |
+| [Knot Cloud architecture](docs/publish-architecture.md)        | Hosted and self-hosted Cloud protocol and release boundary      |
 | [Cloud connector guide](docs/cloud-connector.md)               | Local key setup, pairing, checks, and signed transport          |
-| [Cloud workflow candidate](docs/cloud-workflows.md)            | Default-off command policy, recovery, and operator controls     |
+| [Cloud workflow bridge](docs/cloud-workflows.md)               | Default-off command policy, recovery, and operator controls     |
 
 Proposals are marked as proposals. A document in planned work does not make its commands, service,
 or protocol available in the current release.

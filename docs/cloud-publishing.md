@@ -1,8 +1,9 @@
 # Publish through Knot Cloud
 
-Knot can send a typed document to a paired Knot Cloud connector without giving an agent a server
-URL, connector key, or local file path. The commands in this guide require a Cloud deployment with
-the matching signed publication and asset routes.
+The local Knot client can send a typed document to a paired Cloud connector without giving an agent
+a server URL, connector key, or local file path. These commands require a Cloud release with the
+matching signed publication and asset routes. The imai production release does not currently expose
+them.
 
 ## Grant the connector
 

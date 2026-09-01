@@ -3,7 +3,8 @@
 Status: the local connector identity, pairing poller, protocol checks, signed command client, typed
 publication client, and durable publication outbox are implemented in this repository. They require
 a Knot Cloud deployment that includes the matching routes; check its release notes before assuming a
-particular deployment supports them.
+particular deployment supports them. The imai production release does not currently expose pairing,
+command, or publication routes.
 
 ## What the connection permits
 

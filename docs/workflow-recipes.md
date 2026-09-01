@@ -1,8 +1,8 @@
 # Workflow recipes
 
-This guide shows how to configure common Knot workflows that are available in the current release.
-Here, a workflow means a supported conversation pattern built from routes, wake rules, runtime
-sessions, and scoped tools.
+This guide covers released conversation routes and the default-off Phase 2 workflow preview.
+Conversation recipes combine wake rules, runtime sessions, and scoped tools. Durable workflows use
+approved Anytype definitions, local authority, SQLite recovery, and the closed executor catalog.
 
 Knot's Phase 2 runner supports the closed Anytype read/query/write/upsert/materialize, declarative
 transform, named notification, capability-narrowed Codex agent, and `publish.web` steps. Generic HTTP,
@@ -99,10 +99,27 @@ knot workflow approve <workflow-id> \
   --yes
 ```
 
-Use `workflow reject` or `workflow revoke` with the same exact hash plus a stable lowercase
-`--reason`. `workflow disable` persists an override, closes the execution fence for in-flight work,
-and records an append-only audit row. `workflow enable` removes that execution block while leaving
-normal approval and authority checks intact.
+Reject or revoke only the exact active hash. Disable and enable use a persistent local override;
+disable closes the execution fence for in-flight work. Every mutation writes an append-only audit
+row.
+
+```bash
+knot workflow reject <workflow-id> \
+  --config /absolute/path/to/agent.yaml \
+  --approval-hash sha256:<exact-active-hash> \
+  --reason policy-denied \
+  --yes
+
+knot workflow disable <workflow-id> \
+  --config /absolute/path/to/agent.yaml \
+  --reason maintenance \
+  --yes
+
+knot workflow enable <workflow-id> \
+  --config /absolute/path/to/agent.yaml \
+  --reason maintenance-complete \
+  --yes
+```
 
 Queue a manual trigger only after approval:
 
@@ -127,6 +144,18 @@ Cancellation and retry require an allowlisted actor, a stable reason, and `--yes
 available only for a failed or dead-letter run whose exact version and approval are current, which
 has no active lease, and whose effect receipts prove that no external outcome is unknown. Knot
 refuses an ambiguous effect instead of repeating it.
+
+```bash
+knot workflow runs cancel <run-id> \
+  --config /absolute/path/to/agent.yaml \
+  --reason operator-cancel \
+  --yes
+
+knot workflow runs retry <run-id> \
+  --config /absolute/path/to/agent.yaml \
+  --reason operator-retry \
+  --yes
+```
 
 Knot does not create native Anytype object types or properties. The current Anytype port can create
 objects of an existing type, but it cannot provision the `Knot Workflow` type or its property
