@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalStoredWorkflowApproval, canonicalStoredWorkflowDefinition, canonicalWorkflowDefinition, redactStoredWorkflowJson, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -75,6 +75,8 @@ export class Store {
                 this.migrateToVersion14();
             if (current < 15)
                 this.migrateToVersion15();
+            if (current < 16)
+                this.migrateToVersion16();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -877,6 +879,30 @@ export class Store {
             for (const workflowId of legacyUnredactedWorkflowIds)
                 invalidate.run(invalidatedAt, workflowId);
         }
+    }
+    migrateToVersion16() {
+        this.db.exec(`
+      CREATE TABLE workflow_effect_receipts (
+        effect_key TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        step_id TEXT NOT NULL,
+        operation_digest TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared','running','succeeded','failed','outcome_unknown')),
+        fencing_token TEXT NOT NULL,
+        result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+        error TEXT,
+        started_at INTEGER,
+        completed_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(run_id,step_id),
+        FOREIGN KEY(run_id,step_id) REFERENCES workflow_steps(run_id,step_id) ON DELETE RESTRICT
+      );
+      CREATE INDEX workflow_effect_receipts_state
+        ON workflow_effect_receipts(state,updated_at,effect_key);
+      CREATE TRIGGER workflow_effect_receipts_no_delete
+        BEFORE DELETE ON workflow_effect_receipts
+        BEGIN SELECT RAISE(ABORT,'workflow effect receipts are durable'); END;
+    `);
     }
     isInitialized(routeId) {
         return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));

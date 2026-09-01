@@ -295,6 +295,7 @@ export class WorkflowQueue {
       maximumConcurrentRuns: number;
       maximumRunsPerHour: number;
       maximumStepsPerRun?: number;
+      maximumEffectsPerRun?: number;
     },
     authorityHash: string,
     now = Date.now(),
@@ -318,6 +319,17 @@ export class WorkflowQueue {
       if (
         limits.maximumStepsPerRun !== undefined &&
         definition.spec.steps.length > limits.maximumStepsPerRun
+      ) {
+        this.store.db
+          .prepare("UPDATE workflow_deliveries SET state='dead_letter' WHERE delivery_id=?")
+          .run(deliveryId);
+        this.store.db.exec("COMMIT");
+        return undefined;
+      }
+      if (
+        limits.maximumEffectsPerRun !== undefined &&
+        definition.spec.steps.filter((step) => isExternalEffectStep(step.kind)).length >
+          limits.maximumEffectsPerRun
       ) {
         this.store.db
           .prepare("UPDATE workflow_deliveries SET state='dead_letter' WHERE delivery_id=?")
@@ -1356,6 +1368,18 @@ export class WorkflowQueue {
         )
         .run(now, now, runId);
   }
+}
+
+function isExternalEffectStep(kind: WorkflowDefinition["spec"]["steps"][number]["kind"]): boolean {
+  return [
+    "agent",
+    "anytype.write",
+    "anytype.upsert",
+    "anytype.materialize",
+    "http",
+    "notify",
+    "publish.web",
+  ].includes(kind);
 }
 
 type RunnerStateRow = {

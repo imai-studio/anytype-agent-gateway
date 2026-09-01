@@ -46,12 +46,19 @@ When `automation.execution` is also enabled, a durable local runner matches norm
 enabled workflow versions. SQLite stores deliveries, runs, dependency-ordered steps, attempts, retry
 deadlines, cancellation requests, claim leases, and fencing tokens. Every dispatch and resume
 rechecks the immutable editor provenance, current local authority, and exact approval hash. The
-shipped executor boundary can complete only an empty transform step. Agent, Anytype, HTTP,
-notification, and other effect executors remain unavailable, so the runner dead-letters those steps
-without contacting an external system. SQLite stores digests in place of author prompt and message
+shipped executor boundary supports bounded Anytype reads, queries, writes, exact-name upserts,
+collection materialization, declarative JSON-pointer transforms, named Anytype notifications,
+capability-narrowed Codex ACP invocation, and the closed `publish.web` lifecycle.
+Raw HTTP and arbitrary code remain unavailable. External effects use durable, immutable receipts;
+an interrupted effect with an unknown outcome is dead-lettered instead of repeated. SQLite stores digests in place of author prompt and message
 text. A step that needs that text enters `source_refetch_required`. An executor may resume it only
 after a read-only resolver refetches the definition and matches its source revision, editor, version
 hash, approval hash, and policy against the immutable record.
+
+Workflow-origin Codex sessions are confined to the explicitly approved workspace, receive no
+additional project directories or Anytype MCP server, and deny interactive permission requests.
+OpenClaw workflow-agent invocation is disabled until the adapter can enforce an equivalent closed
+authority boundary; ordinary OpenClaw conversation and scheduling behavior is unaffected.
 
 Every route has a stable key:
 

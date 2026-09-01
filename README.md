@@ -31,18 +31,18 @@ capable agent runtimes. Knot connects them without replacing either side:
 
 ## Highlights
 
-| Area          | Released behavior                                                                       |
-| ------------- | --------------------------------------------------------------------------------------- |
-| Conversations | Chats, direct messages, and object discussion threads                                   |
-| Wake policy   | Mention, mention or reply, every message, prefix, or disabled per route                 |
-| Sessions      | One persisted session per conversation, `/new`, steering, and model selection           |
-| Responses     | Editable streaming replies, working reactions, milestones, and multi-part output        |
-| Projects      | Codex project binding through `agent-name:project-name` Anytype Chat tags               |
-| Anytype tools | Scoped object search, reads, writes, uploads, collection membership, and profile images |
-| Media         | Message attachments and media embedded in referenced Anytype objects                    |
-| Recovery      | REST catch-up, event streaming, SQLite state, deduplication, and outbound retries       |
-| Runtimes      | Codex over ACP and OpenClaw through its Gateway plus native Anytype channel             |
-| Automation    | Opt-in definition observer and durable local runner core; effect executors remain off   |
+| Area          | Released behavior                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------- |
+| Conversations | Chats, direct messages, and object discussion threads                                     |
+| Wake policy   | Mention, mention or reply, every message, prefix, or disabled per route                   |
+| Sessions      | One persisted session per conversation, `/new`, steering, and model selection             |
+| Responses     | Editable streaming replies, working reactions, milestones, and multi-part output          |
+| Projects      | Codex project binding through `agent-name:project-name` Anytype Chat tags                 |
+| Anytype tools | Scoped object search, reads, writes, uploads, collection membership, and profile images   |
+| Media         | Message attachments and media embedded in referenced Anytype objects                      |
+| Recovery      | REST catch-up, event streaming, SQLite state, deduplication, and outbound retries         |
+| Runtimes      | Codex over ACP and OpenClaw through its Gateway plus native Anytype channel               |
+| Automation    | Opt-in durable workflows with closed Anytype, transform, notify, Codex, and publish steps |
 
 Claude Code is not supported in the current release.
 

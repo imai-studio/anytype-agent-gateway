@@ -50,6 +50,8 @@ export declare class OpenClawDriver implements RuntimeDriver {
         sessionKey: string;
         prompt: string;
         turn?: RuntimeTurn;
+        origin?: "conversation" | "workflow";
+        workspacePath?: string;
         modelId?: string | null;
         defaultModelId?: string;
     }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;

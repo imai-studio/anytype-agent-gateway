@@ -66,7 +66,7 @@ function versionRecord(
 describe("automation persistence foundation", () => {
   it("retains the v7 automation foundation tables without enabling execution", () => {
     const store = new Store(":memory:");
-    expect(store.schemaVersion()).toBe(15);
+    expect(store.schemaVersion()).toBe(16);
     for (const table of [
       "workflow_definitions",
       "workflow_approval_subjects",
@@ -104,10 +104,10 @@ describe("automation persistence foundation", () => {
 
     const reports: string[] = [];
     const store = new Store(path, (message) => reports.push(message));
-    expect(store.schemaVersion()).toBe(15);
+    expect(store.schemaVersion()).toBe(16);
     expect(store.migrationBackupPath).toBeTruthy();
     expect(store.migrationBackupPath).toContain(".pre-v6.");
-    expect(reports[0]).toContain("from schema 6 to 15");
+    expect(reports[0]).toContain("from schema 6 to 16");
     expect(statSync(store.migrationBackupPath!).mode & 0o777).toBe(0o600);
     const backup = new DatabaseSync(store.migrationBackupPath!, { readOnly: true });
     expect(
@@ -260,7 +260,7 @@ describe("automation persistence foundation", () => {
 
     const store = new Store(path, () => {});
 
-    expect(store.schemaVersion()).toBe(15);
+    expect(store.schemaVersion()).toBe(16);
     expect(
       store.db
         .prepare("SELECT 1 FROM pragma_table_info('workflow_deliveries') WHERE name=?")
@@ -284,6 +284,69 @@ describe("automation persistence foundation", () => {
         .get("normalized_events_no_update"),
     ).toBeDefined();
     store.close();
+  });
+
+  it("upgrades schema 15 with immutable, unique, foreign-keyed effect receipts", () => {
+    const directory = mkdtempSync(join(tmpdir(), "knot-v15-receipts-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state.sqlite");
+    const seeded = new Store(path);
+    seeded.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      DROP TRIGGER workflow_effect_receipts_no_delete;
+      DROP INDEX workflow_effect_receipts_state;
+      DROP TABLE workflow_effect_receipts;
+      PRAGMA user_version=15;
+    `);
+    legacy.close();
+
+    const store = new Store(path, () => {});
+    expect(store.schemaVersion()).toBe(16);
+    expect(
+      store.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?")
+        .get("workflow_effect_receipts_no_delete"),
+    ).toBeDefined();
+    expect(
+      store.db
+        .prepare("SELECT 1 FROM pragma_index_list('workflow_effect_receipts') WHERE name=?")
+        .get("workflow_effect_receipts_state"),
+    ).toBeDefined();
+    const insert = store.db.prepare(
+      `INSERT INTO workflow_effect_receipts(
+        effect_key,run_id,step_id,operation_digest,state,fencing_token,updated_at
+      ) VALUES(?,?,?,?,?,?,?)`,
+    );
+    expect(() =>
+      insert.run(
+        "missing",
+        "missing-run",
+        "missing-step",
+        `sha256:${"1".repeat(64)}`,
+        "prepared",
+        "token",
+        1,
+      ),
+    ).toThrow(/FOREIGN KEY/iu);
+    store.db.exec("PRAGMA foreign_keys=OFF");
+    insert.run("effect-1", "run-1", "step-1", `sha256:${"2".repeat(64)}`, "prepared", "token", 1);
+    expect(() =>
+      insert.run("effect-2", "run-1", "step-1", `sha256:${"3".repeat(64)}`, "prepared", "token", 1),
+    ).toThrow(/UNIQUE/iu);
+    expect(() =>
+      store.db.prepare("DELETE FROM workflow_effect_receipts WHERE effect_key='effect-1'").run(),
+    ).toThrow("workflow effect receipts are durable");
+    store.close();
+
+    const reopened = new Store(path);
+    expect(reopened.schemaVersion()).toBe(16);
+    expect(
+      reopened.db
+        .prepare("SELECT state FROM workflow_effect_receipts WHERE effect_key='effect-1'")
+        .get(),
+    ).toEqual({ state: "prepared" });
+    reopened.close();
   });
 
   it("scrubs legacy raw workflow source during the v8 to v9 migration", () => {

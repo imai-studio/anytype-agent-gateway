@@ -26,6 +26,7 @@ export declare const workflowAuthorityFields: {
     allowedConnections: z.ZodDefault<z.ZodArray<z.ZodString>>;
     allowedSecretNames: z.ZodDefault<z.ZodArray<z.ZodString>>;
     allowedProjects: z.ZodDefault<z.ZodArray<z.ZodString>>;
+    allowedModels: z.ZodDefault<z.ZodArray<z.ZodString>>;
     publishConnections: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodObject<{
         cloudConfigFile: z.ZodString;
         allowedSiteIds: z.ZodArray<z.ZodUUID>;
@@ -34,6 +35,10 @@ export declare const workflowAuthorityFields: {
         allowRollback: z.ZodDefault<z.ZodBoolean>;
         allowDisable: z.ZodDefault<z.ZodBoolean>;
         allowUnpublish: z.ZodDefault<z.ZodBoolean>;
+    }, z.core.$strict>>>;
+    notificationConnections: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodObject<{
+        spaceId: z.ZodString;
+        chatId: z.ZodString;
     }, z.core.$strict>>>;
     maximumRiskTier: z.ZodDefault<z.ZodEnum<{
         T0: "T0";
@@ -68,6 +73,7 @@ export declare const workflowAuthoritySchema: z.ZodObject<{
     allowedConnections: z.ZodDefault<z.ZodArray<z.ZodString>>;
     allowedSecretNames: z.ZodDefault<z.ZodArray<z.ZodString>>;
     allowedProjects: z.ZodDefault<z.ZodArray<z.ZodString>>;
+    allowedModels: z.ZodDefault<z.ZodArray<z.ZodString>>;
     publishConnections: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodObject<{
         cloudConfigFile: z.ZodString;
         allowedSiteIds: z.ZodArray<z.ZodUUID>;
@@ -76,6 +82,10 @@ export declare const workflowAuthoritySchema: z.ZodObject<{
         allowRollback: z.ZodDefault<z.ZodBoolean>;
         allowDisable: z.ZodDefault<z.ZodBoolean>;
         allowUnpublish: z.ZodDefault<z.ZodBoolean>;
+    }, z.core.$strict>>>;
+    notificationConnections: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodObject<{
+        spaceId: z.ZodString;
+        chatId: z.ZodString;
     }, z.core.$strict>>>;
     maximumRiskTier: z.ZodDefault<z.ZodEnum<{
         T0: "T0";
@@ -92,7 +102,9 @@ export declare const workflowAuthoritySchema: z.ZodObject<{
     }, z.core.$strict>>;
 }, z.core.$strict>;
 export type WorkflowAuthority = z.infer<typeof workflowAuthoritySchema>;
-type WorkflowAuthorityInput = Omit<WorkflowAuthority, "publishConnections"> & {
+type WorkflowAuthorityInput = Omit<WorkflowAuthority, "allowedModels" | "notificationConnections" | "publishConnections"> & {
+    allowedModels?: WorkflowAuthority["allowedModels"];
+    notificationConnections?: WorkflowAuthority["notificationConnections"];
     publishConnections?: WorkflowAuthority["publishConnections"];
 };
 export interface WorkflowPolicyContext {

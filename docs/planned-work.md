@@ -10,9 +10,14 @@ The repository contains the Phase 2 contracts, additive SQLite foundation, read-
 definition observer, and durable local runner core. The runner dispatches normalized events,
 persists runs and dependency-ordered steps, recovers leases, retries with durable deadlines,
 records cancellation, and dead-letters work that cannot continue. The gateway installs a read-only
-Anytype source resolver and one closed external executor: T2 `publish.web`, backed by the existing
-Cloud publication outbox and named local publication connections. Other effect execution is not
-available. The remaining work should follow this order.
+Anytype source resolver and a closed executor catalog. The catalog includes bounded Anytype
+read/query/write/upsert/materialize operations, declarative JSON-pointer transforms, notifications
+through named local chat connections, capability-narrowed agent invocation through Codex ACP, and
+T2 `publish.web`. Generic workflow effects have additive durable receipts and refuse to
+guess after a crash leaves an external outcome unknown. Raw HTTP, JavaScript, shell, and filesystem
+authority remain unavailable. OpenClaw workflow-agent invocation stays disabled until its adapter
+can enforce a workflow-only tool and filesystem boundary. Conversation and native scheduled
+OpenClaw runs are unchanged. The remaining work should follow this order.
 
 The foundation rejects hard-delete and raw external URL steps, requires named local connections,
 checks verified editor identity, intersects definition budgets with local caps, and stores source
@@ -29,8 +34,9 @@ The proposed process and recovery contract is in
 fencing, crash recovery, timers, cancellation, effect receipts, retention, backup restoration, and
 single-host operation. Reviewing that design is the gate for the observer and runner work below.
 
-The topology document is the design contract for the shipped definition observer and durable runner
-core. Effect receipts, projections, target-data observation, and effect workers remain proposed.
+The topology document is the design contract for the shipped definition observer, durable runner,
+and generic workflow effect receipts. Anytype status projections, target-data observation, and
+separate effect workers remain proposed.
 
 ### 2. Remaining observation and reconciliation
 
@@ -43,20 +49,14 @@ core. Effect receipts, projections, target-data observation, and effect workers 
 ### 3. Runner completion
 
 - Add durable timer events and per-step waiting timers.
-- Generalize effect intent, receipt, and unknown-outcome recovery beyond the specialized
-  `publish.web` publication outbox.
 - Extend the current concurrency, hourly-rate, step, and causal-depth checks with cost accounting.
 - Add a complete policy-decision and effect audit view.
 - Add CLI inspection and operator controls for runs, cancellation, retries, and dead letters.
 
 ### 4. Steps and approvals
 
-- Implement Anytype read, query, write, upsert, and materialize steps.
-- Add declarative transforms and notifications.
-- Add Codex and OpenClaw agent steps through the existing runtime adapters.
 - Add HTTP through named local connections and secret references.
-- Require an exact approved hash for T1 and T2 workflows.
-- Keep T2 manual approval mandatory.
+- Add richer closed transforms only when their complete input and output schemas can be approved.
 
 ### 5. Anytype authoring
 

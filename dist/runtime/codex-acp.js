@@ -184,7 +184,8 @@ export class CodexAcpDriver {
         }
     }
     async start(input, onEvent) {
-        const workspacePath = input.turn?.workspacePath ?? this.config.defaultProject;
+        const workflowOrigin = input.origin === "workflow";
+        const workspacePath = input.workspacePath ?? input.turn?.workspacePath ?? this.config.defaultProject;
         const environment = inheritedAgentEnvironment(this.config.environment);
         const child = spawn(this.config.command, this.config.args, {
             cwd: workspacePath,
@@ -271,7 +272,7 @@ export class CodexAcpDriver {
         const app = acp
             .client({ name: "anytype-agent-gateway" })
             .onRequest(acp.methods.client.session.requestPermission, (ctx) => {
-            if (this.config.permissions === "deny")
+            if (workflowOrigin || this.config.permissions === "deny")
                 return { outcome: { outcome: "cancelled" } };
             const option = ctx.params.options.find((item) => item.kind === "allow_once") ??
                 ctx.params.options.find((item) => item.kind.startsWith("allow"));
@@ -330,15 +331,17 @@ export class CodexAcpDriver {
                     protocolVersion: acp.PROTOCOL_VERSION,
                     clientCapabilities: {},
                 });
-                const additionalDirectories = [
-                    ...this.config.allowedProjects,
-                    ...(this.config.defaultProject && this.config.defaultProject !== workspacePath
-                        ? [this.config.defaultProject]
-                        : []),
-                ];
+                const additionalDirectories = workflowOrigin
+                    ? []
+                    : [
+                        ...this.config.allowedProjects,
+                        ...(this.config.defaultProject && this.config.defaultProject !== workspacePath
+                            ? [this.config.defaultProject]
+                            : []),
+                    ];
                 const sessionSetup = {
                     cwd: workspacePath ?? process.cwd(),
-                    mcpServers: this.mcpServer
+                    mcpServers: !workflowOrigin && this.mcpServer
                         ? [
                             {
                                 name: "aag-anytype",

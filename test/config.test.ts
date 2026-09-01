@@ -381,6 +381,22 @@ describe("loadConfig", () => {
     );
   });
 
+  it("includes workflow agent grants in state-path isolation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aag-config-"));
+    const project = join(dir, "workflow-workspace");
+    const path = join(dir, "unsafe-workflow.yaml");
+    await writeFile(
+      path,
+      `${yaml}automation: { allowedProjects: [${project}] }
+state: { path: ${join(project, ".knot", "state.sqlite")} }
+`,
+    );
+
+    await expect(loadConfig(path)).rejects.toThrow(
+      "state.path must be outside agent-accessible project directories",
+    );
+  });
+
   it("resolves project symlinks before checking gateway state isolation", async () => {
     const dir = await mkdtemp(join(tmpdir(), "aag-config-"));
     const stateRoot = join(dir, "state-root");

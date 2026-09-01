@@ -31,6 +31,96 @@ export declare const workflowStepKindSchema: z.ZodEnum<{
     http: "http";
     approval: "approval";
 }>;
+export declare const anytypeReadConfigSchema: z.ZodObject<{
+    spaceId: z.ZodOptional<z.ZodString>;
+    objectId: z.ZodOptional<z.ZodString>;
+}, z.core.$strict>;
+export declare const anytypeQueryConfigSchema: z.ZodObject<{
+    spaceId: z.ZodOptional<z.ZodString>;
+    text: z.ZodDefault<z.ZodString>;
+    typeKeys: z.ZodDefault<z.ZodArray<z.ZodString>>;
+    limit: z.ZodDefault<z.ZodNumber>;
+}, z.core.$strict>;
+export declare const anytypeWriteConfigSchema: z.ZodObject<{
+    spaceId: z.ZodOptional<z.ZodString>;
+    objectId: z.ZodOptional<z.ZodString>;
+    operation: z.ZodDefault<z.ZodEnum<{
+        create: "create";
+        update: "update";
+        archive: "archive";
+    }>>;
+    bulk: z.ZodDefault<z.ZodBoolean>;
+    values: z.ZodDefault<z.ZodObject<{
+        typeKey: z.ZodOptional<z.ZodString>;
+        name: z.ZodOptional<z.ZodString>;
+        body: z.ZodOptional<z.ZodString>;
+        markdown: z.ZodOptional<z.ZodString>;
+        properties: z.ZodDefault<z.ZodArray<z.ZodObject<{
+            key: z.ZodString;
+            text: z.ZodOptional<z.ZodString>;
+            number: z.ZodOptional<z.ZodNumber>;
+            select: z.ZodOptional<z.ZodString>;
+            multi_select: z.ZodOptional<z.ZodArray<z.ZodString>>;
+            date: z.ZodOptional<z.ZodString>;
+            files: z.ZodOptional<z.ZodArray<z.ZodString>>;
+            checkbox: z.ZodOptional<z.ZodBoolean>;
+            url: z.ZodOptional<z.ZodString>;
+            email: z.ZodOptional<z.ZodString>;
+            phone: z.ZodOptional<z.ZodString>;
+            objects: z.ZodOptional<z.ZodArray<z.ZodString>>;
+        }, z.core.$strict>>>;
+    }, z.core.$strict>>;
+}, z.core.$strict>;
+export declare const anytypeUpsertConfigSchema: z.ZodObject<{
+    spaceId: z.ZodOptional<z.ZodString>;
+    typeKey: z.ZodString;
+    matchName: z.ZodString;
+    bulk: z.ZodDefault<z.ZodBoolean>;
+    body: z.ZodOptional<z.ZodString>;
+    properties: z.ZodDefault<z.ZodArray<z.ZodObject<{
+        key: z.ZodString;
+        text: z.ZodOptional<z.ZodString>;
+        number: z.ZodOptional<z.ZodNumber>;
+        select: z.ZodOptional<z.ZodString>;
+        multi_select: z.ZodOptional<z.ZodArray<z.ZodString>>;
+        date: z.ZodOptional<z.ZodString>;
+        files: z.ZodOptional<z.ZodArray<z.ZodString>>;
+        checkbox: z.ZodOptional<z.ZodBoolean>;
+        url: z.ZodOptional<z.ZodString>;
+        email: z.ZodOptional<z.ZodString>;
+        phone: z.ZodOptional<z.ZodString>;
+        objects: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    }, z.core.$strict>>>;
+}, z.core.$strict>;
+export declare const anytypeMaterializeConfigSchema: z.ZodObject<{
+    spaceId: z.ZodOptional<z.ZodString>;
+    collectionId: z.ZodString;
+    objectIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
+    inputStepId: z.ZodOptional<z.ZodString>;
+    bulk: z.ZodDefault<z.ZodBoolean>;
+}, z.core.$strict>;
+export declare const transformConfigSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+    operation: z.ZodLiteral<"identity">;
+    inputStepId: z.ZodString;
+}, z.core.$strict>, z.ZodObject<{
+    operation: z.ZodLiteral<"select">;
+    inputStepId: z.ZodString;
+    pointer: z.ZodString;
+}, z.core.$strict>, z.ZodObject<{
+    operation: z.ZodLiteral<"project">;
+    inputStepId: z.ZodString;
+    fields: z.ZodRecord<z.ZodString, z.ZodString>;
+}, z.core.$strict>], "operation">;
+export declare const notifyConfigSchema: z.ZodObject<{
+    connectionRef: z.ZodString;
+    message: z.ZodOptional<z.ZodString>;
+    inputStepId: z.ZodOptional<z.ZodString>;
+}, z.core.$strict>;
+export declare const agentConfigSchema: z.ZodObject<{
+    project: z.ZodOptional<z.ZodString>;
+    prompt: z.ZodString;
+    model: z.ZodOptional<z.ZodString>;
+}, z.core.$strict>;
 export declare const publishWebConfigSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     action: z.ZodEnum<{
         create: "create";
@@ -186,11 +276,11 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
             id: z.ZodString;
             kind: z.ZodLiteral<"agent">;
             dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
-            config: z.ZodOptional<z.ZodObject<{
+            config: z.ZodObject<{
                 project: z.ZodOptional<z.ZodString>;
-                prompt: z.ZodOptional<z.ZodString>;
+                prompt: z.ZodString;
                 model: z.ZodOptional<z.ZodString>;
-            }, z.core.$strict>>;
+            }, z.core.$strict>;
             retry: z.ZodOptional<z.ZodObject<{
                 attempts: z.ZodDefault<z.ZodNumber>;
                 initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
@@ -219,7 +309,9 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
             dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
             config: z.ZodOptional<z.ZodObject<{
                 spaceId: z.ZodOptional<z.ZodString>;
-                query: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodType<JsonValue, unknown, z.core.$ZodTypeInternals<JsonValue, unknown>>>>;
+                text: z.ZodDefault<z.ZodString>;
+                typeKeys: z.ZodDefault<z.ZodArray<z.ZodString>>;
+                limit: z.ZodDefault<z.ZodNumber>;
             }, z.core.$strict>>;
             retry: z.ZodOptional<z.ZodObject<{
                 attempts: z.ZodDefault<z.ZodNumber>;
@@ -241,7 +333,26 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
                     archive: "archive";
                 }>>;
                 bulk: z.ZodDefault<z.ZodBoolean>;
-                values: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodType<JsonValue, unknown, z.core.$ZodTypeInternals<JsonValue, unknown>>>>;
+                values: z.ZodDefault<z.ZodObject<{
+                    typeKey: z.ZodOptional<z.ZodString>;
+                    name: z.ZodOptional<z.ZodString>;
+                    body: z.ZodOptional<z.ZodString>;
+                    markdown: z.ZodOptional<z.ZodString>;
+                    properties: z.ZodDefault<z.ZodArray<z.ZodObject<{
+                        key: z.ZodString;
+                        text: z.ZodOptional<z.ZodString>;
+                        number: z.ZodOptional<z.ZodNumber>;
+                        select: z.ZodOptional<z.ZodString>;
+                        multi_select: z.ZodOptional<z.ZodArray<z.ZodString>>;
+                        date: z.ZodOptional<z.ZodString>;
+                        files: z.ZodOptional<z.ZodArray<z.ZodString>>;
+                        checkbox: z.ZodOptional<z.ZodBoolean>;
+                        url: z.ZodOptional<z.ZodString>;
+                        email: z.ZodOptional<z.ZodString>;
+                        phone: z.ZodOptional<z.ZodString>;
+                        objects: z.ZodOptional<z.ZodArray<z.ZodString>>;
+                    }, z.core.$strict>>>;
+                }, z.core.$strict>>;
             }, z.core.$strict>>;
             retry: z.ZodOptional<z.ZodObject<{
                 attempts: z.ZodDefault<z.ZodNumber>;
@@ -256,10 +367,24 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
             dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
             config: z.ZodOptional<z.ZodObject<{
                 spaceId: z.ZodOptional<z.ZodString>;
-                objectTypeId: z.ZodOptional<z.ZodString>;
-                uniqueKey: z.ZodOptional<z.ZodString>;
+                typeKey: z.ZodString;
+                matchName: z.ZodString;
                 bulk: z.ZodDefault<z.ZodBoolean>;
-                values: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodType<JsonValue, unknown, z.core.$ZodTypeInternals<JsonValue, unknown>>>>;
+                body: z.ZodOptional<z.ZodString>;
+                properties: z.ZodDefault<z.ZodArray<z.ZodObject<{
+                    key: z.ZodString;
+                    text: z.ZodOptional<z.ZodString>;
+                    number: z.ZodOptional<z.ZodNumber>;
+                    select: z.ZodOptional<z.ZodString>;
+                    multi_select: z.ZodOptional<z.ZodArray<z.ZodString>>;
+                    date: z.ZodOptional<z.ZodString>;
+                    files: z.ZodOptional<z.ZodArray<z.ZodString>>;
+                    checkbox: z.ZodOptional<z.ZodBoolean>;
+                    url: z.ZodOptional<z.ZodString>;
+                    email: z.ZodOptional<z.ZodString>;
+                    phone: z.ZodOptional<z.ZodString>;
+                    objects: z.ZodOptional<z.ZodArray<z.ZodString>>;
+                }, z.core.$strict>>>;
             }, z.core.$strict>>;
             retry: z.ZodOptional<z.ZodObject<{
                 attempts: z.ZodDefault<z.ZodNumber>;
@@ -274,7 +399,9 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
             dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
             config: z.ZodOptional<z.ZodObject<{
                 spaceId: z.ZodOptional<z.ZodString>;
-                collectionId: z.ZodOptional<z.ZodString>;
+                collectionId: z.ZodString;
+                objectIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
+                inputStepId: z.ZodOptional<z.ZodString>;
                 bulk: z.ZodDefault<z.ZodBoolean>;
             }, z.core.$strict>>;
             retry: z.ZodOptional<z.ZodObject<{
@@ -288,10 +415,18 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
             id: z.ZodString;
             kind: z.ZodLiteral<"transform">;
             dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
-            config: z.ZodOptional<z.ZodObject<{
-                transformRef: z.ZodOptional<z.ZodString>;
-                inputStepId: z.ZodOptional<z.ZodString>;
-            }, z.core.$strict>>;
+            config: z.ZodOptional<z.ZodDiscriminatedUnion<[z.ZodObject<{
+                operation: z.ZodLiteral<"identity">;
+                inputStepId: z.ZodString;
+            }, z.core.$strict>, z.ZodObject<{
+                operation: z.ZodLiteral<"select">;
+                inputStepId: z.ZodString;
+                pointer: z.ZodString;
+            }, z.core.$strict>, z.ZodObject<{
+                operation: z.ZodLiteral<"project">;
+                inputStepId: z.ZodString;
+                fields: z.ZodRecord<z.ZodString, z.ZodString>;
+            }, z.core.$strict>], "operation">>;
             retry: z.ZodOptional<z.ZodObject<{
                 attempts: z.ZodDefault<z.ZodNumber>;
                 initialDelaySeconds: z.ZodDefault<z.ZodNumber>;
@@ -340,12 +475,11 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
             id: z.ZodString;
             kind: z.ZodLiteral<"notify">;
             dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
-            config: z.ZodOptional<z.ZodObject<{
-                destination: z.ZodOptional<z.ZodString>;
-                message: z.ZodOptional<z.ZodString>;
+            config: z.ZodObject<{
                 connectionRef: z.ZodString;
-                secretRefs: z.ZodDefault<z.ZodArray<z.ZodString>>;
-            }, z.core.$strict>>;
+                message: z.ZodOptional<z.ZodString>;
+                inputStepId: z.ZodOptional<z.ZodString>;
+            }, z.core.$strict>;
             retry: z.ZodOptional<z.ZodObject<{
                 attempts: z.ZodDefault<z.ZodNumber>;
                 initialDelaySeconds: z.ZodDefault<z.ZodNumber>;

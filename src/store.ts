@@ -43,7 +43,7 @@ import {
   workflowVersionHash,
 } from "./automation/workflow.js";
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 export type ManagementCapabilityScope = "wake" | "access" | "model" | "publish";
 
@@ -114,6 +114,7 @@ export class Store {
       if (current < 13) this.migrateToVersion13();
       if (current < 14) this.migrateToVersion14();
       if (current < 15) this.migrateToVersion15();
+      if (current < 16) this.migrateToVersion16();
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -994,6 +995,31 @@ export class Store {
       for (const workflowId of legacyUnredactedWorkflowIds)
         invalidate.run(invalidatedAt, workflowId);
     }
+  }
+
+  private migrateToVersion16(): void {
+    this.db.exec(`
+      CREATE TABLE workflow_effect_receipts (
+        effect_key TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        step_id TEXT NOT NULL,
+        operation_digest TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared','running','succeeded','failed','outcome_unknown')),
+        fencing_token TEXT NOT NULL,
+        result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+        error TEXT,
+        started_at INTEGER,
+        completed_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(run_id,step_id),
+        FOREIGN KEY(run_id,step_id) REFERENCES workflow_steps(run_id,step_id) ON DELETE RESTRICT
+      );
+      CREATE INDEX workflow_effect_receipts_state
+        ON workflow_effect_receipts(state,updated_at,effect_key);
+      CREATE TRIGGER workflow_effect_receipts_no_delete
+        BEFORE DELETE ON workflow_effect_receipts
+        BEGIN SELECT RAISE(ABORT,'workflow effect receipts are durable'); END;
+    `);
   }
 
   isInitialized(routeId: string): boolean {

@@ -3,6 +3,7 @@ import { DiscussionAnytypePort } from "./discussions.js";
 import { AnytypeWorkflowSourceResolver, WorkflowObserver } from "./automation/observer.js";
 import { NoEffectWorkflowStepExecutor, WorkflowRunner, } from "./automation/runner.js";
 import { PublishWebWorkflowStepExecutor } from "./automation/publish-web.js";
+import { TypedWorkflowStepExecutor } from "./automation/executors.js";
 import { CloudClient } from "./cloud-client.js";
 import { loadCloudConfig, resolveCloudPaths } from "./cloud-config.js";
 import { AnytypeCloudCommandExecutor, CloudWorkflowExtension } from "./cloud-workflow.js";
@@ -113,7 +114,7 @@ export class Gateway {
                     const executor = new AnytypeCloudCommandExecutor(this.anytype, cloud, cloudConfig, this.config.agent.participantId, this.config.cloudCommands.allowedOriginParticipantIds);
                     extensions.push(new CloudWorkflowExtension(this.store, cloud, executor, this.config.cloudCommands, this.anytype, this.log));
                 }
-                this.trackAuxiliary(new WorkflowRunner(this.store, this.config.automation, this.log, new PublishWebWorkflowStepExecutor(this.config.automation, new NoEffectWorkflowStepExecutor()), Date.now, new AnytypeWorkflowSourceResolver(this.anytype, this.config.automation.definitionTypeKeys, this.config.automation.polling.pageSize), extensions).run(this.abort.signal), "workflow_runner_stopped");
+                this.trackAuxiliary(new WorkflowRunner(this.store, this.config.automation, this.log, new PublishWebWorkflowStepExecutor(this.config.automation, new TypedWorkflowStepExecutor(this.store, this.config, this.anytype, this.runtime, new NoEffectWorkflowStepExecutor())), Date.now, new AnytypeWorkflowSourceResolver(this.anytype, this.config.automation.definitionTypeKeys, this.config.automation.polling.pageSize), extensions).run(this.abort.signal), "workflow_runner_stopped");
             }
             if (this.config.automation.enabled && this.config.automation.observation)
                 this.trackAuxiliary(new WorkflowObserver(this.anytype, this.store, this.config.automation, this.log).run(this.abort.signal), "workflow_observer_stopped");

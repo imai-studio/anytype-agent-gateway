@@ -14,6 +14,7 @@ import {
   type WorkflowRunnerExtension,
 } from "./automation/runner.js";
 import { PublishWebWorkflowStepExecutor } from "./automation/publish-web.js";
+import { TypedWorkflowStepExecutor } from "./automation/executors.js";
 import { CloudClient } from "./cloud-client.js";
 import { loadCloudConfig, resolveCloudPaths } from "./cloud-config.js";
 import { AnytypeCloudCommandExecutor, CloudWorkflowExtension } from "./cloud-workflow.js";
@@ -207,7 +208,13 @@ export class Gateway {
             this.log,
             new PublishWebWorkflowStepExecutor(
               this.config.automation,
-              new NoEffectWorkflowStepExecutor(),
+              new TypedWorkflowStepExecutor(
+                this.store,
+                this.config,
+                this.anytype,
+                this.runtime,
+                new NoEffectWorkflowStepExecutor(),
+              ),
             ),
             Date.now,
             new AnytypeWorkflowSourceResolver(

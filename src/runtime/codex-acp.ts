@@ -240,12 +240,16 @@ export class CodexAcpDriver implements RuntimeDriver {
       sessionKey: string;
       prompt: string;
       turn?: RuntimeTurn;
+      origin?: "conversation" | "workflow";
+      workspacePath?: string;
       modelId?: string | null;
       defaultModelId?: string;
     },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<ActiveRuntime> {
-    const workspacePath = input.turn?.workspacePath ?? this.config.defaultProject;
+    const workflowOrigin = input.origin === "workflow";
+    const workspacePath =
+      input.workspacePath ?? input.turn?.workspacePath ?? this.config.defaultProject;
     const environment = inheritedAgentEnvironment(this.config.environment);
     const child = spawn(this.config.command, this.config.args, {
       cwd: workspacePath,
@@ -331,7 +335,7 @@ export class CodexAcpDriver implements RuntimeDriver {
     const app = acp
       .client({ name: "anytype-agent-gateway" })
       .onRequest(acp.methods.client.session.requestPermission, (ctx) => {
-        if (this.config.permissions === "deny")
+        if (workflowOrigin || this.config.permissions === "deny")
           return { outcome: { outcome: "cancelled" as const } };
         const option =
           ctx.params.options.find((item) => item.kind === "allow_once") ??
@@ -394,24 +398,27 @@ export class CodexAcpDriver implements RuntimeDriver {
             protocolVersion: acp.PROTOCOL_VERSION,
             clientCapabilities: {},
           });
-          const additionalDirectories = [
-            ...this.config.allowedProjects,
-            ...(this.config.defaultProject && this.config.defaultProject !== workspacePath
-              ? [this.config.defaultProject]
-              : []),
-          ];
+          const additionalDirectories = workflowOrigin
+            ? []
+            : [
+                ...this.config.allowedProjects,
+                ...(this.config.defaultProject && this.config.defaultProject !== workspacePath
+                  ? [this.config.defaultProject]
+                  : []),
+              ];
           const sessionSetup = {
             cwd: workspacePath ?? process.cwd(),
-            mcpServers: this.mcpServer
-              ? [
-                  {
-                    name: "aag-anytype",
-                    command: this.mcpServer.command,
-                    args: this.mcpServer.args,
-                    env: mcpEnvironment(this.mcpServer.env, input.turn, actorFile),
-                  },
-                ]
-              : [],
+            mcpServers:
+              !workflowOrigin && this.mcpServer
+                ? [
+                    {
+                      name: "aag-anytype",
+                      command: this.mcpServer.command,
+                      args: this.mcpServer.args,
+                      env: mcpEnvironment(this.mcpServer.env, input.turn, actorFile),
+                    },
+                  ]
+                : [],
             ...(additionalDirectories.length ? { additionalDirectories } : {}),
           };
           let savedSessionId = this.store?.codexAcpSession(input.sessionKey);

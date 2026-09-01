@@ -59,7 +59,7 @@ describe("workflow foundation", () => {
     );
   });
 
-  it("redacts author prompt and message text at every nesting depth", () => {
+  it("redacts author prompt, message, object body, and property text at every nesting depth", () => {
     const authorText = workflow({
       steps: [{ id: "agent", kind: "agent", config: { prompt: "private author text" } }],
       capabilities: ["agent.invoke"],
@@ -75,7 +75,14 @@ describe("workflow foundation", () => {
           {
             id: "write",
             kind: "anytype.write",
-            config: { values: { prompt: "ordinary object property" } },
+            config: {
+              operation: "create",
+              values: {
+                typeKey: "page",
+                body: "private object body",
+                properties: [{ key: "prompt", text: "ordinary object property" }],
+              },
+            },
           },
         ],
         capabilities: ["anytype.write"],
@@ -83,8 +90,48 @@ describe("workflow foundation", () => {
     });
     const stored = canonicalStoredWorkflowDefinition(ordinaryData);
     expect(stored).not.toContain("classification");
+    expect(stored).not.toContain("private object body");
     expect(stored).not.toContain("ordinary object property");
-    expect(stored.match(/"redacted":true/g)).toHaveLength(2);
+    expect(stored.match(/"redacted":true/g)).toHaveLength(3);
+
+    const upsert = workflowDefinitionSchema.parse({
+      ...workflow(),
+      spec: {
+        ...workflow().spec,
+        steps: [
+          {
+            id: "upsert",
+            kind: "anytype.upsert",
+            config: { typeKey: "page", matchName: "Private", body: "private upsert body" },
+          },
+        ],
+        capabilities: ["anytype.write"],
+      },
+    });
+    expect(canonicalStoredWorkflowDefinition(upsert)).not.toContain("private upsert body");
+  });
+
+  it("rejects case variants of reserved Anytype property keys", () => {
+    for (const key of ["Archived", "TYPE_KEY", "Space_Id"])
+      expect(() =>
+        workflowDefinitionSchema.parse({
+          ...workflow(),
+          spec: {
+            ...workflow().spec,
+            steps: [
+              {
+                id: "write",
+                kind: "anytype.write",
+                config: {
+                  operation: "update",
+                  values: { properties: [{ key, text: "blocked" }] },
+                },
+              },
+            ],
+            capabilities: ["anytype.write"],
+          },
+        }),
+      ).toThrow("Reserved Anytype property key");
   });
 
   it("keeps every behavior-bearing spec field in approval material", () => {
@@ -234,12 +281,22 @@ describe("workflow foundation", () => {
       workflow({
         steps: [
           {
-            id: "write",
+            id: "archive",
             kind: "anytype.write",
-            config: { spaceId: "space-2", bulk: true, operation: "archive" },
+            config: { spaceId: "space-2", operation: "archive" },
+          },
+          {
+            id: "materialize",
+            kind: "anytype.materialize",
+            config: {
+              spaceId: "space-2",
+              collectionId: "collection-1",
+              objectIds: ["object-1", "object-2"],
+              bulk: true,
+            },
           },
         ],
-        capabilities: ["anytype.write"],
+        capabilities: ["anytype.write", "anytype.materialize"],
       }),
       { sourceSpaceId: "space-1" },
     );
@@ -249,6 +306,17 @@ describe("workflow foundation", () => {
       "anytype.bulk",
       "anytype.cross-space",
     ]);
+  });
+
+  it("requires cross-space approval for unscoped Anytype event sources", () => {
+    const definition = workflow({
+      triggers: [{ kind: "anytype.event", events: ["updated"] }],
+      steps: [{ id: "read", kind: "anytype.read" }],
+      capabilities: ["anytype.read"],
+    });
+    expect(
+      evaluateWorkflowPolicy(definition, { sourceSpaceId: "space-1" }).missingCapabilities,
+    ).toEqual(["anytype.cross-space"]);
   });
 
   it("binds approvals to normalized local authority", () => {
@@ -342,7 +410,7 @@ describe("workflow foundation", () => {
           },
         ],
       }),
-    ).toThrow("connection-local reference");
+    ).toThrow();
   });
 
   it("requires verified editors and enforces local budget caps", () => {

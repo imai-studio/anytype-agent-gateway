@@ -62,6 +62,7 @@ export const workflowAuthorityFields = {
   allowedConnections: z.array(z.string().min(1)).default([]),
   allowedSecretNames: z.array(z.string().min(1)).default([]),
   allowedProjects: z.array(z.string().min(1)).default([]),
+  allowedModels: z.array(z.string().min(1)).default([]),
   publishConnections: z
     .record(
       z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u),
@@ -77,6 +78,17 @@ export const workflowAuthorityFields = {
           allowRollback: z.boolean().default(false),
           allowDisable: z.boolean().default(false),
           allowUnpublish: z.boolean().default(false),
+        })
+        .strict(),
+    )
+    .default({}),
+  notificationConnections: z
+    .record(
+      z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u),
+      z
+        .object({
+          spaceId: z.string().trim().min(1).max(512),
+          chatId: z.string().trim().min(1).max(512),
         })
         .strict(),
     )
@@ -104,7 +116,12 @@ export const workflowAuthorityFields = {
 
 export const workflowAuthoritySchema = z.object(workflowAuthorityFields).strict();
 export type WorkflowAuthority = z.infer<typeof workflowAuthoritySchema>;
-type WorkflowAuthorityInput = Omit<WorkflowAuthority, "publishConnections"> & {
+type WorkflowAuthorityInput = Omit<
+  WorkflowAuthority,
+  "allowedModels" | "notificationConnections" | "publishConnections"
+> & {
+  allowedModels?: WorkflowAuthority["allowedModels"];
+  notificationConnections?: WorkflowAuthority["notificationConnections"];
   publishConnections?: WorkflowAuthority["publishConnections"];
 };
 
@@ -165,16 +182,21 @@ function deriveConfiguredRiskCapabilities(
   required: Set<WorkflowCapability>,
 ): void {
   const configuredSpaces = new Set<string>();
+  let hasUnscopedAnytypeTrigger = false;
   for (const trigger of workflow.spec.triggers)
     if ("spaceId" in trigger && trigger.spaceId) configuredSpaces.add(trigger.spaceId);
+    else if (trigger.kind === "anytype.event" || trigger.kind === "anytype.chat")
+      hasUnscopedAnytypeTrigger = true;
   for (const step of workflow.spec.steps) {
     if (!step.kind.startsWith("anytype.")) continue;
     const config = step.config ?? {};
     if ("spaceId" in config && config.spaceId) configuredSpaces.add(config.spaceId);
     if ("bulk" in config && config.bulk) required.add("anytype.bulk");
-    if ("operation" in config && config.operation === "archive") required.add("anytype.archive");
+    if (step.kind === "anytype.write" && step.config?.operation === "archive")
+      required.add("anytype.archive");
   }
   if (
+    hasUnscopedAnytypeTrigger ||
     configuredSpaces.size > 1 ||
     (context.sourceSpaceId &&
       [...configuredSpaces].some((spaceId) => spaceId !== context.sourceSpaceId))
@@ -217,6 +239,9 @@ export function evaluateWorkflowAuthority(
     if (step.kind === "agent" && "project" in config && config.project)
       if (!authority.allowedProjects.includes(config.project))
         violations.push(`Project is not locally authorized: ${config.project}`);
+    if (step.kind === "agent" && "model" in config && config.model)
+      if (!(authority.allowedModels ?? []).includes(config.model))
+        violations.push(`Model is not locally authorized: ${config.model}`);
     if (step.kind !== "http" && step.kind !== "notify" && step.kind !== "publish.web") continue;
     if (
       "connectionRef" in config &&
@@ -265,10 +290,12 @@ export function workflowAuthorityHash(authority: WorkflowAuthorityInput): string
     allowedAuthorIds: [...new Set(authority.allowedAuthorIds)].sort(),
     allowedCapabilities: [...new Set(authority.allowedCapabilities)].sort(),
     allowedConnections: [...new Set(authority.allowedConnections)].sort(),
+    allowedModels: [...new Set(authority.allowedModels ?? [])].sort(),
     allowedProjects: [...new Set(authority.allowedProjects)].sort(),
     allowedSecretNames: [...new Set(authority.allowedSecretNames)].sort(),
     allowedSpaceIds: [...new Set(authority.allowedSpaceIds)].sort(),
     publishConnections: authority.publishConnections ?? {},
+    notificationConnections: authority.notificationConnections ?? {},
     limits: authority.limits,
     maximumRiskTier: authority.maximumRiskTier,
   };

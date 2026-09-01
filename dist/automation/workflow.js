@@ -74,36 +74,202 @@ const workflowTriggerSchema = z.discriminatedUnion("kind", [
     })
         .strict(),
 ]);
-const jsonObjectSchema = z.record(z.string(), jsonValueSchema);
-const anytypeReadConfigSchema = z
+const anytypePropertySchema = z
+    .object({
+    key: z.string().trim().min(1).max(256),
+    text: z.string().max(100_000).optional(),
+    number: z.number().finite().optional(),
+    select: z.string().max(512).optional(),
+    multi_select: z.array(z.string().max(512)).max(100).optional(),
+    date: z.string().max(128).optional(),
+    files: z.array(z.string().max(512)).max(100).optional(),
+    checkbox: z.boolean().optional(),
+    url: z.string().max(2_000).optional(),
+    email: z.string().max(320).optional(),
+    phone: z.string().max(128).optional(),
+    objects: z.array(z.string().max(512)).max(100).optional(),
+})
+    .strict()
+    .superRefine((value, context) => {
+    if (["archived", "id", "layout", "object", "space_id", "type", "type_key"].includes(value.key.toLowerCase()))
+        context.addIssue({
+            code: "custom",
+            path: ["key"],
+            message: "Reserved Anytype property key is not writable",
+        });
+    const fields = [
+        "text",
+        "number",
+        "select",
+        "multi_select",
+        "date",
+        "files",
+        "checkbox",
+        "url",
+        "email",
+        "phone",
+        "objects",
+    ].filter((field) => value[field] !== undefined);
+    if (fields.length !== 1)
+        context.addIssue({
+            code: "custom",
+            message: "Anytype property requires exactly one typed value",
+        });
+});
+const anytypePropertiesSchema = z.array(anytypePropertySchema).max(100);
+export const anytypeReadConfigSchema = z
     .object({ spaceId: z.string().min(1).optional(), objectId: z.string().min(1).optional() })
     .strict();
-const anytypeQueryConfigSchema = z
-    .object({ spaceId: z.string().min(1).optional(), query: jsonObjectSchema.optional() })
+export const anytypeQueryConfigSchema = z
+    .object({
+    spaceId: z.string().min(1).optional(),
+    text: z.string().max(1_024).default(""),
+    typeKeys: z.array(z.string().trim().min(1).max(256)).max(20).default([]),
+    limit: z.number().int().min(1).max(100).default(25),
+})
     .strict();
-const anytypeWriteConfigSchema = z
+export const anytypeWriteConfigSchema = z
     .object({
     spaceId: z.string().min(1).optional(),
     objectId: z.string().min(1).optional(),
     operation: z.enum(["create", "update", "archive"]).default("update"),
     bulk: z.boolean().default(false),
-    values: jsonObjectSchema.default({}),
+    values: z
+        .object({
+        typeKey: z.string().trim().min(1).max(256).optional(),
+        name: z.string().max(2_000).optional(),
+        body: z.string().max(100_000).optional(),
+        markdown: z.string().max(100_000).optional(),
+        properties: anytypePropertiesSchema.default([]),
+    })
+        .strict()
+        .default({ properties: [] }),
 })
-    .strict();
-const anytypeUpsertConfigSchema = z
+    .strict()
+    .superRefine((value, context) => {
+    if (value.bulk)
+        context.addIssue({
+            code: "custom",
+            path: ["bulk"],
+            message: "Bulk writes are not supported",
+        });
+    if (value.operation === "create" && !value.values.typeKey)
+        context.addIssue({
+            code: "custom",
+            path: ["values", "typeKey"],
+            message: "Create requires typeKey",
+        });
+    if (value.operation === "create" && value.objectId)
+        context.addIssue({
+            code: "custom",
+            path: ["objectId"],
+            message: "Create does not accept objectId",
+        });
+    if (value.operation === "create" && value.values.markdown !== undefined)
+        context.addIssue({
+            code: "custom",
+            path: ["values", "markdown"],
+            message: "Create accepts body, not markdown",
+        });
+    if (value.operation === "update" && value.values.body !== undefined)
+        context.addIssue({
+            code: "custom",
+            path: ["values", "body"],
+            message: "Update accepts markdown, not body",
+        });
+    if (value.operation !== "create" && value.values.typeKey)
+        context.addIssue({
+            code: "custom",
+            path: ["values", "typeKey"],
+            message: "Object type cannot be changed",
+        });
+    if (value.operation === "archive" &&
+        Object.keys(value.values).some((key) => key !== "properties"))
+        context.addIssue({
+            code: "custom",
+            path: ["values"],
+            message: "Archive does not accept values",
+        });
+    if (value.operation === "archive" && value.values.properties.length)
+        context.addIssue({
+            code: "custom",
+            path: ["values", "properties"],
+            message: "Archive does not accept properties",
+        });
+});
+export const anytypeUpsertConfigSchema = z
     .object({
     spaceId: z.string().min(1).optional(),
-    objectTypeId: z.string().min(1).optional(),
-    uniqueKey: z.string().min(1).optional(),
+    typeKey: z.string().trim().min(1).max(256),
+    matchName: z.string().trim().min(1).max(2_000),
     bulk: z.boolean().default(false),
-    values: jsonObjectSchema.default({}),
+    body: z.string().max(100_000).optional(),
+    properties: anytypePropertiesSchema.default([]),
 })
-    .strict();
-const anytypeMaterializeConfigSchema = z
+    .strict()
+    .refine((value) => !value.bulk, { path: ["bulk"], message: "Bulk upserts are not supported" });
+export const anytypeMaterializeConfigSchema = z
     .object({
     spaceId: z.string().min(1).optional(),
-    collectionId: z.string().min(1).optional(),
+    collectionId: z.string().min(1),
+    objectIds: z.array(z.string().trim().min(1).max(512)).max(100).default([]),
+    inputStepId: z.string().min(1).optional(),
     bulk: z.boolean().default(false),
+})
+    .strict()
+    .superRefine((value, context) => {
+    if (!value.objectIds.length && !value.inputStepId)
+        context.addIssue({
+            code: "custom",
+            message: "Materialize requires objectIds or inputStepId",
+        });
+    if ((value.objectIds.length > 1 || value.inputStepId) && !value.bulk)
+        context.addIssue({
+            code: "custom",
+            path: ["bulk"],
+            message: "Materializing multiple or derived objects requires bulk",
+        });
+});
+export const transformConfigSchema = z.discriminatedUnion("operation", [
+    z.object({ operation: z.literal("identity"), inputStepId: z.string().min(1) }).strict(),
+    z
+        .object({
+        operation: z.literal("select"),
+        inputStepId: z.string().min(1),
+        pointer: z
+            .string()
+            .regex(/^(?:\/(?:[^~/]|~0|~1)*)*$/)
+            .max(2_000),
+    })
+        .strict(),
+    z
+        .object({
+        operation: z.literal("project"),
+        inputStepId: z.string().min(1),
+        fields: z
+            .record(z.string().trim().min(1).max(256), z
+            .string()
+            .regex(/^(?:\/(?:[^~/]|~0|~1)*)*$/)
+            .max(2_000))
+            .refine((value) => Object.keys(value).length <= 100),
+    })
+        .strict(),
+]);
+export const notifyConfigSchema = z
+    .object({
+    connectionRef: z.string().trim().min(1).max(160),
+    message: z.string().max(100_000).optional(),
+    inputStepId: z.string().min(1).optional(),
+})
+    .strict()
+    .refine((value) => value.message !== undefined || value.inputStepId !== undefined, {
+    message: "Notify requires message or inputStepId",
+});
+export const agentConfigSchema = z
+    .object({
+    project: z.string().min(1).optional(),
+    prompt: z.string().min(1).max(100_000),
+    model: z.string().min(1).optional(),
 })
     .strict();
 const externalReferenceConfig = {
@@ -176,24 +342,13 @@ export const publishWebConfigSchema = z.discriminatedUnion("action", [
     }),
 ]);
 const workflowStepSchema = z.discriminatedUnion("kind", [
-    workflowStep("agent", z
-        .object({
-        project: z.string().min(1).optional(),
-        prompt: z.string().max(100_000).optional(),
-        model: z.string().min(1).optional(),
-    })
-        .strict()),
+    requiredWorkflowStep("agent", agentConfigSchema),
     workflowStep("anytype.read", anytypeReadConfigSchema),
     workflowStep("anytype.query", anytypeQueryConfigSchema),
     workflowStep("anytype.write", anytypeWriteConfigSchema),
     workflowStep("anytype.upsert", anytypeUpsertConfigSchema),
     workflowStep("anytype.materialize", anytypeMaterializeConfigSchema),
-    workflowStep("transform", z
-        .object({
-        transformRef: z.string().min(1).optional(),
-        inputStepId: z.string().min(1).optional(),
-    })
-        .strict()),
+    workflowStep("transform", transformConfigSchema),
     workflowStep("http", z
         .object({
         ...externalReferenceConfig,
@@ -207,21 +362,7 @@ const workflowStepSchema = z.discriminatedUnion("kind", [
     })
         .strict()),
     workflowStep("approval", z.object({ message: z.string().max(4_000).optional() }).strict()),
-    workflowStep("notify", z
-        .object({
-        ...externalReferenceConfig,
-        destination: z
-            .string()
-            .trim()
-            .min(1)
-            .max(1_024)
-            .refine((value) => !/^[a-z][a-z0-9+.-]*:\/\//i.test(value), {
-            message: "destination must be a connection-local reference, not a URL",
-        })
-            .optional(),
-        message: z.string().max(100_000).optional(),
-    })
-        .strict()),
+    requiredWorkflowStep("notify", notifyConfigSchema),
     requiredWorkflowStep("publish.web", publishWebConfigSchema),
 ]);
 const workflowDefinitionObjectSchema = z
@@ -319,6 +460,17 @@ const workflowDefinitionObjectSchema = z
                     message: `Unknown step dependency: ${dependency}`,
                 });
         }
+    for (const [index, step] of workflow.spec.steps.entries()) {
+        const config = step.config;
+        if (!config || !("inputStepId" in config) || !config.inputStepId)
+            continue;
+        if (!step.dependsOn.includes(config.inputStepId))
+            context.addIssue({
+                code: "custom",
+                path: ["spec", "steps", index, "config", "inputStepId"],
+                message: `Referenced input step must be an explicit dependency: ${config.inputStepId}`,
+            });
+    }
     const dependencies = new Map(workflow.spec.steps.map((step) => [step.id, step.dependsOn]));
     const visiting = new Set();
     const visited = new Set();
@@ -429,10 +581,11 @@ function redactSensitiveWorkflowStrings(value, path = []) {
         return value.map((item, index) => redactSensitiveWorkflowStrings(item, [...path, String(index)]));
     if (!value || typeof value !== "object")
         return value;
+    const record = value;
     const result = {};
-    for (const [key, nested] of Object.entries(value)) {
+    for (const [key, nested] of Object.entries(record)) {
         const nestedPath = [...path, key];
-        if (isSensitiveWorkflowTextPath(nestedPath) && typeof nested === "string") {
+        if (typeof nested === "string" && isSensitiveWorkflowTextPath(nestedPath)) {
             result[key] = {
                 redacted: true,
                 digest: sensitiveWorkflowFieldDigest(nestedPath, nested),
@@ -446,6 +599,30 @@ function redactSensitiveWorkflowStrings(value, path = []) {
 export function isSensitiveWorkflowTextPath(path) {
     const key = path.at(-1);
     if (key === "prompt" || key === "message")
+        return true;
+    if (path.length === 6 &&
+        path[0] === "spec" &&
+        path[1] === "steps" &&
+        /^\d+$/.test(path[2]) &&
+        path[3] === "config" &&
+        path[4] === "values" &&
+        ["body", "markdown"].includes(key ?? ""))
+        return true;
+    if (path.length === 5 &&
+        path[0] === "spec" &&
+        path[1] === "steps" &&
+        /^\d+$/.test(path[2]) &&
+        path[3] === "config" &&
+        key === "body")
+        return true;
+    if (path.length >= 7 &&
+        path[0] === "spec" &&
+        path[1] === "steps" &&
+        /^\d+$/.test(path[2]) &&
+        path[3] === "config" &&
+        ((path[4] === "values" && path[5] === "properties" && /^\d+$/.test(path[6])) ||
+            (path[4] === "properties" && /^\d+$/.test(path[5]))) &&
+        ["text", "url", "email", "phone"].includes(key ?? ""))
         return true;
     if (path.length >= 6 &&
         path[0] === "spec" &&
