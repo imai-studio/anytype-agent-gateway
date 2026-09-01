@@ -3,6 +3,9 @@
 See [`knot-roadmap.md`](knot-roadmap.md) for the product model, staged compatibility migration, and
 future workflow-runtime architecture built on these decisions.
 
+The proposed [workflow runtime process topology](workflow-runtime-topology.md) records the concrete
+single-process and recovery rules for Phase 2. It is an implementation gate, not released behavior.
+
 This document records the trade-offs considered before implementation. It complements [ARCHITECTURE.md](../ARCHITECTURE.md), which describes the resulting system in detail.
 
 ## One Anytype member per agent
@@ -67,6 +70,11 @@ Knot does not define cron syntax or maintain a second scheduler. OpenClaw cron j
 OpenClaw intentionally isolates a normal cron `agentTurn` under a cron-run session key. A route-bound scheduled continuation is therefore a native OpenClaw command job whose argv invokes `openclaw agent` with Knot's exact current session key and the native Anytype delivery target. `aag_context` returns that argv. This is an adapter to OpenClaw's scheduler, not a Knot scheduler, and it prevents scheduled work from silently losing the chat or discussion context.
 
 Codex ACP does not currently expose Codex desktop scheduled tasks or external session observation. Knot reports that limitation instead of pretending to schedule a job. Equivalent Codex support belongs in a native Codex app-server adapter.
+
+The proposed Phase 2 workflow runner has its own durable `schedule.tick` events. Those timers start
+Knot workflows. They do not schedule route-bound Codex or OpenClaw turns, and they do not replace
+either runtime's native scheduler. The [workflow runtime process topology](workflow-runtime-topology.md)
+defines that boundary.
 
 ## Anytype mutations use scoped tools
 

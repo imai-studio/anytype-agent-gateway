@@ -3,6 +3,10 @@
 This document freezes the Phase 2 foundation contract. It does not enable workflow observation or
 execution. Those paths remain unavailable unless their local feature gates are enabled in order.
 
+The companion [process topology](workflow-runtime-topology.md) defines ownership, leases, crash
+recovery, timers, cancellation, effects, shutdown, retention, and restore behavior for the code that
+will implement this contract.
+
 ## Trust planes
 
 Knot separates workflow state into three planes:
