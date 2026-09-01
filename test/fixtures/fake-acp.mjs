@@ -7,6 +7,7 @@ const input = createInterface({ input: process.stdin });
 const pending = new Set();
 let internalLoadFailures = 0;
 let selectedModel = process.env.FAKE_ACP_DEFAULT_MODEL ?? "gpt-default";
+let promptWaitingForCancel;
 
 function configOptions() {
   if (!process.env.FAKE_ACP_MODELS) return undefined;
@@ -70,34 +71,46 @@ async function request(message) {
     selectedModel = message.params.value;
     return respond(message.id, { configOptions: configOptions() ?? [] });
   }
-  if (message.method === "_session/steering")
+  if (message.method === "_session/steering") {
     return process.env.FAKE_ACP_ACCEPT_STEERING === "true"
       ? respond(message.id, {})
       : fail(message.id, -32601, "Steering rejected by fake agent");
+  }
   if (message.method === "session/prompt") {
     if (process.env.FAKE_ACP_PROMPT_ERROR_SESSION === message.params.sessionId)
       return fail(message.id, -32603, "Internal error");
     pending.add(message.id);
+    if (process.env.FAKE_ACP_HOLD_PROMPT_UNTIL_CANCEL === "true") {
+      promptWaitingForCancel = message;
+      return;
+    }
     const delay = Number(process.env.FAKE_ACP_PROMPT_DELAY_MS ?? "0");
-    setTimeout(() => {
-      const updates = process.env.FAKE_ACP_UPDATES
-        ? JSON.parse(process.env.FAKE_ACP_UPDATES)
-        : JSON.parse(process.env.FAKE_ACP_CHUNKS ?? '["fresh reply"]').map((text) => ({
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text },
-          }));
-      for (const update of updates)
-        notify("session/update", { sessionId: message.params.sessionId, update });
-      pending.delete(message.id);
-      respond(message.id, { stopReason: "end_turn" });
-    }, delay);
+    setTimeout(() => completePrompt(message), delay);
     return;
   }
   fail(message.id, -32601, `Method not found: ${message.method}`);
 }
 
+function completePrompt(message) {
+  const updates = process.env.FAKE_ACP_UPDATES
+    ? JSON.parse(process.env.FAKE_ACP_UPDATES)
+    : JSON.parse(process.env.FAKE_ACP_CHUNKS ?? '["fresh reply"]').map((text) => ({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text },
+      }));
+  for (const update of updates)
+    notify("session/update", { sessionId: message.params.sessionId, update });
+  pending.delete(message.id);
+  respond(message.id, { stopReason: "end_turn" });
+}
+
 function notification(message) {
   log({ method: message.method, params: message.params });
+  if (message.method === "session/cancel" && promptWaitingForCancel) {
+    const prompt = promptWaitingForCancel;
+    promptWaitingForCancel = undefined;
+    completePrompt(prompt);
+  }
 }
 
 function respond(id, result) {

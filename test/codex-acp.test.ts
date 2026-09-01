@@ -510,7 +510,7 @@ describe("Codex ACP output and steering", () => {
         command: process.execPath,
         args: [fixture],
         allowedProjects: [],
-        environment: { FAKE_ACP_LOG: logPath, FAKE_ACP_PROMPT_DELAY_MS: "100" },
+        environment: { FAKE_ACP_LOG: logPath, FAKE_ACP_HOLD_PROMPT_UNTIL_CANCEL: "true" },
         defaultProject: workspace,
         timeoutSeconds: 2,
         permissions: "deny",
@@ -567,6 +567,7 @@ describe("Codex ACP output and steering", () => {
     expect(environment.AAG_ROUTE_ID).not.toBe("native-session-key");
     expect(Object.keys(environment).some((name) => /api[_-]?key/i.test(name))).toBe(false);
     expect(Object.values(environment)).not.toContain("must-not-leak");
+    await active.cancel();
     await active.result;
     await expect(readFile(environment.AAG_ACTOR_FILE!, "utf8")).rejects.toMatchObject({
       code: "ENOENT",
