@@ -1,13 +1,26 @@
-# Architecture
+# Local architecture
 
-The product evolution, compatibility contract, and Phase 1/Phase 2 delivery graph are maintained in
-[`docs/knot-roadmap.md`](docs/knot-roadmap.md).
+This document describes the local Anytype agent gateway and workflow runner. The released Cloud
+connector and publication client have separate guides in
+[`docs/cloud-connector.md`](docs/cloud-connector.md) and
+[`docs/cloud-publishing.md`](docs/cloud-publishing.md). Read
+[`docs/planned-work.md`](docs/planned-work.md) for remaining gaps and
+[`docs/publish-architecture.md`](docs/publish-architecture.md) for the Cloud protocol plan.
+
+The workflow observer, runner, executors, and operator CLI are disabled by default while the
+representative soak is pending. Their invariants are part of the local release; enabling them is an
+explicit operator decision.
+
+[`docs/knot-roadmap.md`](docs/knot-roadmap.md) records the migration history and the order of the
+remaining Phase 2 work.
 
 For the alternatives considered and the reasoning behind these boundaries, see [docs/architecture-decisions.md](docs/architecture-decisions.md).
 
 ## Deployment invariant
 
-The current unit of deployment is one Knot process bound to one Anytype member and one runtime-backed agent. A configuration may include several spaces, chats, and discussion policies, but they all represent the same Anytype identity and the same OpenClaw agent or Codex ACP adapter.
+The deployment unit is one Knot process bound to one Anytype member and one runtime-backed agent. A
+configuration may include several spaces, chats, and discussion policies. They all use the same
+Anytype identity and the same OpenClaw agent or Codex ACP adapter.
 
 ```text
 one machine / service account
@@ -18,7 +31,8 @@ one machine / service account
       └── one local SQLite state database
 ```
 
-This keeps tagging and authorization legible: an Anytype member maps directly to the agent process that comes online. Deploy another isolated process/identity for another independently taggable agent.
+An Anytype member maps directly to one agent process. Deploy another isolated process and identity
+for another independently taggable agent.
 
 ## Data flow
 
@@ -33,7 +47,9 @@ Anytype SSE message event
   → final edit, silence action, or failure edit
 ```
 
-The public Anytype API is the primary transport. Knot uses it to resolve routes, list and retrieve messages, subscribe to server-sent events, create/edit/delete replies, toggle reactions, search objects, and fetch referenced-object summaries.
+The public Anytype API is the primary transport. Knot uses it to resolve routes, list and retrieve
+messages, subscribe to server-sent events, create, edit, and delete replies, toggle reactions,
+search objects, and fetch referenced-object summaries.
 
 When the local automation gates enable observation, a separate read-only loop searches configured
 workflow object type keys in explicitly allowed spaces. It fetches each full object, requires a
@@ -50,8 +66,9 @@ shipped executor boundary supports bounded Anytype reads, queries, writes, exact
 collection materialization, declarative JSON-pointer transforms, named Anytype notifications,
 capability-narrowed Codex ACP invocation, and the closed `publish.web` lifecycle.
 Raw HTTP and arbitrary code remain unavailable. External effects use durable, immutable receipts;
-an interrupted effect with an unknown outcome is dead-lettered instead of repeated. SQLite stores digests in place of author prompt and message
-text. A step that needs that text enters `source_refetch_required`. An executor may resume it only
+an interrupted effect with an unknown outcome is dead-lettered instead of repeated. SQLite stores
+digests in place of author prompt and message text. A step that needs that text enters
+`source_refetch_required`. An executor may resume it only
 after a read-only resolver refetches the definition and matches its source revision, editor, version
 hash, approval hash, and policy against the immutable record.
 
@@ -177,6 +194,10 @@ The SQLite database uses WAL mode and contains:
 - `workflow_deliveries`, `workflow_runs`, `workflow_steps`, and `workflow_attempts`: durable local
   dispatch, dependency, retry, cancellation, lease, fence, and dead-letter state.
 - `workflow_runner_state`: the normalized-event matcher cursor and fair-claim hint.
+- `workflow_effect_receipts`: immutable effect preparation and terminal evidence used to prevent
+  unsafe replay.
+- `workflow_operator_overrides` and `workflow_operator_audit`: durable enable/disable fences and
+  append-only, redacted local operator actions.
 
 The workflow tables remain inert while automation gates are disabled. Definition observation uses
 them when `automation.observation` is enabled. The runner uses its queue tables only when
@@ -228,6 +249,11 @@ identity create / join
   → service install/status/logs/restart/stop
 ```
 
+`knot workflow` is the separate default-off workflow operator surface. It lists redacted workflow,
+run, event, audit, and dead-letter state. Exact approval, reject, revoke, enable/disable, manual run,
+cancel, and safe retry actions require local state access, an allowlisted actor digest, and explicit
+confirmation.
+
 `init` writes a new mode-`0600` configuration and refuses to overwrite a file. It requires stable participant IDs, creates an explicit safe chat wake block, and defaults comments off and Codex permissions to deny.
 
 `service install` creates either a Linux user systemd unit or a macOS launchd agent using the exact Node executable, compiled CLI location, and absolute config path of the invoking installation. The macOS agent uses private log files and orders itself after the existing Anytype headless launch agent when the local API is configured. SIGINT/SIGTERM trigger the graceful cancellation path. The runtime's project/tool access remains a separate security concern.
@@ -239,7 +265,9 @@ For a local headless API at `127.0.0.1:31012`, the installer creates `anytype.se
 - Knot is not an agent runtime. OpenClaw or Codex handles reasoning, tools, memory, compaction, and approvals.
 - It is not an AnySync replacement and does not implement Anytype synchronization.
 - It does not manage SSH tunnels, OpenClaw services, Anytype Desktop, or remote Anytype endpoints; its only Anytype lifecycle integration is the optional local headless systemd unit described above.
-- It does not guarantee exactly-once or durable retry semantics.
+- Chat ingestion is at-least-once and deduplicated in the local database. The workflow runner and
+  outbound outbox have durable retry state, but Knot does not provide cross-machine exactly-once
+  delivery.
 - It does not attach files or emit rich Anytype blocks; progress and final projections are bounded plain text with optional mention marks.
 - It has no Windows service installer yet.
 - The Heart adapter is deliberately version-pinned and private-API dependent.
