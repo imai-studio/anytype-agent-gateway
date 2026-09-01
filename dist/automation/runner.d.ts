@@ -42,6 +42,8 @@ export declare class WorkflowRunner {
     matchEventsOnce(now?: number): number;
     dispatchOnce(now?: number): number;
     private executeClaim;
+    private startLeaseHeartbeat;
+    private handleRejectedSettlement;
     private reauthorizeActiveRuns;
     private authorize;
     private ensureAutomaticApproval;

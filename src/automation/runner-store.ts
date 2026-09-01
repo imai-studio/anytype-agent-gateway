@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Store } from "../store.js";
 import { normalizedEventSchema, type NormalizedEventRecord } from "./event.js";
 import type {
@@ -10,6 +10,11 @@ import type {
   WorkflowVersionRecord,
 } from "./store-types.js";
 import { canonicalJson, type JsonValue, type WorkflowDefinition } from "./workflow.js";
+
+const MAX_STORED_STEP_RESULT_BYTES = 64 * 1024;
+const MAX_STORED_STEP_ERROR_CHARACTERS = 4_000;
+
+type WorkflowDeliveryInput = Omit<WorkflowDeliveryRecord, "state" | "createdAt" | "dispatchedAt">;
 
 export interface WorkflowRetryPolicy {
   attempts: number;
@@ -91,15 +96,6 @@ export class WorkflowQueue {
     return rows.map(mapEvent);
   }
 
-  advanceCursor(event: NormalizedEventRecord, now = Date.now()): void {
-    this.store.db
-      .prepare(
-        `UPDATE workflow_runner_state
-         SET matcher_recorded_at=?,matcher_event_id=?,updated_at=? WHERE singleton=1`,
-      )
-      .run(event.recordedAt, event.eventId, now);
-  }
-
   activeWorkflowVersions(): WorkflowVersionRecord[] {
     const rows = this.store.db
       .prepare(
@@ -115,10 +111,33 @@ export class WorkflowQueue {
     });
   }
 
-  createDelivery(
-    input: Omit<WorkflowDeliveryRecord, "state" | "createdAt" | "dispatchedAt">,
+  createDelivery(input: WorkflowDeliveryInput, now = Date.now()): WorkflowDeliveryRecord {
+    return this.insertDelivery(input, now);
+  }
+
+  createDeliveriesAndAdvanceCursor(
+    event: NormalizedEventRecord,
+    inputs: readonly WorkflowDeliveryInput[],
     now = Date.now(),
-  ): WorkflowDeliveryRecord {
+  ): WorkflowDeliveryRecord[] {
+    this.store.db.exec("BEGIN IMMEDIATE");
+    try {
+      const deliveries = inputs.map((input) => this.insertDelivery(input, now));
+      this.store.db
+        .prepare(
+          `UPDATE workflow_runner_state
+           SET matcher_recorded_at=?,matcher_event_id=?,updated_at=? WHERE singleton=1`,
+        )
+        .run(event.recordedAt, event.eventId, now);
+      this.store.db.exec("COMMIT");
+      return deliveries;
+    } catch (error) {
+      this.store.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private insertDelivery(input: WorkflowDeliveryInput, now: number): WorkflowDeliveryRecord {
     this.store.db
       .prepare(
         `INSERT OR IGNORE INTO workflow_deliveries(
@@ -147,7 +166,6 @@ export class WorkflowQueue {
     if (
       delivery.eventId !== input.eventId ||
       delivery.approvalHash !== input.approvalHash ||
-      delivery.authorityHash !== input.authorityHash ||
       delivery.actorPrincipalDigest !== input.actorPrincipalDigest ||
       delivery.actorProvenance !== input.actorProvenance
     )
@@ -206,7 +224,11 @@ export class WorkflowQueue {
   dispatchDelivery(
     deliveryId: string,
     definition: WorkflowDefinition,
-    limits: { maximumConcurrentRuns: number; maximumRunsPerHour: number },
+    limits: {
+      maximumConcurrentRuns: number;
+      maximumRunsPerHour: number;
+      maximumStepsPerRun?: number;
+    },
     authorityHash: string,
     now = Date.now(),
   ): WorkflowRunRecord | undefined {
@@ -226,10 +248,31 @@ export class WorkflowQueue {
         this.store.db.exec("COMMIT");
         return undefined;
       }
+      if (
+        limits.maximumStepsPerRun !== undefined &&
+        definition.spec.steps.length > limits.maximumStepsPerRun
+      ) {
+        this.store.db
+          .prepare("UPDATE workflow_deliveries SET state='dead_letter' WHERE delivery_id=?")
+          .run(deliveryId);
+        this.store.db.exec("COMMIT");
+        return undefined;
+      }
       const active = this.store.db
         .prepare(
           `SELECT COUNT(*) AS count FROM workflow_runs
-           WHERE workflow_id=? AND state IN ('pending','running','waiting')`,
+           WHERE workflow_id=? AND state IN ('pending','running','waiting')
+             AND NOT (
+               state='waiting'
+               AND EXISTS(
+                 SELECT 1 FROM workflow_steps s
+                 WHERE s.run_id=workflow_runs.run_id AND s.state='source_refetch_required'
+               )
+               AND NOT EXISTS(
+                 SELECT 1 FROM workflow_steps s
+                 WHERE s.run_id=workflow_runs.run_id AND s.state IN ('ready','leased','running')
+               )
+             )`,
         )
         .get(delivery.workflowId) as { count: number };
       const recent = this.store.db
@@ -442,6 +485,7 @@ export class WorkflowQueue {
     result: JsonValue,
     now = Date.now(),
   ): boolean {
+    const storedResult = boundedStepResult(result);
     this.store.db.exec("BEGIN IMMEDIATE");
     try {
       const step = this.store.db
@@ -468,7 +512,7 @@ export class WorkflowQueue {
            fencing_token=NULL,lease_started_at=NULL,lease_expires_at=NULL,lease_hard_expires_at=NULL,updated_at=?
            WHERE run_id=? AND step_id=?`,
         )
-        .run(canonicalJson(result), now, runId, stepId);
+        .run(canonicalJson(storedResult), now, runId, stepId);
       const run = this.store.db
         .prepare("SELECT cancel_requested_at FROM workflow_runs WHERE run_id=?")
         .get(runId) as { cancel_requested_at: number | null };
@@ -494,6 +538,7 @@ export class WorkflowQueue {
     retryable: boolean,
     now = Date.now(),
   ): boolean {
+    error = boundedStepError(error);
     this.store.db.exec("BEGIN IMMEDIATE");
     try {
       const step = this.store.db
@@ -1349,6 +1394,48 @@ function mapAttempt(row: AttemptRow): WorkflowAttemptRecord {
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
     ...(row.error ? { error: row.error } : {}),
   };
+}
+
+function boundedStepResult(result: JsonValue): JsonValue {
+  const redacted = redactStepResult(result);
+  const serialized = canonicalJson(redacted);
+  const bytes = Buffer.byteLength(serialized, "utf8");
+  if (bytes <= MAX_STORED_STEP_RESULT_BYTES) return redacted;
+  return {
+    redacted: true,
+    truncated: true,
+    originalBytes: bytes,
+    digest: `sha256:${createHash("sha256").update(serialized).digest("hex")}`,
+  };
+}
+
+function redactStepResult(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return value.map(redactStepResult);
+  if (!value || typeof value !== "object") return value;
+  const redacted: Record<string, JsonValue> = {};
+  for (const [key, nested] of Object.entries(value))
+    redacted[key] = isSensitiveResultKey(key)
+      ? {
+          redacted: true,
+          digest: `sha256:${createHash("sha256").update(canonicalJson(nested)).digest("hex")}`,
+        }
+      : redactStepResult(nested);
+  return redacted;
+}
+
+function isSensitiveResultKey(key: string): boolean {
+  return /^(?:api[-_]?key|authorization|cookie|message|password|prompt|secret|token)$/i.test(key);
+}
+
+function boundedStepError(error: string): string {
+  const redacted = error
+    .replace(/\b(Bearer|Basic)\s+[\w.~+/-]+=*/gi, "$1 [redacted]")
+    .replace(
+      /\b(api[-_]?key|authorization|cookie|password|secret|token)\s*[:=]\s*([^\s,;]+)/gi,
+      "$1=[redacted]",
+    );
+  if (redacted.length <= MAX_STORED_STEP_ERROR_CHARACTERS) return redacted;
+  return `${redacted.slice(0, MAX_STORED_STEP_ERROR_CHARACTERS - 15)}...[truncated]`;
 }
 
 function parseJson<T>(value: string): T {

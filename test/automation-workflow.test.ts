@@ -86,6 +86,15 @@ describe("workflow foundation", () => {
         ],
       }),
     ).toThrow("acyclic");
+    expect(() =>
+      workflow({
+        steps: [
+          { id: "one", kind: "transform" },
+          { id: "two", kind: "transform" },
+        ],
+        budget: { maximumStepsPerRun: 1 },
+      }),
+    ).toThrow("maximumStepsPerRun is 1");
   });
 
   it("fails closed on unknown workflow-owned fields", () => {

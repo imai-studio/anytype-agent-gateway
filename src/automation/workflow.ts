@@ -268,6 +268,12 @@ const workflowDefinitionObjectSchema = z
   })
   .strict()
   .superRefine((workflow, context) => {
+    if (workflow.spec.steps.length > workflow.spec.budget.maximumStepsPerRun)
+      context.addIssue({
+        code: "custom",
+        path: ["spec", "steps"],
+        message: `Workflow has ${workflow.spec.steps.length} steps but maximumStepsPerRun is ${workflow.spec.budget.maximumStepsPerRun}`,
+      });
     const stepIds = new Set<string>();
     for (const [index, step] of workflow.spec.steps.entries()) {
       if (stepIds.has(step.id))
@@ -423,7 +429,11 @@ function redactSensitiveWorkflowStrings(value: unknown, path: string[] = []): un
   const result: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
     const nestedPath = [...path, key];
-    if ((key === "prompt" || key === "message") && typeof nested === "string") {
+    if (
+      path[0] !== "metadata" &&
+      (key === "prompt" || key === "message") &&
+      typeof nested === "string"
+    ) {
       result[key] = {
         redacted: true,
         digest: sensitiveWorkflowFieldDigest(nestedPath, nested),

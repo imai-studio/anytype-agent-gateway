@@ -134,9 +134,12 @@ export class WorkflowRunner {
 
   matchEventsOnce(now = this.now()): number {
     let matched = 0;
-    let cursor = this.queue.cursor();
+    const cursor = this.queue.cursor();
     const events = this.queue.eventsAfter(cursor, this.config.runner.batchSize);
     for (const event of events) {
+      const deliveries: Array<
+        Parameters<WorkflowQueue["createDeliveriesAndAdvanceCursor"]>[1][number]
+      > = [];
       if (!isControlPlaneEvent(event)) {
         for (const version of this.queue.activeWorkflowVersions()) {
           let definition: WorkflowDefinition;
@@ -156,30 +159,26 @@ export class WorkflowRunner {
             continue;
           if (!definition.spec.behavior.includeSelfWrites && event.source === "self") continue;
           this.ensureAutomaticApproval(version, authorization.evaluation, now);
-          this.queue.createDelivery(
-            {
-              deliveryId: stableId(
-                "delivery",
-                version.workflowId,
-                version.versionHash,
-                event.dedupeKey,
-              ),
-              workflowId: version.workflowId,
-              versionHash: version.versionHash,
-              eventId: event.eventId,
-              eventDedupeKey: event.dedupeKey,
-              approvalHash: version.approvalHash,
-              authorityHash: authorization.evaluation.authorityHash,
-              actorPrincipalDigest: event.editor?.principalDigest ?? version.editorPrincipalDigest!,
-              actorProvenance: event.editor?.provenance ?? version.editorProvenance!,
-            },
-            now,
-          );
+          deliveries.push({
+            deliveryId: stableId(
+              "delivery",
+              version.workflowId,
+              version.versionHash,
+              event.dedupeKey,
+            ),
+            workflowId: version.workflowId,
+            versionHash: version.versionHash,
+            eventId: event.eventId,
+            eventDedupeKey: event.dedupeKey,
+            approvalHash: version.approvalHash,
+            authorityHash: authorization.evaluation.authorityHash,
+            actorPrincipalDigest: event.editor?.principalDigest ?? version.editorPrincipalDigest!,
+            actorProvenance: event.editor?.provenance ?? version.editorProvenance!,
+          });
           matched += 1;
         }
       }
-      this.queue.advanceCursor(event, now);
-      cursor = { ...cursor, recordedAt: event.recordedAt, eventId: event.eventId };
+      this.queue.createDeliveriesAndAdvanceCursor(event, deliveries, now);
     }
     return matched;
   }
@@ -232,49 +231,16 @@ export class WorkflowRunner {
     const now = this.now();
     if (!this.queue.startStep(claim.run.runId, claim.step.stepId, claim.attempt.fencingToken, now))
       return;
-    const version = this.store.workflowVersion(claim.run.workflowId, claim.run.versionHash);
-    if (!version) {
-      this.queue.deadLetterRun(claim.run.runId, "Workflow version is unavailable", now);
-      return;
-    }
-    let stored: StoredWorkflowDefinition;
+    const heartbeat = this.startLeaseHeartbeat(claim);
     try {
-      stored = parseStoredVersion(version);
-    } catch {
-      this.queue.deadLetterRun(
-        claim.run.runId,
-        "workflow_version_integrity_failed: stored definition, approval, or policy did not match its immutable hashes",
-        this.now(),
-      );
-      return;
-    }
-    const resolution = await this.definitionForExecution(version, stored);
-    if (!resolution.ok) {
-      this.queue.requireSourceRefetch(
-        claim.run.runId,
-        claim.step.stepId,
-        claim.attempt.fencingToken,
-        resolution.reason,
-        this.now(),
-      );
-      return;
-    }
-    const definition = resolution.definition;
-    const authorization = this.authorize(version, definition);
-    const approval = authorization?.evaluation.allowed
-      ? this.store.currentWorkflowApproval(
-          version.workflowId,
-          version.approvalHash,
-          authorization.evaluation.authorityHash,
-          this.now(),
-        )
-      : undefined;
-    if (
-      !authorization?.evaluation.allowed ||
-      authorization.evaluation.authorityHash !== claim.run.authorityHash ||
-      !approval
-    ) {
+      const version = this.store.workflowVersion(claim.run.workflowId, claim.run.versionHash);
+      if (!version) {
+        this.queue.deadLetterRun(claim.run.runId, "Workflow version is unavailable", now);
+        return;
+      }
+      let stored: StoredWorkflowDefinition;
       if (
+        heartbeat.leaseLost() ||
         !this.queue.claimIsCurrent(
           claim.run.runId,
           claim.step.stepId,
@@ -283,42 +249,143 @@ export class WorkflowRunner {
         )
       )
         return;
-      this.queue.pauseRunForApproval(
-        claim.run.runId,
-        "Source revalidation changed the workflow authority or exact approval",
-        this.now(),
-      );
-      return;
-    }
-    if (
-      !this.queue.claimIsCurrent(
-        claim.run.runId,
-        claim.step.stepId,
-        claim.attempt.fencingToken,
-        this.now(),
+      try {
+        stored = parseStoredVersion(version);
+      } catch {
+        this.queue.deadLetterRun(
+          claim.run.runId,
+          "workflow_version_integrity_failed: stored definition, approval, or policy did not match its immutable hashes",
+          this.now(),
+        );
+        return;
+      }
+      const resolution = await this.definitionForExecution(version, stored);
+      if (!resolution.ok) {
+        this.queue.requireSourceRefetch(
+          claim.run.runId,
+          claim.step.stepId,
+          claim.attempt.fencingToken,
+          resolution.reason,
+          this.now(),
+        );
+        return;
+      }
+      const definition = resolution.definition;
+      const authorization = this.authorize(version, definition);
+      const approval = authorization?.evaluation.allowed
+        ? this.store.currentWorkflowApproval(
+            version.workflowId,
+            version.approvalHash,
+            authorization.evaluation.authorityHash,
+            this.now(),
+          )
+        : undefined;
+      if (
+        !authorization?.evaluation.allowed ||
+        authorization.evaluation.authorityHash !== claim.run.authorityHash ||
+        !approval
+      ) {
+        if (
+          !this.queue.claimIsCurrent(
+            claim.run.runId,
+            claim.step.stepId,
+            claim.attempt.fencingToken,
+            this.now(),
+          )
+        )
+          return;
+        this.queue.pauseRunForApproval(
+          claim.run.runId,
+          "Source revalidation changed the workflow authority or exact approval",
+          this.now(),
+        );
+        return;
+      }
+      if (
+        heartbeat.leaseLost() ||
+        !this.queue.claimIsCurrent(
+          claim.run.runId,
+          claim.step.stepId,
+          claim.attempt.fencingToken,
+          this.now(),
+        )
       )
-    )
-      return;
-    const execution = await this.executor.execute(claim, definition);
-    const finishedAt = this.now();
-    if (execution.ok)
-      this.queue.completeStep(
-        claim.run.runId,
-        claim.step.stepId,
-        claim.attempt.fencingToken,
-        execution.result,
-        finishedAt,
-      );
-    else
-      this.queue.failStep(
-        claim.run.runId,
-        claim.step.stepId,
-        claim.attempt.fencingToken,
-        execution.error,
-        retryForDefinition(definition, claim.step.stepId),
-        execution.retryable,
-        finishedAt,
-      );
+        return;
+      let execution: WorkflowStepExecution;
+      try {
+        execution = await this.executor.execute(claim, definition);
+      } catch (error) {
+        execution = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          retryable: true,
+        };
+      }
+      const finishedAt = this.now();
+      const settled = execution.ok
+        ? this.queue.completeStep(
+            claim.run.runId,
+            claim.step.stepId,
+            claim.attempt.fencingToken,
+            execution.result,
+            finishedAt,
+          )
+        : this.queue.failStep(
+            claim.run.runId,
+            claim.step.stepId,
+            claim.attempt.fencingToken,
+            execution.error,
+            retryForDefinition(definition, claim.step.stepId),
+            execution.retryable,
+            finishedAt,
+          );
+      if (!settled) this.handleRejectedSettlement(claim, finishedAt);
+    } finally {
+      heartbeat.stop();
+    }
+  }
+
+  private startLeaseHeartbeat(claim: WorkflowClaim): {
+    leaseLost: () => boolean;
+    stop: () => void;
+  } {
+    const leaseMilliseconds = this.config.runner.leaseSeconds * 1_000;
+    const intervalMilliseconds = Math.max(50, Math.floor(leaseMilliseconds / 3));
+    let lost = false;
+    const timer = setInterval(() => {
+      try {
+        if (
+          !this.queue.heartbeat(
+            claim.run.runId,
+            claim.step.stepId,
+            claim.attempt.fencingToken,
+            leaseMilliseconds,
+            this.now(),
+          )
+        )
+          lost = true;
+      } catch (error) {
+        lost = true;
+        this.log("workflow_step_heartbeat_failed", {
+          workflowIdDigest: stableId("workflow-log", claim.run.workflowId),
+          stepId: claim.step.stepId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }, intervalMilliseconds);
+    timer.unref();
+    return { leaseLost: () => lost, stop: () => clearInterval(timer) };
+  }
+
+  private handleRejectedSettlement(claim: WorkflowClaim, now: number): void {
+    const reason =
+      "Workflow executor returned after its lease was lost; the outcome requires operator reconciliation";
+    const deadLettered = this.queue.deadLetterRun(claim.run.runId, reason, now);
+    this.log("workflow_step_settlement_rejected", {
+      workflowIdDigest: stableId("workflow-log", claim.run.workflowId),
+      stepId: claim.step.stepId,
+      deadLettered,
+    });
   }
 
   private reauthorizeActiveRuns(now: number): number {
@@ -571,11 +638,11 @@ function materializeStoredDefinition(
   for (const [key, nested] of Object.entries(value)) {
     const nestedPath = [...path, key];
     if (key === "prompt" || key === "message") {
-      if (!isRedactedText(nested))
-        throw new Error("Stored workflow contains plaintext sensitive text");
-      const pointer = nestedPath.join("/");
-      sensitiveText.set(pointer, nested.digest);
-      result[key] = `[${key} unavailable until source refetch]`;
+      if (isRedactedText(nested)) {
+        const pointer = nestedPath.join("/");
+        sensitiveText.set(pointer, nested.digest);
+        result[key] = `[${key} unavailable until source refetch]`;
+      } else result[key] = materializeStoredDefinition(nested, nestedPath, sensitiveText);
     } else result[key] = materializeStoredDefinition(nested, nestedPath, sensitiveText);
   }
   return result;

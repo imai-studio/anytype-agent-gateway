@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { evaluateWorkflowPolicy, workflowAuthorityHash } from "../src/automation/policy.js";
 import {
   WorkflowRunner,
@@ -27,6 +27,7 @@ import { Store } from "../src/store.js";
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const directory of temporaryDirectories.splice(0))
     rmSync(directory, { recursive: true, force: true });
 });
@@ -273,6 +274,82 @@ describe("durable workflow runner", () => {
     store.close();
   });
 
+  it("atomically persists event deliveries with the matcher cursor", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const definition = workflow();
+    const version = saveVersion(store, definition);
+    const queue = new WorkflowQueue(store);
+    const authorityHash = approve(store, config, version);
+    queue.initializeMatcher(250);
+    const event = recordEvent(store, version.workflowId);
+    const input = {
+      deliveryId: "delivery-atomic-good",
+      workflowId: version.workflowId,
+      versionHash: version.versionHash,
+      eventId: event.eventId,
+      eventDedupeKey: event.dedupeKey,
+      approvalHash: version.approvalHash,
+      authorityHash,
+      actorPrincipalDigest: version.editorPrincipalDigest!,
+      actorProvenance: version.editorProvenance!,
+    };
+
+    expect(() =>
+      queue.createDeliveriesAndAdvanceCursor(
+        event,
+        [
+          input,
+          {
+            ...input,
+            deliveryId: "delivery-atomic-bad",
+            eventId: "missing-event",
+            eventDedupeKey: "missing-event",
+          },
+        ],
+        500,
+      ),
+    ).toThrow();
+    expect(queue.counts().deliveries).toBe(0);
+    expect(queue.cursor()).toMatchObject({ recordedAt: 0, eventId: "" });
+    store.close();
+  });
+
+  it("replays a pre-cursor delivery across an authority change without wedging", () => {
+    const store = new Store(":memory:");
+    const definition = workflow();
+    const version = saveVersion(store, definition);
+    const queue = new WorkflowQueue(store);
+    queue.initializeMatcher(250);
+    const event = recordEvent(store, version.workflowId);
+    queue.createDelivery(
+      {
+        deliveryId: `delivery-${version.workflowId}-${version.versionHash}-${event.dedupeKey}`,
+        workflowId: version.workflowId,
+        versionHash: version.versionHash,
+        eventId: event.eventId,
+        eventDedupeKey: event.dedupeKey,
+        approvalHash: version.approvalHash,
+        authorityHash: "sha256:" + "a".repeat(64),
+        actorPrincipalDigest: event.editor!.principalDigest,
+        actorProvenance: event.editor!.provenance,
+      },
+      400,
+    );
+    const runner = new WorkflowRunner(
+      store,
+      runnerConfig(),
+      () => {},
+      undefined,
+      () => 500,
+    );
+
+    expect(runner.matchEventsOnce(500)).toBe(1);
+    expect(queue.cursor()).toMatchObject({ recordedAt: event.recordedAt, eventId: event.eventId });
+    expect(queue.counts().deliveries).toBe(1);
+    store.close();
+  });
+
   it("holds T1 deliveries until an exact authority-bound approval exists", () => {
     const config = runnerConfig({
       allowedCapabilities: ["anytype.write"],
@@ -387,6 +464,65 @@ describe("durable workflow runner", () => {
     expect(queue.heartbeat(run.runId, "noop", claim.attempt.fencingToken, 5_000, 1_000)).toBe(true);
     expect(queue.steps(run.runId)[0]?.leaseExpiresAt).toBe(2_500);
     expect(queue.recoverExpiredLeases(() => definition.spec.retry, 2_500)).toBe(1);
+    store.close();
+  });
+
+  it("heartbeats a lease while an executor is still running", async () => {
+    vi.useFakeTimers({ now: 500 });
+    const store = new Store(":memory:");
+    const definition = workflow();
+    const version = saveVersion(store, definition);
+    let finish: ((execution: { ok: true; result: null }) => void) | undefined;
+    const executor: WorkflowStepExecutor = {
+      execute: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    };
+    const runner = new WorkflowRunner(store, runnerConfig(), () => {}, executor);
+    await runner.tickOnce();
+    recordEvent(store, version.workflowId);
+
+    const pending = runner.tickOnce();
+    await vi.advanceTimersByTimeAsync(1_700);
+    const run = runner.queue.activeRuns()[0]!;
+    expect(runner.queue.steps(run.runId)[0]?.leaseExpiresAt).toBeGreaterThan(5_500);
+    finish!({ ok: true, result: null });
+    await pending;
+    expect(runner.queue.run(run.runId)?.state).toBe("succeeded");
+    store.close();
+  });
+
+  it("dead-letters a rejected executor settlement instead of re-executing it", async () => {
+    const store = new Store(":memory:");
+    const definition = workflow();
+    const version = saveVersion(store, definition);
+    const events: string[] = [];
+    const queue = new WorkflowQueue(store);
+    const executor: WorkflowStepExecutor = {
+      async execute(claim) {
+        queue.pauseRunForApproval(claim.run.runId, "authority changed", 550);
+        return { ok: true, result: { effectCommitted: true } };
+      },
+    };
+    const runner = new WorkflowRunner(
+      store,
+      runnerConfig(),
+      (event) => events.push(event),
+      executor,
+      () => 600,
+    );
+    await runner.tickOnce();
+    recordEvent(store, version.workflowId);
+    await runner.tickOnce();
+
+    const run = store.db.prepare("SELECT run_id FROM workflow_runs").get() as { run_id: string };
+    expect(queue.run(run.run_id)).toMatchObject({
+      state: "dead_letter",
+      error:
+        "Workflow executor returned after its lease was lost; the outcome requires operator reconciliation",
+    });
+    expect(events).toContain("workflow_step_settlement_rejected");
     store.close();
   });
 
@@ -519,6 +655,56 @@ describe("durable workflow runner", () => {
     store.close();
   });
 
+  it("bounds and redacts persisted executor results and errors", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const queue = new WorkflowQueue(store);
+    const success = delivery(queue, store, config, workflow(), "workflow-result");
+    const successClaim = queue.claimStep(
+      "worker-success",
+      new Set([success.authorityHash]),
+      5_000,
+      500,
+    )!;
+    queue.startStep(success.runId, "noop", successClaim.attempt.fencingToken, 501);
+    queue.completeStep(
+      success.runId,
+      "noop",
+      successClaim.attempt.fencingToken,
+      { nested: { token: "secret-token", accepted: true } },
+      600,
+    );
+    expect(queue.steps(success.runId)[0]?.result).toEqual({
+      nested: {
+        token: { redacted: true, digest: expect.stringMatching(/^sha256:/) },
+        accepted: true,
+      },
+    });
+
+    const failure = delivery(queue, store, config, workflow(), "workflow-error");
+    const failureClaim = queue.claimStep(
+      "worker-failure",
+      new Set([failure.authorityHash]),
+      5_000,
+      700,
+    )!;
+    queue.startStep(failure.runId, "noop", failureClaim.attempt.fencingToken, 701);
+    queue.failStep(
+      failure.runId,
+      "noop",
+      failureClaim.attempt.fencingToken,
+      `authorization=top-secret ${"x".repeat(10_000)}`,
+      workflow().spec.retry,
+      false,
+      800,
+    );
+    const error = queue.steps(failure.runId)[0]?.error ?? "";
+    expect(error).not.toContain("top-secret");
+    expect(error).toContain("authorization=[redacted]");
+    expect(error.length).toBeLessThanOrEqual(4_000);
+    store.close();
+  });
+
   it("parks a run when redacted workflow text requires a verified source refetch", async () => {
     const config = runnerConfig({
       allowedCapabilities: ["agent.invoke"],
@@ -566,6 +752,86 @@ describe("durable workflow runner", () => {
     });
     expect(queue.attempts(run.runId, "agent")[0]).toMatchObject({
       state: "source_refetch_required",
+    });
+    store.close();
+  });
+
+  it("does not let source-refetch parked runs consume workflow concurrency", async () => {
+    const config = runnerConfig({
+      allowedCapabilities: ["agent.invoke"],
+      maximumRiskTier: "T1",
+    });
+    const store = new Store(":memory:");
+    const definition = workflow("Agent", {
+      steps: [{ id: "agent", kind: "agent", dependsOn: [], config: { prompt: "private" } }],
+      capabilities: ["agent.invoke"],
+      concurrency: 1,
+    });
+    const version = saveVersion(store, definition);
+    approve(store, config, version);
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      undefined,
+      () => 500,
+    );
+    await runner.tickOnce();
+    recordEvent(store, version.workflowId);
+    await runner.tickOnce();
+    recordEvent(store, version.workflowId, { eventSuffix: "2", recordedAt: 301 });
+    await runner.tickOnce();
+
+    expect(runner.queue.counts().runs).toBe(2);
+    expect(runner.queue.activeRuns().every((run) => run.state === "waiting")).toBe(true);
+    store.close();
+  });
+
+  it("accepts non-string prompt keys and prompt-named metadata labels without false tamper", async () => {
+    const config = runnerConfig({
+      allowedCapabilities: ["anytype.write"],
+      maximumRiskTier: "T1",
+    });
+    const store = new Store(":memory:");
+    const definition = workflowDefinitionSchema.parse({
+      apiVersion: "knot.imai.studio/v1alpha1",
+      kind: "KnotWorkflow",
+      metadata: { name: "Structured", labels: { prompt: "classification", message: "safe" } },
+      spec: {
+        enabled: true,
+        triggers: [{ kind: "manual" }],
+        steps: [
+          {
+            id: "write",
+            kind: "anytype.write",
+            config: { values: { prompt: false, message: { nested: 1 } } },
+          },
+        ],
+        capabilities: ["anytype.write"],
+      },
+    });
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, definition, "workflow-structured");
+    const executor: WorkflowStepExecutor = {
+      async execute() {
+        return { ok: true, result: null };
+      },
+    };
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      executor,
+      () => 500,
+    );
+
+    await runner.tickOnce();
+
+    expect(queue.run(run.runId)?.state).toBe("succeeded");
+    const stored = store.workflowVersion(run.workflowId, run.versionHash)!;
+    expect(JSON.parse(stored.canonicalDefinitionJson).metadata.labels).toEqual({
+      message: "safe",
+      prompt: "classification",
     });
     store.close();
   });
