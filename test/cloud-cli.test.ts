@@ -80,6 +80,49 @@ describe("cloud CLI actions", () => {
     ).rejects.toThrow("different Knot Cloud server");
   });
 
+  it("refuses a grant broader than the machine requested", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "knot-cloud-grant-"));
+    const paths = resolveCloudPaths({ configFile: join(directory, "cloud.json") });
+    await initializeCloudConfig({
+      paths,
+      baseUrl: "https://knot.example",
+      connectorName: "Test Mac",
+      requestedScopes: ["anytype.objects.read"],
+    });
+    const credentialsFile = join(directory, "credentials.json");
+    await writeFile(
+      credentialsFile,
+      JSON.stringify({
+        protocolVersion: "1.0",
+        pairingId: "pairing-id",
+        pollToken: "p".repeat(43),
+        authorizationUrl: "https://knot.example/dashboard",
+      }),
+    );
+    const client = {
+      pollPairing: vi.fn(async () => ({
+        protocolVersion: "1.0",
+        pairingId: "pairing-id",
+        status: "approved",
+        connectorId: "connector-id",
+        tenantId: "tenant-id",
+        grant: {
+          scopes: ["anytype.objects.write"],
+          siteIds: [],
+          slugGrants: [],
+        },
+        approvedAt: 1,
+      })),
+    } as unknown as CloudClient;
+    await expect(
+      cloudPair(
+        { configFile: paths.configFile, credentialsFile, once: true },
+        { client: () => client },
+      ),
+    ).rejects.toThrow("did not request");
+    expect((await loadCloudConfig(paths))?.paired).toBeUndefined();
+  });
+
   it("reports status without exposing private-key material", async () => {
     const directory = await mkdtemp(join(tmpdir(), "knot-cloud-status-"));
     const paths = resolveCloudPaths({ configFile: join(directory, "cloud.json") });

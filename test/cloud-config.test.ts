@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rename, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -49,5 +49,26 @@ describe("cloud configuration", () => {
     });
     await forgetCloudIdentity(paths);
     await expect(loadCloudConfig(paths)).rejects.toThrow("cloud login");
+  });
+
+  it("rejects broad config permissions and symbolic-link private keys", async () => {
+    if (process.platform === "win32") return;
+    const home = await mkdtemp(join(tmpdir(), "knot-cloud-security-"));
+    const paths = resolveCloudPaths({ home });
+    await initializeCloudConfig({
+      paths,
+      baseUrl: "https://knot.example",
+      connectorName: "Test Mac",
+      requestedScopes: ["anytype.objects.read"],
+    });
+    await chmod(paths.configFile, 0o644);
+    await expect(loadCloudConfig(paths)).rejects.toThrow("group or other users");
+    await chmod(paths.configFile, 0o600);
+    const originalKey = `${paths.privateKeyFile}.original`;
+    await rename(paths.privateKeyFile, originalKey);
+    await symlink(originalKey, paths.privateKeyFile);
+    await expect(validateCloudKey((await loadCloudConfig(paths))!)).rejects.toThrow(
+      "symbolic link",
+    );
   });
 });

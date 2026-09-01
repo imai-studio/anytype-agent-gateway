@@ -121,6 +121,16 @@ export async function cloudPair(
   while (true) {
     const status = await client.pollPairing(credentials);
     if (status.status === "approved") {
+      const unexpectedScopes = status.grant.scopes.filter(
+        (scope) => !config.requestedScopes.includes(scope),
+      );
+      const unexpectedSlugs = status.grant.slugGrants.filter(
+        (slug) => !config.requestedSlugGrants.includes(slug),
+      );
+      if (unexpectedScopes.length || unexpectedSlugs.length)
+        throw new Error(
+          "Knot Cloud approved access that this machine did not request. Revoke the connector in the dashboard and start a new pairing",
+        );
       await saveCloudConfig(paths, {
         ...config,
         paired: {
@@ -290,10 +300,25 @@ function assertPairingOrigin(baseUrl: string, credentials: PairingCredentials): 
 }
 
 function assertProtocolCompatible(minimum: string, maximum: string): void {
-  if (minimum !== CLOUD_PROTOCOL_VERSION || maximum !== CLOUD_PROTOCOL_VERSION)
+  if (
+    compareProtocolVersions(CLOUD_PROTOCOL_VERSION, minimum) < 0 ||
+    compareProtocolVersions(CLOUD_PROTOCOL_VERSION, maximum) > 0
+  )
     throw new Error(
       `Knot Cloud supports protocol ${minimum} through ${maximum}; this CLI supports ${CLOUD_PROTOCOL_VERSION}`,
     );
+}
+
+function compareProtocolVersions(left: string, right: string): number {
+  const pattern = /^(0|[1-9][0-9]*)\.([0-9]+)$/u;
+  const leftMatch = pattern.exec(left);
+  const rightMatch = pattern.exec(right);
+  if (!leftMatch || !rightMatch) throw new Error("Knot Cloud returned an invalid protocol range");
+  const leftParts = [Number(leftMatch[1]), Number(leftMatch[2])];
+  const rightParts = [Number(rightMatch[1]), Number(rightMatch[2])];
+  return leftParts[0] === rightParts[0]
+    ? leftParts[1]! - rightParts[1]!
+    : leftParts[0]! - rightParts[0]!;
 }
 
 async function requiredCloudConfig(paths: CloudPaths): Promise<CloudConfig> {

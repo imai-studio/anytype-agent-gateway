@@ -1,6 +1,16 @@
 import { createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { constants } from "node:fs";
-import { access, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
@@ -130,11 +140,17 @@ export async function loadCloudConfig(
   required = true,
 ): Promise<CloudConfig | undefined> {
   try {
+    const configStatus = await lstat(paths.configFile);
+    if (!configStatus.isFile() || configStatus.isSymbolicLink())
+      throw new Error("Cloud config must be a regular file, not a symbolic link");
+    assertPrivateMode(paths.configFile, configStatus.mode & 0o777);
     const raw = await readFile(paths.configFile, "utf8");
     const parsed = cloudConfigSchema.parse(JSON.parse(raw));
     const keyFile = isAbsolute(parsed.privateKeyFile)
       ? parsed.privateKeyFile
       : resolve(dirname(paths.configFile), parsed.privateKeyFile);
+    if (resolve(keyFile) !== resolve(paths.privateKeyFile))
+      throw new Error("Cloud private key must stay beside the selected cloud config");
     return { ...parsed, privateKeyFile: keyFile };
   } catch (error) {
     if (!required && isMissingFile(error)) return undefined;
@@ -177,17 +193,21 @@ export async function removePairingCredentials(paths: CloudPaths): Promise<void>
 
 export async function forgetCloudIdentity(paths: CloudPaths): Promise<void> {
   const config = await loadCloudConfig(paths, false);
-  await rm(paths.pairingFile, { force: true });
   if (config) {
     if (resolve(config.privateKeyFile) !== resolve(paths.privateKeyFile))
       throw new Error("Refusing to delete a cloud key outside the selected config directory");
-    await rm(config.privateKeyFile, { force: true });
   }
+  await rm(paths.pairingFile, { force: true });
+  if (config) await rm(config.privateKeyFile, { force: true });
   await rm(paths.configFile, { force: true });
 }
 
 export async function validateCloudKey(config: CloudConfig): Promise<void> {
   await access(config.privateKeyFile, constants.R_OK);
+  const keyStatus = await lstat(config.privateKeyFile);
+  if (!keyStatus.isFile() || keyStatus.isSymbolicLink())
+    throw new Error("Cloud private key must be a regular file, not a symbolic link");
+  assertPrivateMode(config.privateKeyFile, keyStatus.mode & 0o777);
   const pem = await readFile(config.privateKeyFile, "utf8");
   const privateKey = createPrivateKey(pem);
   const publicJwk = createPublicKey(privateKey).export({ format: "jwk" });
@@ -223,4 +243,9 @@ function expandHome(path: string, home: string): string {
 
 function isMissingFile(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function assertPrivateMode(path: string, mode: number): void {
+  if (process.platform !== "win32" && (mode & 0o077) !== 0)
+    throw new Error(`${path} must not be readable or writable by group or other users`);
 }

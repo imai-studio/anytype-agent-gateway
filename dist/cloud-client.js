@@ -1,6 +1,7 @@
 import { createHash, createPrivateKey, randomBytes, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import { validateCloudKey } from "./cloud-config.js";
 import { CLOUD_PROTOCOL_VERSION, commandClaimResponseSchema, commandLeaseExtendedSchema, commandResultSchema, commandResultReceiptSchema, pairingStatusSchema, problemDetailsSchema, protocolMetaSchema, } from "./cloud-contract.js";
 const maximumResponseBytes = 1024 * 1024;
 export class CloudRequestError extends Error {
@@ -170,6 +171,7 @@ export class CloudClient {
         throw new CloudRequestError("Knot Cloud is unavailable", { retryable: true });
     }
     async signedHeaders(url, method, body) {
+        await validateCloudKey(this.config);
         const connectorId = this.pairedConnectorId();
         const authority = normalizeAuthority(url.host);
         const timestamp = Math.floor(this.now() / 1_000) + this.clockOffsetSeconds;
