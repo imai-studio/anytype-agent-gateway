@@ -387,12 +387,8 @@ function redactSensitiveWorkflowStrings(value, path = []) {
     return result;
 }
 export function isSensitiveWorkflowTextPath(path) {
-    return (path.length === 5 &&
-        path[0] === "spec" &&
-        path[1] === "steps" &&
-        /^\d+$/.test(path[2]) &&
-        path[3] === "config" &&
-        (path[4] === "prompt" || path[4] === "message"));
+    const key = path.at(-1);
+    return key === "prompt" || key === "message";
 }
 function sensitiveWorkflowFieldDigest(path, value) {
     const digest = createHash("sha256")

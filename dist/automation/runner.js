@@ -4,6 +4,7 @@ import { evaluateWorkflowAuthority, evaluateWorkflowPolicy, } from "./policy.js"
 import { WorkflowQueue } from "./runner-store.js";
 import { canonicalJson, canonicalStoredWorkflowApproval, canonicalStoredWorkflowDefinition, isSensitiveWorkflowTextPath, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowPrincipalDigest, workflowSourceDigest, workflowVersionHash, } from "./workflow.js";
 const SOURCE_REFETCH_REQUIRED = "source_refetch_required: workflow text is not stored; refetch and reverify the source before execution";
+const MAXIMUM_DELIVERY_DISPATCH_ATTEMPTS = 24;
 export class NoEffectWorkflowStepExecutor {
     async execute(claim, definition, _signal) {
         const step = definition.spec.steps.find((candidate) => candidate.id === claim.step.stepId);
@@ -25,64 +26,102 @@ export class WorkflowRunner {
     executor;
     now;
     sourceResolver;
+    extensions;
     queue;
     workerIds;
+    inFlight = new Map();
     lastReauthorizedRunId;
-    constructor(store, config, log, executor = new NoEffectWorkflowStepExecutor(), now = Date.now, sourceResolver) {
+    constructor(store, config, log, executor = new NoEffectWorkflowStepExecutor(), now = Date.now, sourceResolver, extensions = []) {
         this.store = store;
         this.config = config;
         this.log = log;
         this.executor = executor;
         this.now = now;
         this.sourceResolver = sourceResolver;
+        this.extensions = extensions;
         this.queue = new WorkflowQueue(store);
         this.workerIds = Array.from({ length: config.runner.workerCount }, (_, index) => `workflow-worker-${index + 1}-${randomUUID()}`);
     }
     async run(signal) {
-        while (!signal.aborted) {
-            try {
-                await this.tickOnce(signal);
+        try {
+            while (!signal.aborted) {
+                try {
+                    await this.tickOnce(signal);
+                }
+                catch (error) {
+                    this.log("workflow_runner_tick_failed", {
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                }
+                if (signal.aborted)
+                    break;
+                try {
+                    await wait(this.config.runner.pollIntervalMilliseconds, signal);
+                }
+                catch (error) {
+                    if (!signal.aborted)
+                        throw error;
+                }
             }
-            catch (error) {
-                this.log("workflow_runner_tick_failed", {
-                    error: error instanceof Error ? error.message : String(error),
-                });
-            }
-            if (signal.aborted)
-                break;
-            try {
-                await wait(this.config.runner.pollIntervalMilliseconds, signal);
-            }
-            catch (error) {
-                if (!signal.aborted)
-                    throw error;
-            }
+        }
+        finally {
+            for (const execution of this.inFlight.values())
+                execution.controller.abort(new Error("Workflow runner stopped"));
+            await Promise.allSettled([...this.inFlight.values()].map((execution) => execution.promise));
+            await Promise.allSettled(this.extensions.map((extension) => extension.stop?.()));
         }
     }
     async tickOnce(signal = new AbortController().signal) {
+        for (const extension of this.extensions) {
+            try {
+                await extension.beforeTick?.();
+            }
+            catch (error) {
+                this.log("workflow_runner_extension_failed", {
+                    phase: "before_tick",
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
         const now = this.now();
         const initialized = this.queue.initializeMatcher(now);
         const sourceResumed = await this.resumeSourceRefetchSteps(now, signal);
         const revoked = this.reauthorizeActiveRuns(now);
+        this.reconcileInFlight(now);
         const expired = this.queue.expireRunDeadlines(now, this.config.runner.batchSize);
         const recovered = this.queue.recoverExpiredLeases((runId, stepId) => this.retryFor(runId, stepId), now, this.config.runner.batchSize);
         const matched = initialized ? 0 : this.matchEventsOnce(now);
         const dispatched = this.dispatchOnce(now);
         let claimed = 0;
-        const executions = [];
+        const started = [];
         for (const workerId of this.workerIds) {
+            if (this.inFlight.has(workerId))
+                continue;
             const claim = this.queue.claimStep(workerId, undefined, this.config.runner.leaseSeconds * 1_000, now);
             if (!claim)
                 continue;
             claimed += 1;
-            executions.push(this.executeClaim(claim, signal));
+            const controller = new AbortController();
+            const executionSignal = AbortSignal.any([signal, controller.signal]);
+            const promise = this.executeClaim(claim, signal, controller.signal)
+                .catch((error) => {
+                if (!executionSignal.aborted)
+                    this.log("workflow_runner_worker_failed", {
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+            })
+                .finally(() => {
+                if (this.inFlight.get(workerId)?.claim.attempt.attemptId === claim.attempt.attemptId)
+                    this.inFlight.delete(workerId);
+            });
+            this.inFlight.set(workerId, { claim, controller, promise });
+            started.push(promise);
         }
-        const outcomes = await Promise.allSettled(executions);
-        for (const outcome of outcomes)
-            if (outcome.status === "rejected")
-                this.log("workflow_runner_worker_failed", {
-                    error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
-                });
+        if (started.length)
+            await Promise.race([
+                Promise.allSettled(started).then(() => undefined),
+                new Promise((resolve) => setImmediate(resolve)),
+            ]);
         if (matched || dispatched || recovered || revoked || expired || claimed || sourceResumed)
             this.log("workflow_runner_tick_complete", {
                 matched,
@@ -93,6 +132,22 @@ export class WorkflowRunner {
                 claimed,
                 sourceResumed,
             });
+        for (const extension of this.extensions) {
+            try {
+                await extension.afterTick?.();
+            }
+            catch (error) {
+                this.log("workflow_runner_extension_failed", {
+                    phase: "after_tick",
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+    }
+    reconcileInFlight(now) {
+        for (const execution of this.inFlight.values())
+            if (!this.queue.claimMayExecute(execution.claim.run.runId, execution.claim.step.stepId, execution.claim.attempt.fencingToken, now))
+                execution.controller.abort(new Error("Workflow authority, version, approval, or cancellation state changed"));
     }
     matchEventsOnce(now = this.now()) {
         let matched = 0;
@@ -142,7 +197,6 @@ export class WorkflowRunner {
     }
     dispatchOnce(now = this.now()) {
         let dispatched = 0;
-        const retryAt = now + Math.max(1_000, this.config.runner.pollIntervalMilliseconds * 5);
         for (const delivery of this.queue.pendingDeliveries(this.config.runner.batchSize, now)) {
             if (!this.queue.isActiveVersion(delivery.workflowId, delivery.versionHash)) {
                 this.queue.cancelDelivery(delivery.deliveryId);
@@ -164,29 +218,40 @@ export class WorkflowRunner {
             }
             const authorization = this.authorize(version, definition);
             if (!authorization?.evaluation.allowed) {
-                this.queue.deferDelivery(delivery.deliveryId, retryAt);
+                this.deferPendingDelivery(delivery, "current local authority rejected the delivery", now);
                 continue;
             }
             this.ensureAutomaticApproval(version, authorization.evaluation, now);
             const authorityHash = authorization.evaluation.authorityHash;
             const approval = this.store.currentWorkflowApproval(delivery.workflowId, delivery.approvalHash, authorityHash, now);
             if (!approval) {
-                this.queue.deferDelivery(delivery.deliveryId, retryAt);
+                this.deferPendingDelivery(delivery, "no current exact approval permits the delivery", now);
                 continue;
             }
             if (this.queue.dispatchDelivery(delivery.deliveryId, definition, authorization.evaluation.effectiveLimits, authorityHash, now))
                 dispatched += 1;
             else
-                this.queue.deferDelivery(delivery.deliveryId, retryAt);
+                this.deferPendingDelivery(delivery, "workflow concurrency or rate limit deferred dispatch", now);
         }
         return dispatched;
     }
-    async executeClaim(claim, shutdownSignal) {
+    deferPendingDelivery(delivery, reason, now) {
+        const baseDelay = Math.max(1_000, this.config.runner.pollIntervalMilliseconds * 5);
+        const delay = Math.min(300_000, baseDelay * 2 ** Math.min(delivery.dispatchAttemptCount, 6));
+        const outcome = this.queue.deferDelivery(delivery.deliveryId, now + delay, MAXIMUM_DELIVERY_DISPATCH_ATTEMPTS);
+        if (outcome === "dead_letter")
+            this.log("workflow_delivery_dead_lettered", {
+                workflowIdDigest: stableId("workflow-log", delivery.workflowId),
+                reason,
+                attempts: delivery.dispatchAttemptCount + 1,
+            });
+    }
+    async executeClaim(claim, shutdownSignal, cooperativeSignal) {
         const now = this.now();
         if (!this.queue.startStep(claim.run.runId, claim.step.stepId, claim.attempt.fencingToken, now))
             return;
         const heartbeat = this.startLeaseHeartbeat(claim);
-        const executionScope = deadlineSignal(shutdownSignal, claim.step.leaseHardExpiresAt ?? claim.step.runDeadlineAt, this.now);
+        const executionScope = deadlineSignal(cooperativeSignal ? AbortSignal.any([shutdownSignal, cooperativeSignal]) : shutdownSignal, claim.step.leaseHardExpiresAt ?? claim.step.runDeadlineAt, this.now);
         try {
             const version = this.store.workflowVersion(claim.run.workflowId, claim.run.versionHash);
             if (!version) {
@@ -195,7 +260,7 @@ export class WorkflowRunner {
             }
             let stored;
             if (heartbeat.leaseLost() ||
-                !this.queue.claimIsCurrent(claim.run.runId, claim.step.stepId, claim.attempt.fencingToken, this.now()))
+                !this.queue.claimMayExecute(claim.run.runId, claim.step.stepId, claim.attempt.fencingToken, this.now()))
                 return;
             try {
                 stored = parseStoredVersion(version);
@@ -224,7 +289,7 @@ export class WorkflowRunner {
                 return;
             }
             if (heartbeat.leaseLost() ||
-                !this.queue.claimIsCurrent(claim.run.runId, claim.step.stepId, claim.attempt.fencingToken, this.now()))
+                !this.queue.claimMayExecute(claim.run.runId, claim.step.stepId, claim.attempt.fencingToken, this.now()))
                 return;
             if (executionScope.signal.aborted)
                 throw executionScope.signal.reason;
@@ -251,6 +316,11 @@ export class WorkflowRunner {
         catch (error) {
             if (executionScope.timedOut())
                 this.handleRejectedSettlement(claim, this.now());
+            else if (cooperativeSignal?.aborted && !shutdownSignal.aborted) {
+                const run = this.queue.run(claim.run.runId);
+                if (run?.cancelRequestedAt !== undefined)
+                    this.queue.failStep(claim.run.runId, claim.step.stepId, claim.attempt.fencingToken, run.cancelReason ?? "Workflow execution cancelled", this.retryFor(claim.run.runId, claim.step.stepId), false, this.now());
+            }
             else if (!shutdownSignal.aborted)
                 throw error;
         }
@@ -327,6 +397,14 @@ export class WorkflowRunner {
                     revoked += 1;
                 continue;
             }
+            if (!definition.spec.enabled ||
+                !this.queue.isActiveVersion(run.workflowId, run.versionHash)) {
+                if (this.queue.cancelRun(run.runId, version.editorPrincipalDigest ?? workflowPrincipalDigest("system:workflow-runner"), definition.spec.enabled
+                    ? "Workflow version was superseded or archived"
+                    : "Workflow was disabled", now))
+                    revoked += 1;
+                continue;
+            }
             const authorization = this.authorize(version, definition);
             if (!authorization?.evaluation.allowed) {
                 if (this.queue.pauseRunForApproval(run.runId, "Current local authority does not permit this run", now))
@@ -392,7 +470,6 @@ export class WorkflowRunner {
         if (!this.sourceResolver)
             return 0;
         let resumed = 0;
-        const retryAt = now + Math.max(5_000, this.config.runner.pollIntervalMilliseconds * 10);
         for (const step of this.queue.sourceRefetchSteps(now, this.config.runner.batchSize)) {
             if (shutdownSignal.aborted)
                 break;
@@ -419,30 +496,42 @@ export class WorkflowRunner {
             catch {
                 if (shutdownSignal.aborted)
                     break;
-                this.queue.deferSourceRefetch(step.runId, step.stepId, "source_refetch_timed_out: source resolution exceeded its bounded deadline", retryAt, this.now());
+                this.deferSourceRefetch(step, stored.definition, "source_refetch_timed_out: source resolution exceeded its bounded deadline", this.now());
                 continue;
             }
             finally {
                 refetchScope.stop();
             }
             if (!resolution.ok) {
-                this.queue.deferSourceRefetch(step.runId, step.stepId, resolution.reason, retryAt, now);
+                this.deferSourceRefetch(step, stored.definition, resolution.reason, now);
                 continue;
             }
             const authorization = this.authorize(version, resolution.definition);
             if (!authorization?.evaluation.allowed) {
-                this.queue.deferSourceRefetch(step.runId, step.stepId, "source_reverification_failed: current local authority rejected the refetched definition", retryAt, now);
+                this.deferSourceRefetch(step, stored.definition, "source_reverification_failed: current local authority rejected the refetched definition", now);
                 continue;
             }
             const approval = this.store.currentWorkflowApproval(version.workflowId, version.approvalHash, authorization.evaluation.authorityHash, now);
             if (!approval) {
-                this.queue.deferSourceRefetch(step.runId, step.stepId, "source_reverification_failed: no exact approval exists for the refetched definition", retryAt, now);
+                this.deferSourceRefetch(step, stored.definition, "source_reverification_failed: no exact approval exists for the refetched definition", now);
                 continue;
             }
             if (this.queue.resumeSourceRefetchStep(step.runId, step.stepId, now))
                 resumed += 1;
         }
         return resumed;
+    }
+    deferSourceRefetch(step, definition, reason, now) {
+        const retry = retryForDefinition(definition, step.stepId);
+        const attempt = step.sourceRefetchAttemptCount + 1;
+        const delaySeconds = Math.min(retry.maximumDelaySeconds, retry.initialDelaySeconds * Math.pow(retry.multiplier, Math.max(0, attempt - 1)));
+        const outcome = this.queue.deferSourceRefetch(step.runId, step.stepId, reason, now + Math.max(1_000, Math.round(delaySeconds * 1_000)), retry.attempts, now);
+        if (outcome === "dead_letter")
+            this.log("workflow_source_refetch_dead_lettered", {
+                workflowIdDigest: stableId("workflow-log", step.workflowId),
+                stepId: step.stepId,
+                attempts: attempt,
+            });
     }
     async definitionForExecution(version, stored, signal) {
         if (signal.aborted)
@@ -578,16 +667,27 @@ function setJsonPath(target, path, value) {
     let current = target;
     for (const part of path.slice(0, -1)) {
         if (!current || typeof current !== "object")
-            throw new Error("Redacted workflow path is absent from approval material");
-        current = Array.isArray(current) ? current[Number(part)] : current[part];
+            return false;
+        const next = Array.isArray(current) ? current[Number(part)] : current[part];
+        if (next === undefined)
+            return false;
+        current = next;
     }
     const final = path.at(-1);
     if (!final || !current || typeof current !== "object")
-        throw new Error("Redacted workflow path is invalid");
-    if (Array.isArray(current))
-        current[Number(final)] = value;
-    else
+        return false;
+    if (Array.isArray(current)) {
+        const index = Number(final);
+        if (!Number.isSafeInteger(index) || current[index] === undefined)
+            return false;
+        current[index] = value;
+    }
+    else {
+        if (!(final in current))
+            return false;
         current[final] = value;
+    }
+    return true;
 }
 function verifyRefetchedDefinition(version, snapshot) {
     if (snapshot.sourceModifiedAt !== version.sourceModifiedAt ||

@@ -124,20 +124,46 @@ describe("automation persistence foundation", () => {
     const path = join(directory, "state.sqlite");
     const legacy = new DatabaseSync(path);
     legacy.exec(`
+      CREATE TABLE workflow_definitions (
+        workflow_id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        source_modified_at INTEGER NOT NULL,
+        observed_source_digest TEXT NOT NULL
+      );
+      INSERT INTO workflow_definitions VALUES(
+        'workflow-1','space-1','workflow-object',100,'sha256:${"a".repeat(64)}'
+      );
       CREATE TABLE workflow_deliveries (
         delivery_id TEXT PRIMARY KEY,
         state TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
+      CREATE TABLE workflow_steps (
+        run_id TEXT NOT NULL,
+        step_id TEXT NOT NULL,
+        state TEXT NOT NULL
+      );
       CREATE TABLE normalized_events (
         event_id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
         source TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        object_id TEXT,
+        source_modified_at INTEGER,
+        source_fingerprint TEXT,
         payload_json TEXT NOT NULL
       );
       INSERT INTO normalized_events VALUES(
-        'legacy-control','object.updated','poll','{"controlPlane":"workflow-definition"}'
+        'legacy-control','object.updated','poll','space-1','workflow-object',100,
+        'sha256:${"a".repeat(64)}','{}'
       );
+      INSERT INTO normalized_events VALUES(
+        'spoofed-control','object.updated','poll','space-1','ordinary-object',100,
+        'sha256:${"b".repeat(64)}','{"controlPlane":"workflow-definition"}'
+      );
+      CREATE TRIGGER normalized_events_no_update BEFORE UPDATE ON normalized_events
+        BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
       PRAGMA user_version=12;
     `);
     legacy.close();
@@ -150,9 +176,23 @@ describe("automation persistence foundation", () => {
         .prepare("SELECT 1 FROM pragma_table_info('workflow_deliveries') WHERE name=?")
         .get("next_dispatch_at"),
     ).toBeDefined();
-    expect(store.db.prepare("SELECT source FROM normalized_events").get()).toEqual({
+    expect(
+      store.db
+        .prepare("SELECT source FROM normalized_events WHERE event_id='legacy-control'")
+        .get(),
+    ).toEqual({
       source: "workflow",
     });
+    expect(
+      store.db
+        .prepare("SELECT source FROM normalized_events WHERE event_id='spoofed-control'")
+        .get(),
+    ).toEqual({ source: "poll" });
+    expect(
+      store.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?")
+        .get("normalized_events_no_update"),
+    ).toBeDefined();
     store.close();
   });
 

@@ -108,11 +108,26 @@ export class WorkflowQueue {
            ORDER BY next_dispatch_at,created_at,delivery_id LIMIT ?`)
             .all(now, limit).map(mapDelivery);
     }
-    deferDelivery(deliveryId, availableAt) {
-        return (Number(this.store.db
-            .prepare(`UPDATE workflow_deliveries SET next_dispatch_at=?
-             WHERE delivery_id=? AND state='pending'`)
-            .run(availableAt, deliveryId).changes) === 1);
+    deferDelivery(deliveryId, availableAt, maximumAttempts) {
+        if (!Number.isSafeInteger(maximumAttempts) || maximumAttempts < 1)
+            throw new Error("maximumAttempts must be a positive safe integer");
+        const changed = this.store.db
+            .prepare(`UPDATE workflow_deliveries
+         SET dispatch_attempt_count=dispatch_attempt_count+1,
+             next_dispatch_at=?,
+             state=CASE
+               WHEN dispatch_attempt_count+1>=? THEN 'dead_letter'
+               ELSE 'pending'
+             END
+         WHERE delivery_id=? AND state='pending'`)
+            .run(availableAt, maximumAttempts, deliveryId);
+        if (Number(changed.changes) !== 1)
+            return undefined;
+        return this.store.db
+            .prepare("SELECT state FROM workflow_deliveries WHERE delivery_id=?")
+            .get(deliveryId).state === "dead_letter"
+            ? "dead_letter"
+            : "deferred";
     }
     isActiveVersion(workflowId, versionHash) {
         return Boolean(this.store.db
@@ -283,6 +298,18 @@ export class WorkflowQueue {
             .prepare(`SELECT 1 FROM workflow_steps
            WHERE run_id=? AND step_id=? AND state IN ('leased','running')
              AND fencing_token=? AND lease_expires_at>?`)
+            .get(runId, stepId, fencingToken, now));
+    }
+    claimMayExecute(runId, stepId, fencingToken, now = Date.now()) {
+        return Boolean(this.store.db
+            .prepare(`SELECT 1 FROM workflow_steps s
+           JOIN workflow_runs r ON r.run_id=s.run_id
+           JOIN workflow_definitions d ON d.workflow_id=r.workflow_id
+           WHERE s.run_id=? AND s.step_id=? AND s.state IN ('leased','running')
+             AND s.fencing_token=? AND s.lease_expires_at>?
+             AND r.state IN ('pending','running','waiting')
+             AND r.cancel_requested_at IS NULL
+             AND d.state='valid' AND d.active_version_hash=r.version_hash`)
             .get(runId, stepId, fencingToken, now));
     }
     completeStep(runId, stepId, fencingToken, result, now = Date.now()) {
@@ -466,11 +493,46 @@ export class WorkflowQueue {
             throw cause;
         }
     }
-    deferSourceRefetch(runId, stepId, reason, availableAt, now = Date.now()) {
-        return (Number(this.store.db
-            .prepare(`UPDATE workflow_steps SET error=?,available_at=?,updated_at=?
+    deferSourceRefetch(runId, stepId, reason, availableAt, maximumAttempts, now = Date.now()) {
+        if (!Number.isSafeInteger(maximumAttempts) || maximumAttempts < 1)
+            throw new Error("maximumAttempts must be a positive safe integer");
+        reason = boundedStepError(reason);
+        this.store.db.exec("BEGIN IMMEDIATE");
+        try {
+            const step = this.store.db
+                .prepare(`SELECT source_refetch_attempt_count FROM workflow_steps
+           WHERE run_id=? AND step_id=? AND state='source_refetch_required'`)
+                .get(runId, stepId);
+            if (!step) {
+                this.store.db.exec("COMMIT");
+                return undefined;
+            }
+            const attempt = step.source_refetch_attempt_count + 1;
+            if (attempt >= maximumAttempts) {
+                this.store.db
+                    .prepare(`UPDATE workflow_steps SET state='dead_letter',source_refetch_attempt_count=?,
+             error=?,available_at=?,updated_at=?
              WHERE run_id=? AND step_id=? AND state='source_refetch_required'`)
-            .run(reason, availableAt, now, runId, stepId).changes) === 1);
+                    .run(attempt, reason, availableAt, now, runId, stepId);
+                this.store.db
+                    .prepare(`UPDATE workflow_runs SET state='dead_letter',error=?,updated_at=?,completed_at=?
+             WHERE run_id=? AND state IN ('pending','running','waiting')`)
+                    .run(reason, now, now, runId);
+                this.deadLetterRemainingStepsInTransaction(runId, reason, now);
+                this.store.db.exec("COMMIT");
+                return "dead_letter";
+            }
+            this.store.db
+                .prepare(`UPDATE workflow_steps SET source_refetch_attempt_count=?,error=?,available_at=?,updated_at=?
+           WHERE run_id=? AND step_id=? AND state='source_refetch_required'`)
+                .run(attempt, reason, availableAt, now, runId, stepId);
+            this.store.db.exec("COMMIT");
+            return "deferred";
+        }
+        catch (cause) {
+            this.store.db.exec("ROLLBACK");
+            throw cause;
+        }
     }
     sourceRefetchSteps(now = Date.now(), limit = 100) {
         return this.store.db
@@ -863,6 +925,7 @@ function mapDelivery(row) {
         state: row.state,
         createdAt: row.created_at,
         nextDispatchAt: row.next_dispatch_at,
+        dispatchAttemptCount: row.dispatch_attempt_count,
         ...(row.dispatched_at === null ? {} : { dispatchedAt: row.dispatched_at }),
     };
 }
@@ -900,6 +963,7 @@ function mapStep(row) {
         timeoutSeconds: row.timeout_seconds,
         runDeadlineAt: row.run_deadline_at,
         attemptCount: row.attempt_count,
+        sourceRefetchAttemptCount: row.source_refetch_attempt_count,
         availableAt: row.available_at,
         ...(row.lease_owner ? { leaseOwner: row.lease_owner } : {}),
         ...(row.fencing_token ? { fencingToken: row.fencing_token } : {}),

@@ -136,6 +136,7 @@ export interface WorkflowDeliveryRecord {
   state: WorkflowDeliveryState;
   createdAt: number;
   nextDispatchAt: number;
+  dispatchAttemptCount: number;
   dispatchedAt?: number;
 }
 
@@ -169,6 +170,7 @@ export interface WorkflowStepRecord {
   timeoutSeconds: number;
   runDeadlineAt: number;
   attemptCount: number;
+  sourceRefetchAttemptCount: number;
   availableAt: number;
   leaseOwner?: string;
   fencingToken?: string;

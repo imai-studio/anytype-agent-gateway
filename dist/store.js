@@ -24,6 +24,8 @@ export class Store {
         if (path !== ":memory:")
             mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
         this.db = new DatabaseSync(path);
+        if (path !== ":memory:")
+            chmodSync(path, 0o600);
         this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 5000;");
         this.migrate(path, existed);
     }
@@ -641,12 +643,109 @@ export class Store {
         ON workflow_deliveries(state,next_dispatch_at,created_at,delivery_id);
     `);
         const eventColumns = this.db.prepare("PRAGMA table_info(normalized_events)").all();
-        if (["kind", "source", "payload_json"].every((name) => eventColumns.some((c) => c.name === name)))
+        const definitionColumns = this.db
+            .prepare("PRAGMA table_info(workflow_definitions)")
+            .all();
+        if (["kind", "source", "space_id", "object_id", "source_modified_at", "source_fingerprint"].every((name) => eventColumns.some((column) => column.name === name)) &&
+            ["space_id", "object_id", "source_modified_at", "observed_source_digest"].every((name) => definitionColumns.some((column) => column.name === name))) {
             this.db.exec(`
+        DROP TRIGGER IF EXISTS normalized_events_no_update;
         UPDATE normalized_events SET source='workflow'
           WHERE source='poll' AND kind IN ('object.created','object.updated','object.archived')
-            AND json_extract(payload_json,'$.controlPlane')='workflow-definition';
+            AND EXISTS(
+              SELECT 1 FROM workflow_definitions d
+              WHERE d.space_id=normalized_events.space_id
+                AND d.object_id=normalized_events.object_id
+                AND d.source_modified_at=normalized_events.source_modified_at
+                AND d.observed_source_digest=normalized_events.source_fingerprint
+            );
+        CREATE TRIGGER normalized_events_no_update BEFORE UPDATE ON normalized_events
+          BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
       `);
+        }
+    }
+    migrateToVersion14() {
+        this.db.exec(`
+      ALTER TABLE workflow_deliveries
+        ADD COLUMN dispatch_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_attempt_count >= 0);
+      ALTER TABLE workflow_steps
+        ADD COLUMN source_refetch_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(source_refetch_attempt_count >= 0);
+
+      CREATE TABLE cloud_command_inbox (
+        command_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        envelope_json TEXT NOT NULL CHECK(json_valid(envelope_json)),
+        envelope_digest TEXT NOT NULL,
+        required_scope TEXT NOT NULL,
+        actor_principal_digest TEXT NOT NULL,
+        actor_digest_version INTEGER NOT NULL CHECK(actor_digest_version > 0),
+        actor_provenance TEXT NOT NULL CHECK(actor_provenance IN (
+          'authenticated-cloud-session','connector-key','consumer-api-key','first-party-service'
+        )),
+        attempt INTEGER NOT NULL CHECK(attempt > 0),
+        lease_token TEXT NOT NULL,
+        lease_token_digest TEXT NOT NULL,
+        lease_expires_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK(state IN (
+          'received','awaiting_approval','queued','running','terminal_pending',
+          'succeeded','rejected','failed','cancelled','dead_letter'
+        )),
+        local_attempts INTEGER NOT NULL DEFAULT 0 CHECK(local_attempts >= 0),
+        effect_key TEXT NOT NULL UNIQUE,
+        result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+        last_error_code TEXT,
+        last_error TEXT,
+        available_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER
+      );
+      CREATE INDEX cloud_command_inbox_ready
+        ON cloud_command_inbox(state,available_at,created_at,command_id);
+      CREATE INDEX cloud_command_inbox_lease
+        ON cloud_command_inbox(lease_expires_at) WHERE state IN ('received','awaiting_approval','queued','running','terminal_pending');
+
+      CREATE TABLE cloud_effect_receipts (
+        effect_key TEXT PRIMARY KEY,
+        command_id TEXT NOT NULL UNIQUE REFERENCES cloud_command_inbox(command_id) ON DELETE RESTRICT,
+        operation_digest TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared','running','succeeded','failed','outcome_unknown')),
+        fencing_token TEXT NOT NULL,
+        result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+        error_code TEXT,
+        error TEXT,
+        started_at INTEGER,
+        completed_at INTEGER,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE cloud_projection_outbox (
+        projection_id TEXT PRIMARY KEY,
+        command_id TEXT NOT NULL REFERENCES cloud_command_inbox(command_id) ON DELETE RESTRICT,
+        origin_effect_key TEXT NOT NULL UNIQUE,
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        state TEXT NOT NULL CHECK(state IN ('pending','in_flight','delivered','retrying','dead_letter')),
+        attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt >= 0),
+        available_at INTEGER NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at INTEGER,
+        target_message_id TEXT,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        delivered_at INTEGER
+      );
+      CREATE INDEX cloud_projection_outbox_ready
+        ON cloud_projection_outbox(state,available_at,created_at,projection_id);
+
+      CREATE TRIGGER cloud_command_inbox_no_delete BEFORE DELETE ON cloud_command_inbox
+        BEGIN SELECT RAISE(ABORT,'cloud command inbox is durable'); END;
+      CREATE TRIGGER cloud_effect_receipts_no_delete BEFORE DELETE ON cloud_effect_receipts
+        BEGIN SELECT RAISE(ABORT,'cloud effect receipts are durable'); END;
+      CREATE TRIGGER cloud_projection_outbox_no_delete BEFORE DELETE ON cloud_projection_outbox
+        BEGIN SELECT RAISE(ABORT,'cloud projection outbox is durable'); END;
+    `);
     }
     migrateToVersion14() {
         const capabilityTableExists = Boolean(this.db

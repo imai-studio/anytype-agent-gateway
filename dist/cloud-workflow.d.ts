@@ -12,7 +12,7 @@ export interface CloudCommandRecord {
     requiredScope: string;
     actorPrincipalDigest: string;
     actorDigestVersion: number;
-    actorProvenance: "cloud-authenticated";
+    actorProvenance: CloudCommandEnvelope["actor"]["provenance"];
     state: CommandState;
     attempt: number;
     localAttempts: number;
@@ -96,8 +96,10 @@ export declare class CloudWorkflowExtension implements WorkflowRunnerExtension {
     private readonly projectionWorkerId;
     private nextPollAt;
     private recovered;
+    private inFlight;
     constructor(store: Store, client: CloudCommandClient, executor: CloudCommandExecutionPort, config: AgentConfig["cloudCommands"], anytype: AnytypePort, log: (event: string, fields?: Record<string, unknown>) => void, now?: () => number);
     beforeTick(): Promise<void>;
+    stop(): Promise<void>;
     afterTick(): Promise<void>;
     private poll;
     private extendLeases;

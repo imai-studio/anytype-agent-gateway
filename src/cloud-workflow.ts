@@ -36,7 +36,7 @@ type CommandRow = {
   required_scope: string;
   actor_principal_digest: string;
   actor_digest_version: number;
-  actor_provenance: "cloud-authenticated";
+  actor_provenance: CloudCommandEnvelope["actor"]["provenance"];
   attempt: number;
   lease_token: string;
   lease_token_digest: string;
@@ -60,7 +60,7 @@ export interface CloudCommandRecord {
   requiredScope: string;
   actorPrincipalDigest: string;
   actorDigestVersion: number;
-  actorProvenance: "cloud-authenticated";
+  actorProvenance: CloudCommandEnvelope["actor"]["provenance"];
   state: CommandState;
   attempt: number;
   localAttempts: number;
@@ -118,7 +118,7 @@ export class CloudCommandStore {
              command_id,connector_id,envelope_json,envelope_digest,required_scope,
              actor_principal_digest,actor_digest_version,actor_provenance,attempt,lease_token,lease_token_digest,
              lease_expires_at,expires_at,state,effect_key,available_at,created_at,updated_at
-           ) VALUES(?,?,?,?,?,?,?,'cloud-authenticated',?,?,?,?,?,'received',?,?,?,?)
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'received',?,?,?,?)
            ON CONFLICT(command_id) DO NOTHING`,
         )
         .run(
@@ -129,6 +129,7 @@ export class CloudCommandStore {
           parsed.requiredScope,
           actorPrincipalDigest,
           parsed.actor.digestVersion,
+          parsed.actor.provenance,
           parsed.attempt,
           parsed.leaseToken,
           leaseTokenDigest,
@@ -707,6 +708,7 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
   private readonly projectionWorkerId = `cloud-projection-${randomUUID()}`;
   private nextPollAt = 0;
   private recovered = false;
+  private inFlight: { commandId: string; promise: Promise<void> } | undefined;
 
   constructor(
     store: Store,
@@ -732,12 +734,27 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
     await this.submitTerminalResults(now);
     if (now >= this.nextPollAt) await this.poll(now);
     const ready = this.inbox.nextReady(now);
-    if (ready && ready.leaseExpiresAt > now) await this.execute(ready, now);
-    else if (ready)
+    if (ready && ready.leaseExpiresAt > now && !this.inFlight) {
+      const promise = this.execute(ready, now)
+        .catch((error) =>
+          this.log("cloud_command_execution_failed", {
+            commandId: ready.commandId,
+            error: message(error),
+          }),
+        )
+        .finally(() => {
+          if (this.inFlight?.commandId === ready.commandId) this.inFlight = undefined;
+        });
+      this.inFlight = { commandId: ready.commandId, promise };
+    } else if (ready)
       this.log("cloud_command_waiting_for_lease", {
         commandId: ready.commandId,
         attempt: ready.attempt,
       });
+  }
+
+  async stop(): Promise<void> {
+    if (this.inFlight) await this.inFlight.promise;
   }
 
   async afterTick(): Promise<void> {

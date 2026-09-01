@@ -194,7 +194,7 @@ export class Gateway {
             ),
           );
         }
-        this.track(
+        this.trackAuxiliary(
           new WorkflowRunner(
             this.store,
             this.config.automation,
@@ -204,6 +204,7 @@ export class Gateway {
             undefined,
             extensions,
           ).run(this.abort.signal),
+          "workflow_runner_stopped",
         );
       }
       if (this.config.automation.enabled && this.config.automation.observation)

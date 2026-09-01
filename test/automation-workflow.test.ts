@@ -59,7 +59,7 @@ describe("workflow foundation", () => {
     );
   });
 
-  it("redacts only schema-defined author text paths", () => {
+  it("redacts author prompt and message text at every nesting depth", () => {
     const authorText = workflow({
       steps: [{ id: "agent", kind: "agent", config: { prompt: "private author text" } }],
       capabilities: ["agent.invoke"],
@@ -82,8 +82,9 @@ describe("workflow foundation", () => {
       },
     });
     const stored = canonicalStoredWorkflowDefinition(ordinaryData);
-    expect(stored).toContain("classification");
-    expect(stored).toContain("ordinary object property");
+    expect(stored).not.toContain("classification");
+    expect(stored).not.toContain("ordinary object property");
+    expect(stored.match(/"redacted":true/g)).toHaveLength(2);
   });
 
   it("keeps every behavior-bearing spec field in approval material", () => {

@@ -23,9 +23,9 @@ export class CloudCommandStore {
              command_id,connector_id,envelope_json,envelope_digest,required_scope,
              actor_principal_digest,actor_digest_version,actor_provenance,attempt,lease_token,lease_token_digest,
              lease_expires_at,expires_at,state,effect_key,available_at,created_at,updated_at
-           ) VALUES(?,?,?,?,?,?,?,'cloud-authenticated',?,?,?,?,?,'received',?,?,?,?)
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'received',?,?,?,?)
            ON CONFLICT(command_id) DO NOTHING`)
-                .run(parsed.commandId, parsed.connectorId, envelopeJson, envelopeDigest, parsed.requiredScope, actorPrincipalDigest, parsed.actor.digestVersion, parsed.attempt, parsed.leaseToken, leaseTokenDigest, parsed.leaseExpiresAt * 1_000, parsed.expiresAt * 1_000, effectKey, now, now, now);
+                .run(parsed.commandId, parsed.connectorId, envelopeJson, envelopeDigest, parsed.requiredScope, actorPrincipalDigest, parsed.actor.digestVersion, parsed.actor.provenance, parsed.attempt, parsed.leaseToken, leaseTokenDigest, parsed.leaseExpiresAt * 1_000, parsed.expiresAt * 1_000, effectKey, now, now, now);
             const row = this.row(parsed.commandId);
             if (!row)
                 throw new Error("Cloud command was not persisted");
@@ -415,6 +415,7 @@ export class CloudWorkflowExtension {
     projectionWorkerId = `cloud-projection-${randomUUID()}`;
     nextPollAt = 0;
     recovered = false;
+    inFlight;
     constructor(store, client, executor, config, anytype, log, now = Date.now) {
         this.client = client;
         this.executor = executor;
@@ -438,13 +439,27 @@ export class CloudWorkflowExtension {
         if (now >= this.nextPollAt)
             await this.poll(now);
         const ready = this.inbox.nextReady(now);
-        if (ready && ready.leaseExpiresAt > now)
-            await this.execute(ready, now);
+        if (ready && ready.leaseExpiresAt > now && !this.inFlight) {
+            const promise = this.execute(ready, now)
+                .catch((error) => this.log("cloud_command_execution_failed", {
+                commandId: ready.commandId,
+                error: message(error),
+            }))
+                .finally(() => {
+                if (this.inFlight?.commandId === ready.commandId)
+                    this.inFlight = undefined;
+            });
+            this.inFlight = { commandId: ready.commandId, promise };
+        }
         else if (ready)
             this.log("cloud_command_waiting_for_lease", {
                 commandId: ready.commandId,
                 attempt: ready.attempt,
             });
+    }
+    async stop() {
+        if (this.inFlight)
+            await this.inFlight.promise;
     }
     async afterTick() {
         if (!this.config.projection.enabled)

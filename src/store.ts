@@ -726,14 +726,32 @@ export class Store {
     const eventColumns = this.db.prepare("PRAGMA table_info(normalized_events)").all() as Array<{
       name: string;
     }>;
+    const definitionColumns = this.db
+      .prepare("PRAGMA table_info(workflow_definitions)")
+      .all() as Array<{ name: string }>;
     if (
-      ["kind", "source", "payload_json"].every((name) => eventColumns.some((c) => c.name === name))
-    )
+      ["kind", "source", "space_id", "object_id", "source_modified_at", "source_fingerprint"].every(
+        (name) => eventColumns.some((column) => column.name === name),
+      ) &&
+      ["space_id", "object_id", "source_modified_at", "observed_source_digest"].every((name) =>
+        definitionColumns.some((column) => column.name === name),
+      )
+    ) {
       this.db.exec(`
+        DROP TRIGGER IF EXISTS normalized_events_no_update;
         UPDATE normalized_events SET source='workflow'
           WHERE source='poll' AND kind IN ('object.created','object.updated','object.archived')
-            AND json_extract(payload_json,'$.controlPlane')='workflow-definition';
+            AND EXISTS(
+              SELECT 1 FROM workflow_definitions d
+              WHERE d.space_id=normalized_events.space_id
+                AND d.object_id=normalized_events.object_id
+                AND d.source_modified_at=normalized_events.source_modified_at
+                AND d.observed_source_digest=normalized_events.source_fingerprint
+            );
+        CREATE TRIGGER normalized_events_no_update BEFORE UPDATE ON normalized_events
+          BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
       `);
+    }
   }
 
   private migrateToVersion14(): void {
@@ -782,6 +800,11 @@ export class Store {
 
   private migrateToVersion15(): void {
     this.db.exec(`
+      ALTER TABLE workflow_deliveries
+        ADD COLUMN dispatch_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_attempt_count >= 0);
+      ALTER TABLE workflow_steps
+        ADD COLUMN source_refetch_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(source_refetch_attempt_count >= 0);
+
       CREATE TABLE cloud_command_inbox (
         command_id TEXT PRIMARY KEY,
         connector_id TEXT NOT NULL,
@@ -790,7 +813,9 @@ export class Store {
         required_scope TEXT NOT NULL,
         actor_principal_digest TEXT NOT NULL,
         actor_digest_version INTEGER NOT NULL CHECK(actor_digest_version > 0),
-        actor_provenance TEXT NOT NULL CHECK(actor_provenance='cloud-authenticated'),
+        actor_provenance TEXT NOT NULL CHECK(actor_provenance IN (
+          'authenticated-cloud-session','connector-key','consumer-api-key','first-party-service'
+        )),
         attempt INTEGER NOT NULL CHECK(attempt > 0),
         lease_token TEXT NOT NULL,
         lease_token_digest TEXT NOT NULL,
