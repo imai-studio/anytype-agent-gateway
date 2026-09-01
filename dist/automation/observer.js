@@ -204,7 +204,7 @@ export class WorkflowObserver {
             return this.observeReadFailure(spaceId, object, observedAt, object.observationError);
         const workflowId = stableId("workflow", spaceId, object.id);
         if (object.archived) {
-            this.store.recordWorkflowDefinitionStatus({
+            const stored = this.store.recordWorkflowDefinitionStatus({
                 workflowId,
                 spaceId,
                 objectId: object.id,
@@ -218,7 +218,12 @@ export class WorkflowObserver {
                 workflowId,
                 state: "archived",
             });
-            return { changed: previous?.state !== "archived" || inserted, sourceDigest };
+            return {
+                changed: previous?.state !== stored.state ||
+                    previous?.sourceDigest !== stored.sourceDigest ||
+                    inserted,
+                sourceDigest,
+            };
         }
         let definition;
         let definitionSourceDigest;

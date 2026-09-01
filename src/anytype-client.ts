@@ -716,7 +716,7 @@ function objectEditorParticipantId(value: JsonRecord): string | undefined {
     : undefined;
   if (!property || !Array.isArray(property.objects) || property.objects.length !== 1)
     return undefined;
-  return boundedName(property.objects[0], 512);
+  return validIdentifier(property.objects[0], 512);
 }
 
 function invalidWorkflowSummary(
