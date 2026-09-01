@@ -26,6 +26,15 @@ import { modelAllowed } from "./model-command.js";
 import { sameIdentity } from "./wake.js";
 import { PRODUCT, resolveConfigPath } from "./compatibility.js";
 import { migrateInstallation } from "./migration.js";
+import {
+  DEFAULT_CLOUD_SCOPES,
+  DEFAULT_CLOUD_URL,
+  cloudDoctor,
+  cloudLogin,
+  cloudPair,
+  cloudRevoke,
+  cloudStatus,
+} from "./cloud-cli.js";
 
 const program = new Command()
   .name(PRODUCT.current.executable)
@@ -362,6 +371,74 @@ program
     runMcpServer(selectedConfigPath(options.config), {
       ...(options.routeId ? { routeId: options.routeId } : {}),
       ...(options.spaceId ? { spaceId: options.spaceId } : {}),
+    }),
+  );
+
+const cloud = program
+  .command("cloud")
+  .description("Connect this local Knot runtime to Knot Cloud without exposing a listener");
+cloud
+  .command("login")
+  .description("Prepare a local connector identity and verify the Cloud server")
+  .option("--url <url>", "Knot Cloud server", DEFAULT_CLOUD_URL)
+  .option("--name <name>", "connector name shown during pairing")
+  .option("--scope <scope...>", "requested connector scopes", DEFAULT_CLOUD_SCOPES)
+  .option("--slug-grant <slug...>", "requested publication slug grants", [])
+  .option("--config <path>", "cloud configuration file")
+  .action(async (options) => {
+    await cloudLogin({
+      baseUrl: options.url,
+      ...(options.name ? { connectorName: options.name } : {}),
+      scopes: options.scope,
+      slugGrants: options.slugGrant,
+      ...(options.config ? { configFile: options.config } : {}),
+    });
+  });
+cloud
+  .command("pair")
+  .description("Consume one-time dashboard credentials and wait for pairing approval")
+  .option("--credentials-file <path>", "one-time pairing JSON file, or - for stdin")
+  .option("--once", "poll once instead of waiting")
+  .option("--timeout <seconds>", "maximum time to wait", "600")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (options) => {
+    const timeoutSeconds = Number(options.timeout);
+    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3_600)
+      throw new Error("--timeout must be an integer from 1 to 3600 seconds");
+    await cloudPair({
+      ...(options.credentialsFile ? { credentialsFile: options.credentialsFile } : {}),
+      once: Boolean(options.once),
+      timeoutSeconds,
+      ...(options.config ? { configFile: options.config } : {}),
+    });
+  });
+cloud
+  .command("status")
+  .description("Show local pairing state and check the Cloud server")
+  .option("--json", "emit a machine-readable result")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (options) => {
+    await cloudStatus({
+      json: Boolean(options.json),
+      ...(options.config ? { configFile: options.config } : {}),
+    });
+  });
+cloud
+  .command("doctor")
+  .description("Check the local Cloud identity, permissions, and protocol")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (options) =>
+    cloudDoctor({ ...(options.config ? { configFile: options.config } : {}) }),
+  );
+cloud
+  .command("revoke")
+  .description("Open the remote revocation path or remove local connector credentials")
+  .option("--forget-local", "remove the local key and Cloud configuration after remote revocation")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (options) =>
+    cloudRevoke({
+      forgetLocal: Boolean(options.forgetLocal),
+      ...(options.config ? { configFile: options.config } : {}),
     }),
   );
 
