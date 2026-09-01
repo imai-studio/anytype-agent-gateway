@@ -115,6 +115,7 @@ function claim(definition: WorkflowDefinition, authorityHash: string): WorkflowC
       timeoutSeconds: 30,
       runDeadlineAt: 30_000,
       attemptCount: 1,
+      sourceRefetchAttemptCount: 0,
       availableAt: 1,
       authorityHash,
       updatedAt: 1,
