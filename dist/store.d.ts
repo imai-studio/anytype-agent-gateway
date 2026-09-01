@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import type { AgentRuntime, ConversationModelState, OutboundItem, OutboundOperation, OutputCycle, OutputCyclePhase, OutputCycleState, ProactiveDelivery, RuntimeCapabilities, SessionBinding, SessionBindingState } from "./session-types.js";
 import type { NormalizedEventRecord, WorkflowApprovalDecision, WorkflowDefinitionObservation, WorkflowDefinitionState, WorkflowObserverState, WorkflowVersionInput, WorkflowVersionRecord, WorkflowValidationErrorCode } from "./automation/store-types.js";
-export type ManagementCapabilityScope = "wake" | "access" | "model";
+export type ManagementCapabilityScope = "wake" | "access" | "model" | "publish";
 export declare class Store {
     private readonly reportMigration;
     readonly db: DatabaseSync;
@@ -25,6 +25,7 @@ export declare class Store {
     private migrateToVersion11;
     private migrateToVersion12;
     private migrateToVersion13;
+    private migrateToVersion14;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;

@@ -61,7 +61,7 @@
     "release:audit": "node scripts/release-audit.mjs",
     "release:install": "node scripts/install-fixtures.mjs",
     "release:redirect": "node scripts/verify-repository-redirect.mjs",
-    "release:contracts": "vitest run test/compatibility.test.ts test/legacy-upgrade-fixture.test.ts test/migration.test.ts test/principal.test.ts test/process-lock.test.ts test/service.test.ts",
+    "release:contracts": "vitest run test/cloud-cli.test.ts test/cloud-client.test.ts test/cloud-config.test.ts test/cloud-publication-outbox.test.ts test/cloud-publication.test.ts test/compatibility.test.ts test/legacy-upgrade-fixture.test.ts test/migration.test.ts test/principal.test.ts test/process-lock.test.ts test/service.test.ts",
     "release:gates": "pnpm run release:audit && pnpm run release:contracts && pnpm run release:install && git diff --exit-code -- dist packages/openclaw-anytype-channel/dist",
     "smoke:codex": "tsx scripts/smoke-codex.ts",
     "check": "pnpm run format:check && pnpm run build && pnpm run typecheck && pnpm run lint && pnpm test",

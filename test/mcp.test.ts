@@ -7,6 +7,12 @@ import { configSchema, loadConfig } from "../src/config.js";
 import { callTool, toolDefinitions } from "../src/mcp.js";
 import { Store } from "../src/store.js";
 import type { AnytypeClient } from "../src/anytype-client.js";
+import {
+  initializeCloudConfig,
+  resolveCloudPaths,
+  saveCloudConfig,
+  type CloudConfig,
+} from "../src/cloud-config.js";
 
 function config(overrides: Record<string, unknown> = {}) {
   return configSchema.parse({
@@ -60,6 +66,211 @@ function client() {
 }
 
 describe("AAG Anytype MCP policy", () => {
+  it("exposes one typed publication tool without runtime URLs, keys, HTML, or file paths", () => {
+    const configured = config({
+      tools: {
+        publish: {
+          enabled: true,
+          allowedUsers: ["owner"],
+          allowedSiteIds: ["00000000-0000-4000-8000-000000000011"],
+          allowedSlugPrefixes: ["notes/"],
+        },
+      },
+    });
+    const tool = toolDefinitions(configured).find((entry) => entry.name === "aag_publish");
+    expect(tool).toBeDefined();
+    expect(tool?.inputSchema).toHaveProperty("properties.actor_capability");
+    const fields = Object.keys((tool?.inputSchema.properties ?? {}) as Record<string, unknown>);
+    expect(fields).not.toContain("url");
+    expect(fields).not.toContain("api_key");
+    expect(fields).not.toContain("html");
+    expect(fields).not.toContain("path");
+    expect(JSON.stringify(tool?.inputSchema)).not.toContain('"href"');
+  });
+
+  it("requires verified native sender authority before a publication can reach Cloud", async () => {
+    const configured = config({
+      tools: {
+        publish: {
+          enabled: true,
+          allowedUsers: ["owner"],
+          allowedSiteIds: ["00000000-0000-4000-8000-000000000011"],
+          allowedSlugPrefixes: ["notes/"],
+        },
+      },
+    });
+    await expect(
+      callTool(
+        client(),
+        configured,
+        "/config.yaml",
+        "chat:space-1:chat",
+        "space-1",
+        "aag_publish",
+        {
+          action: "status",
+          publication_id: "00000000-0000-4000-8000-000000000022",
+        },
+        "intruder",
+      ),
+    ).rejects.toThrow("current Anytype sender is not allowed to publish");
+  });
+
+  it("publishes through the constrained tool with a documented trailing-slash prefix", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "knot-mcp-publish-"));
+    const paths = resolveCloudPaths({ configFile: join(directory, "cloud.json") });
+    const base = await initializeCloudConfig({
+      paths,
+      baseUrl: "https://knot.example",
+      connectorName: "Test Mac",
+      requestedScopes: ["publications.read", "publications.write"],
+      requestedSlugGrants: ["notes/*"],
+    });
+    const siteId = "00000000-0000-4000-8000-000000000011";
+    const publicationId = "00000000-0000-4000-8000-000000000022";
+    const paired: CloudConfig = {
+      ...base,
+      paired: {
+        connectorId: "00000000-0000-4000-8000-000000000033",
+        tenantId: "00000000-0000-4000-8000-000000000044",
+        scopes: ["publications.read", "publications.write"],
+        siteIds: [siteId],
+        slugGrants: ["notes/*"],
+        approvedAt: 1,
+      },
+    };
+    await saveCloudConfig(paths, paired);
+    const fetchMock = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      expect(init?.method).toBe("POST");
+      expect(new Headers(init?.headers).get("Knot-Signature")).toBeTruthy();
+      return Response.json(
+        {
+          protocolVersion: "1.0",
+          publicationId,
+          versionId: "00000000-0000-4000-8000-000000000055",
+          state: "ready",
+        },
+        { status: 201 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const configured = config({
+        tools: {
+          publish: {
+            enabled: true,
+            allowedUsers: ["owner"],
+            allowedSiteIds: [siteId],
+            allowedSlugPrefixes: ["notes/"],
+            cloudConfigFile: paths.configFile,
+          },
+        },
+      });
+      await expect(
+        callTool(
+          client(),
+          configured,
+          "/config.yaml",
+          "chat:space-1:chat",
+          "space-1",
+          "aag_publish",
+          {
+            action: "push",
+            publication_id: publicationId,
+            site_id: siteId,
+            slug: "notes/release",
+            operation: "create",
+            document: {
+              schemaVersion: "1.0",
+              title: "Release",
+              blocks: [{ type: "paragraph", content: [{ text: "Ready" }] }],
+            },
+          },
+          "owner",
+        ),
+      ).resolves.toMatchObject({ state: "succeeded" });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects runtime-provided links in the constrained publication tool", async () => {
+    const configured = config({
+      tools: {
+        publish: {
+          enabled: true,
+          allowedUsers: ["owner"],
+          allowedSiteIds: ["00000000-0000-4000-8000-000000000011"],
+          allowedSlugPrefixes: ["notes/"],
+        },
+      },
+    });
+    await expect(
+      callTool(
+        client(),
+        configured,
+        "/config.yaml",
+        "chat:space-1:chat",
+        "space-1",
+        "aag_publish",
+        {
+          action: "push",
+          publication_id: "00000000-0000-4000-8000-000000000022",
+          site_id: "00000000-0000-4000-8000-000000000011",
+          slug: "notes/link",
+          operation: "create",
+          document: {
+            schemaVersion: "1.0",
+            title: "Link",
+            blocks: [
+              {
+                type: "paragraph",
+                content: [{ text: "Link", href: "https://example.com" }],
+              },
+            ],
+          },
+        },
+        "owner",
+      ),
+    ).rejects.toThrow("does not accept runtime-provided URLs");
+  });
+
+  it("exposes only digest-addressed media in the constrained publication tool", () => {
+    const configured = config({
+      tools: {
+        publish: {
+          enabled: true,
+          allowedUsers: ["owner"],
+          allowedSiteIds: ["00000000-0000-4000-8000-000000000011"],
+          allowedSlugPrefixes: ["notes/"],
+        },
+      },
+    });
+    const tool = toolDefinitions(configured).find((entry) => entry.name === "aag_publish");
+    expect(tool).toBeDefined();
+    const serialized = JSON.stringify(tool!.inputSchema);
+    expect(serialized).toContain("assetDigest");
+    expect(serialized).toContain("image");
+    expect(serialized).toContain("file");
+    expect(serialized).not.toContain('"requiredHeaders"');
+  });
+
+  it("rejects wildcard or incomplete publication policy at configuration time", () => {
+    expect(() =>
+      config({
+        tools: {
+          publish: {
+            enabled: true,
+            allowedUsers: ["*"],
+            allowedSiteIds: [],
+            allowedSlugPrefixes: [],
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
   it("exposes separate Codex task creation only when explicitly enabled", () => {
     expect(toolDefinitions(config()).map((tool) => tool.name)).not.toContain(
       "aag_create_codex_task",

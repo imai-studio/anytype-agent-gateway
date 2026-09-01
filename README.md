@@ -298,19 +298,21 @@ vulnerabilities through GitHub's private vulnerability reporting flow, not a pub
 
 ## Documentation
 
-| Document                                                       | Use it for                                                     |
-| -------------------------------------------------------------- | -------------------------------------------------------------- |
-| [Agent setup runbook](docs/agent-setup.md)                     | Give this repository to Codex or another setup agent           |
-| [Architecture](ARCHITECTURE.md)                                | Released components, state, message flow, and boundaries       |
-| [Architecture decisions](docs/architecture-decisions.md)       | Alternatives considered during the original design             |
-| [Compatibility matrix](docs/compatibility.md)                  | AAG aliases, paths, environments, and migration guarantees     |
-| [Upgrade from AAG](docs/upgrade-from-aag.md)                   | Copy, service migration, verification, and rollback            |
-| [Workflow recipes](docs/workflow-recipes.md)                   | Configure and verify common agent workflows                    |
-| [Live regression runbook](docs/live-regression.md)             | Real Anytype tests for Codex and OpenClaw changes              |
-| [Roadmap](docs/knot-roadmap.md)                                | Product direction and completed migration phases               |
-| [Planned work](docs/planned-work.md)                           | Work that has not shipped                                      |
-| [Workflow runtime topology](docs/workflow-runtime-topology.md) | Phase 2 observer, runner, and proposed effect process contract |
-| [Knot Cloud proposal](docs/publish-architecture.md)            | Hosted and self-hostable Cloud and Publish design              |
+| Document                                                       | Use it for                                                      |
+| -------------------------------------------------------------- | --------------------------------------------------------------- |
+| [Agent setup runbook](docs/agent-setup.md)                     | Give this repository to Codex or another setup agent            |
+| [Architecture](ARCHITECTURE.md)                                | Released components, state, message flow, and boundaries        |
+| [Architecture decisions](docs/architecture-decisions.md)       | Alternatives considered during the original design              |
+| [Compatibility matrix](docs/compatibility.md)                  | AAG aliases, paths, environments, and migration guarantees      |
+| [Upgrade from AAG](docs/upgrade-from-aag.md)                   | Copy, service migration, verification, and rollback             |
+| [Publish through Knot Cloud](docs/cloud-publishing.md)         | Typed documents, assets, durable retries, and lifecycle control |
+| [Workflow recipes](docs/workflow-recipes.md)                   | Configure and verify common agent workflows                     |
+| [Live regression runbook](docs/live-regression.md)             | Real Anytype tests for Codex and OpenClaw changes               |
+| [Roadmap](docs/knot-roadmap.md)                                | Product direction and completed migration phases                |
+| [Planned work](docs/planned-work.md)                           | Work that has not shipped                                       |
+| [Workflow runtime topology](docs/workflow-runtime-topology.md) | Phase 2 observer, runner, and proposed effect process contract  |
+| [Knot Cloud proposal](docs/publish-architecture.md)            | Hosted and self-hostable Cloud and Publish design               |
+| [Cloud connector guide](docs/cloud-connector.md)               | Local key setup, pairing, checks, and signed transport          |
 
 Proposals are marked as proposals. A document in planned work does not make its commands, service,
 or protocol available in the current release.
