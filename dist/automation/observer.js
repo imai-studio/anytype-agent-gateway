@@ -545,7 +545,7 @@ function boundedLabel(value) {
     return label || "Workflow";
 }
 function validIdentifier(value) {
-    if (!value || value.length > MAX_IDENTIFIER_CODE_UNITS)
+    if (!value || value.length > MAX_IDENTIFIER_CODE_UNITS || value.includes("\0"))
         return undefined;
     for (let index = 0; index < value.length; index += 1) {
         const codeUnit = value.charCodeAt(index);

@@ -190,8 +190,8 @@ describe("Anytype object REST client", () => {
 
     await expect(client.searchWorkflowObjects("space", ["knot-workflow"], 0, 1)).resolves.toEqual([
       {
-        id: hostileId,
-        name: [...hostileId].slice(0, 256).join(""),
+        id: "",
+        name: "Workflow",
         typeKey: "knot-workflow",
         modifiedAt: 0,
         archived: false,
@@ -199,6 +199,47 @@ describe("Anytype object REST client", () => {
       },
     ]);
     expect(paths).toEqual(["/v1/spaces/space/search"]);
+  });
+
+  it("binds hydrated workflow identity to the requested summary ID", async () => {
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.method === "POST") {
+        response.end(
+          JSON.stringify({ data: [{ id: "requested", type: { key: "knot-workflow" } }] }),
+        );
+        return;
+      }
+      response.end(
+        JSON.stringify({
+          object: {
+            id: "different-response-id",
+            type: { key: "knot-workflow" },
+            modified_at: 1_700_000_000,
+          },
+        }),
+      );
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "knot-workflow-response-id-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "Knot", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    await expect(client.searchWorkflowObjects("space", ["knot-workflow"], 0, 1)).resolves.toEqual([
+      expect.objectContaining({ id: "requested" }),
+    ]);
   });
 
   it("reports endpoint templates without leaking concrete Anytype IDs", () => {

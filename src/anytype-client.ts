@@ -380,7 +380,7 @@ export class AnytypeClient implements AnytypePort {
     );
     const json = await readBoundedJson(response, MAX_OBJECT_RESPONSE_BYTES);
     const object = json.object ?? json;
-    return { ...object, id: validIdentifier(object.id, 512) ?? boundedObjectId };
+    return { ...object, id: boundedObjectId };
   }
 
   async listTypes(spaceId: string): Promise<JsonRecord[]> {
@@ -478,12 +478,7 @@ export class AnytypeClient implements AnytypePort {
     ).slice(0, limit);
     return mapConcurrent(summaries, WORKFLOW_OBJECT_READ_CONCURRENCY, async (summary) => {
       const summaryId = validIdentifier(summary.id, 512);
-      if (!summaryId)
-        return invalidWorkflowSummary(
-          typeof summary.id === "string" ? summary.id : "",
-          summary,
-          "object_identifier_invalid",
-        );
+      if (!summaryId) return invalidWorkflowSummary("", summary, "object_identifier_invalid");
       try {
         const raw = await this.getWorkflowObject(boundedSpaceId, summaryId);
         const typeKey = objectTypeKey(raw) ?? objectTypeKey(summary);
@@ -746,7 +741,13 @@ function boundedName(value: unknown, maximum: number): string | undefined {
 }
 
 function validIdentifier(value: unknown, maximumCodeUnits: number): string | undefined {
-  if (typeof value !== "string" || !value || value.length > maximumCodeUnits) return undefined;
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > maximumCodeUnits ||
+    value.includes("\0")
+  )
+    return undefined;
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
     if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {

@@ -281,7 +281,7 @@ export class AnytypeClient {
         const response = await this.request(`/v1/spaces/${encodeURIComponent(boundedSpaceId)}/objects/${encodeURIComponent(boundedObjectId)}`);
         const json = await readBoundedJson(response, MAX_OBJECT_RESPONSE_BYTES);
         const object = json.object ?? json;
-        return { ...object, id: validIdentifier(object.id, 512) ?? boundedObjectId };
+        return { ...object, id: boundedObjectId };
     }
     async listTypes(spaceId) {
         return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/types`);
@@ -335,7 +335,7 @@ export class AnytypeClient {
         return mapConcurrent(summaries, WORKFLOW_OBJECT_READ_CONCURRENCY, async (summary) => {
             const summaryId = validIdentifier(summary.id, 512);
             if (!summaryId)
-                return invalidWorkflowSummary(typeof summary.id === "string" ? summary.id : "", summary, "object_identifier_invalid");
+                return invalidWorkflowSummary("", summary, "object_identifier_invalid");
             try {
                 const raw = await this.getWorkflowObject(boundedSpaceId, summaryId);
                 const typeKey = objectTypeKey(raw) ?? objectTypeKey(summary);
@@ -515,7 +515,10 @@ function boundedName(value, maximum) {
     return normalized ? [...normalized].slice(0, maximum).join("") : undefined;
 }
 function validIdentifier(value, maximumCodeUnits) {
-    if (typeof value !== "string" || !value || value.length > maximumCodeUnits)
+    if (typeof value !== "string" ||
+        !value ||
+        value.length > maximumCodeUnits ||
+        value.includes("\0"))
         return undefined;
     for (let index = 0; index < value.length; index += 1) {
         const codeUnit = value.charCodeAt(index);

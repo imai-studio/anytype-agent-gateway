@@ -939,12 +939,14 @@ describe("read-only workflow observer", () => {
 
     anytype.workflowObjects = [
       workflowObject({ id: hostileId }),
+      workflowObject({ id: "unsafe\0object", source: source("Unsafe") }),
       workflowObject({ id: "invalid-object-id", source: source("Safe") }),
     ];
     const result = await observer.scanSpaceOnce("space-1");
     expect(result.failed).toBe(false);
-    expect(result.objects).toBe(2);
+    expect(result.objects).toBe(3);
     expect(store.workflowDefinition("space-1", hostileId)).toBeUndefined();
+    expect(store.workflowDefinition("space-1", "unsafe\0object")).toBeUndefined();
     expect(store.workflowDefinition("space-1", "invalid-object-id")?.state).toBe("valid");
     store.close();
   });

@@ -637,7 +637,7 @@ function boundedLabel(value: string): string {
 }
 
 function validIdentifier(value: string): string | undefined {
-  if (!value || value.length > MAX_IDENTIFIER_CODE_UNITS) return undefined;
+  if (!value || value.length > MAX_IDENTIFIER_CODE_UNITS || value.includes("\0")) return undefined;
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
     if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
