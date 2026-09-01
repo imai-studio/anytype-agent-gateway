@@ -210,11 +210,82 @@ describe("CloudPublicationOutbox", () => {
     };
     outbox.checkpointAsset(operation.operationId, digest, "requested", ids, 2);
     outbox.checkpointAsset(operation.operationId, digest, "uploaded", ids, 3);
+    outbox.resetAssetCheckpoint(operation.operationId, digest, 4);
+    expect(outbox.assetCheckpoint(operation.operationId, digest)).toEqual({
+      state: "pending",
+    });
+    outbox.checkpointAsset(operation.operationId, digest, "requested", ids, 5);
+    outbox.checkpointAsset(operation.operationId, digest, "uploaded", ids, 6);
     outbox.checkpointAsset(operation.operationId, digest, "committed", ids, 4);
     expect(outbox.assetCheckpoint(operation.operationId, digest)).toEqual({
       state: "committed",
       ...ids,
     });
+    outbox.close();
+  });
+
+  it("forces only a failed operation and resets every asset checkpoint atomically", () => {
+    const outbox = new CloudPublicationOutbox(":memory:");
+    const digest = "f".repeat(64);
+    const operation = outbox.enqueue({
+      request: {
+        kind: "push",
+        mutation: {
+          connectorId,
+          siteId: "00000000-0000-4000-8000-000000000031",
+          publicationId,
+          slug: "notes/retry",
+          operation: "create",
+          document: {
+            schemaVersion: "1.0",
+            title: "Retry",
+            blocks: [{ type: "image", assetDigest: digest }],
+          },
+          contentSha256: "d".repeat(64),
+          assetDigests: [digest],
+          idempotencyKey: "knot-idempotency-force-0001",
+        },
+        assets: [
+          {
+            digest,
+            path: "/private/media.png",
+            fileName: "media.png",
+            contentType: "image/png",
+            byteSize: 10,
+          },
+        ],
+      },
+      idempotencyKey: "knot-idempotency-force-0001",
+      requestSha256: "e".repeat(64),
+      now: 1,
+    });
+    expect(outbox.claim(operation.operationId, "worker", 2)).toBe(true);
+    outbox.checkpointAsset(
+      operation.operationId,
+      digest,
+      "uploaded",
+      {
+        assetId: "00000000-0000-4000-8000-000000000041",
+        uploadId: "00000000-0000-4000-8000-000000000042",
+      },
+      3,
+    );
+    outbox.fail(
+      operation.operationId,
+      "worker",
+      { retryable: false, code: "terminal", message: "failed" },
+      4,
+    );
+
+    outbox.forceRetry(operation.operationId, 5);
+    expect(outbox.operation(operation.operationId)).toMatchObject({
+      state: "queued",
+      availableAt: 5,
+    });
+    expect(outbox.assetCheckpoint(operation.operationId, digest)).toEqual({
+      state: "pending",
+    });
+    expect(() => outbox.forceRetry(operation.operationId, 6)).toThrow(/failed/u);
     outbox.close();
   });
 });

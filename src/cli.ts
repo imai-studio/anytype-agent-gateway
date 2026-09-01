@@ -473,12 +473,14 @@ cloudOperation
 cloudOperation
   .command("retry")
   .argument("<operation-id>")
+  .option("--force", "re-attempt a terminal failure and restart asset checkpoints")
   .option("--config <path>", "cloud configuration file")
   .action(async (operationId, options) => {
     console.log(
       JSON.stringify(
         await retryPublicationOperation({
           operationId,
+          force: Boolean(options.force),
           ...(options.config ? { configFile: options.config } : {}),
         }),
         null,

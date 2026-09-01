@@ -279,6 +279,17 @@ export class CloudPublicationOutbox {
     if (changed !== 1) throw new Error("Publication asset checkpoint is missing");
   }
 
+  resetAssetCheckpoint(operationId: string, digest: string, now = Date.now()): void {
+    const changed = this.db
+      .prepare(
+        `UPDATE publication_asset_checkpoints
+         SET state='pending',asset_id=NULL,upload_id=NULL,updated_at=?
+         WHERE operation_id=? AND digest=?`,
+      )
+      .run(now, operationId, digest).changes;
+    if (changed !== 1) throw new Error("Publication asset checkpoint is missing");
+  }
+
   operation(operationId: string): PublicationOperation | undefined {
     const row = this.db
       .prepare("SELECT * FROM publication_operations WHERE operation_id=?")
@@ -312,6 +323,32 @@ export class CloudPublicationOutbox {
          WHERE operation_id=? AND state='retrying'`,
       )
       .run(now, now, operationId);
+  }
+
+  forceRetry(operationId: string, now = Date.now()): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const changed = this.db
+        .prepare(
+          `UPDATE publication_operations
+             SET state='queued',available_at=?,result_json=NULL,last_error_code=NULL,last_error=NULL,
+                 lease_owner=NULL,lease_expires_at=NULL,updated_at=?
+           WHERE operation_id=? AND state='failed'`,
+        )
+        .run(now, now, operationId).changes;
+      if (changed !== 1) throw new Error("Only a failed publication operation can be forced");
+      this.db
+        .prepare(
+          `UPDATE publication_asset_checkpoints
+             SET state='pending',asset_id=NULL,upload_id=NULL,updated_at=?
+           WHERE operation_id=?`,
+        )
+        .run(now, operationId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   succeed(operationId: string, workerId: string, result: unknown, now = Date.now()): void {

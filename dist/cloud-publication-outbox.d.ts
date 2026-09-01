@@ -200,10 +200,12 @@ export declare class CloudPublicationOutbox {
         assetId: string;
         uploadId: string;
     }, now?: number): void;
+    resetAssetCheckpoint(operationId: string, digest: string, now?: number): void;
     operation(operationId: string): PublicationOperation | undefined;
     request(operationId: string): PublicationOutboxRequest | undefined;
     claim(operationId: string, workerId: string, now?: number, leaseMs?: number): boolean;
     retryNow(operationId: string, now?: number): void;
+    forceRetry(operationId: string, now?: number): void;
     succeed(operationId: string, workerId: string, result: unknown, now?: number): void;
     fail(operationId: string, workerId: string, input: {
         retryable: boolean;

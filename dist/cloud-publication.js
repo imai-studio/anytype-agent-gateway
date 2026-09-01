@@ -173,9 +173,16 @@ export async function retryPublicationOperation(input, context = {}) {
         const operation = outbox.operation(uuidSchema.parse(input.operationId));
         if (!operation)
             throw new Error("No local publication operation has that ID");
-        if (operation.state === "succeeded" || operation.state === "failed")
+        if (operation.state === "succeeded")
             return operation;
-        outbox.retryNow(operation.operationId, context.now?.() ?? Date.now());
+        if (operation.state === "failed") {
+            if (!input.force)
+                throw new Error("The operation failed terminally; retry it explicitly with --force");
+            outbox.forceRetry(operation.operationId, context.now?.() ?? Date.now());
+        }
+        else {
+            outbox.retryNow(operation.operationId, context.now?.() ?? Date.now());
+        }
         return await deliverPublicationOperation(outbox, operation.operationId, config, context);
     }
     finally {
@@ -251,12 +258,17 @@ function buildOutboxRequest(config, input, assets) {
         throw new Error("Destructive unpublish requires confirmation equal to the publication ID");
     assertServerGrant(config, input.action === "unpublish" ? "publications.unpublish" : "publications.write");
     const payload = { connectorId, operation };
+    // A lifecycle command is a new intent each time the operator invokes it.
+    // Retries of this durable operation keep the stored key, while a later
+    // disable/rollback/unpublish receives a fresh key and cannot be mistaken
+    // for an already completed action.
+    const invocationId = randomUUID();
     return {
         kind: "control",
         request: {
             protocolVersion: CLOUD_PROTOCOL_VERSION,
             ...payload,
-            idempotencyKey: idempotencyKeyFor({ kind: "control", payload }),
+            idempotencyKey: idempotencyKeyFor({ kind: "control", payload, invocationId }),
         },
     };
 }
@@ -302,11 +314,19 @@ async function deliverAsset(outbox, operationId, asset, mutation, allowedAssetRo
                 digest: asset.digest,
             }),
         });
-        if (result.status !== "verified")
+        if (result.status !== "verified") {
+            if (result.reason === "upload-missing") {
+                outbox.resetAssetCheckpoint(operationId, asset.digest, context.now?.() ?? Date.now());
+                throw new CloudRequestError("Asset upload expired before verification", {
+                    retryable: true,
+                    code: result.reason,
+                });
+            }
             throw new CloudRequestError(`Asset upload was rejected: ${result.reason}`, {
                 retryable: false,
                 code: result.reason,
             });
+        }
         outbox.checkpointAsset(operationId, asset.digest, "committed", ids, context.now?.() ?? Date.now());
     }
 }

@@ -13,6 +13,7 @@ import {
   publicationAction,
   publicationOperationStatus,
   preparePublicationAssetManifest,
+  retryPublicationOperation,
   type PublicationPolicy,
 } from "../src/cloud-publication.js";
 import { CloudPublicationOutbox } from "../src/cloud-publication-outbox.js";
@@ -179,6 +180,84 @@ describe("local Cloud publication actions", () => {
     ).rejects.toThrow("rollback is disabled");
   });
 
+  it("issues a fresh durable intent for every repeated lifecycle command", async () => {
+    const { configFile } = await pairedConfig();
+    const controlPublication = vi.fn(async () => ({
+      protocolVersion: "1.0" as const,
+      type: "publication.disable" as const,
+      publicationId,
+      disabledAt: 1,
+    }));
+    const client = { controlPublication } as unknown as CloudClient;
+
+    const first = await publicationAction(
+      { action: "disable", configFile, publicationId },
+      { client: () => client, workerId: "control-1" },
+    );
+    const second = await publicationAction(
+      { action: "disable", configFile, publicationId },
+      { client: () => client, workerId: "control-2" },
+    );
+
+    expect(first).toMatchObject({ state: "succeeded" });
+    expect(second).toMatchObject({ state: "succeeded" });
+    expect(controlPublication).toHaveBeenCalledTimes(2);
+    expect("operationId" in first && "operationId" in second).toBe(true);
+    if ("operationId" in first && "operationId" in second)
+      expect(first.operationId).not.toBe(second.operationId);
+  });
+
+  it("requires an explicit force before retrying a terminal operation", async () => {
+    const { configFile } = await pairedConfig();
+    const publish = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new CloudRequestError("rejected", {
+          retryable: false,
+          code: "invalid-cloud-response",
+        }),
+      )
+      .mockResolvedValueOnce({
+        protocolVersion: "1.0",
+        publicationId,
+        versionId,
+        state: "ready",
+      });
+    const client = { publish } as unknown as CloudClient;
+    const failed = await publicationAction(
+      {
+        action: "push",
+        configFile,
+        siteId,
+        publicationId,
+        slug: "notes/forced-retry",
+        operation: "create",
+        document,
+      },
+      { client: () => client, workerId: "failure" },
+    );
+    if (!("operationId" in failed) || typeof failed.operationId !== "string")
+      throw new Error("Expected a failed durable operation");
+    expect(failed).toMatchObject({ state: "failed" });
+
+    await expect(
+      retryPublicationOperation(
+        { configFile, operationId: failed.operationId },
+        { client: () => client, workerId: "not-forced" },
+      ),
+    ).rejects.toThrow(/--force/u);
+    await expect(
+      retryPublicationOperation(
+        { configFile, operationId: failed.operationId, force: true },
+        { client: () => client, workerId: "forced" },
+      ),
+    ).resolves.toMatchObject({
+      operationId: failed.operationId,
+      state: "succeeded",
+      attempt: 2,
+    });
+  });
+
   it("uploads a pre-approved bounded asset with resumable checkpoints before publishing", async () => {
     const assetRoot = await mkdtemp(join(tmpdir(), "knot-publish-assets-"));
     const assetPath = join(assetRoot, "flower.png");
@@ -243,6 +322,83 @@ describe("local Cloud publication actions", () => {
     const outbox = new CloudPublicationOutbox(paths.publicationOutboxFile);
     expect(outbox.assetManifest(prepared.manifestId)).toBeUndefined();
     outbox.close();
+  });
+
+  it("re-requests an asset after an expired upload is reported missing", async () => {
+    const assetRoot = await mkdtemp(join(tmpdir(), "knot-publish-assets-expired-"));
+    const assetPath = join(assetRoot, "flower.png");
+    await writeFile(assetPath, "bounded-image");
+    const manifestPath = join(assetRoot, "manifest.json");
+    await writeFile(manifestPath, JSON.stringify([{ path: assetPath, contentType: "image/png" }]));
+    const { configFile } = await pairedConfig(assetRoot);
+    const prepared = await preparePublicationAssetManifest({ configFile, manifestPath });
+    let request = 0;
+    const client = {
+      requestAssetUpload: vi.fn(async () => {
+        request += 1;
+        return {
+          protocolVersion: "1.0",
+          assetId: `00000000-0000-4000-8000-${String(60 + request).padStart(12, "0")}`,
+          uploadId: `00000000-0000-4000-8000-${String(70 + request).padStart(12, "0")}`,
+          method: "PUT",
+          uploadUrl: "https://uploads.example/object",
+          requiredHeaders: { "content-type": "image/png" },
+          expiresAt: 100 + request,
+        };
+      }),
+      uploadAsset: vi.fn(),
+      commitAssetUpload: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "rejected",
+          assetId: "00000000-0000-4000-8000-000000000061",
+          reason: "upload-missing",
+        })
+        .mockResolvedValueOnce({
+          status: "verified",
+          assetId: "00000000-0000-4000-8000-000000000062",
+          sha256: prepared.digests[0],
+          byteSize: 13,
+          verifiedAt: 1,
+        }),
+      publish: vi.fn(async () => ({
+        protocolVersion: "1.0",
+        publicationId,
+        versionId,
+        state: "ready",
+      })),
+    } as unknown as CloudClient;
+    const first = await publicationAction(
+      {
+        action: "push",
+        configFile,
+        siteId,
+        publicationId,
+        slug: "notes/expired-media",
+        operation: "create",
+        assetManifestId: prepared.manifestId,
+        document: {
+          schemaVersion: "1.0",
+          title: "Media",
+          blocks: [{ type: "image", assetDigest: prepared.digests[0]! }],
+        },
+      },
+      { client: () => client, workerId: "asset-1", now: () => 1_000 },
+    );
+    if (!("operationId" in first) || typeof first.operationId !== "string")
+      throw new Error("Expected a retryable durable operation");
+    expect(first).toMatchObject({ state: "retrying", lastErrorCode: "upload-missing" });
+
+    await expect(
+      retryPublicationOperation(
+        { configFile, operationId: first.operationId },
+        { client: () => client, workerId: "asset-2", now: () => 2_000 },
+      ),
+    ).resolves.toMatchObject({ state: "succeeded", attempt: 2 });
+    expect(client.requestAssetUpload).toHaveBeenCalledTimes(2);
+    expect(client.uploadAsset).toHaveBeenCalledTimes(2);
+    expect(client.commitAssetUpload).toHaveBeenCalledTimes(2);
+    expect(client.publish).toHaveBeenCalledOnce();
   });
 
   it("rejects media blocks without a matching pre-approved manifest", async () => {

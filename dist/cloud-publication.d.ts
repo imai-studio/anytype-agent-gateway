@@ -59,5 +59,6 @@ export declare function publicationOperationStatus(input: {
 export declare function retryPublicationOperation(input: {
     configFile?: string;
     operationId: string;
+    force?: boolean;
 }, context?: PublicationContext): Promise<PublicationOperation>;
 export declare function assertPublicationPolicy(input: PublishAction, policy: PublicationPolicy): void;
