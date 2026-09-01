@@ -6,16 +6,20 @@ promise.
 
 ## Phase 2 workflow runtime
 
-The repository contains the Phase 2 contracts, additive SQLite foundation, and read-only workflow
-definition observer. Workflow execution is not available. The remaining work should follow this
-order.
+The repository contains the Phase 2 contracts, additive SQLite foundation, read-only workflow
+definition observer, and durable local runner core. The runner dispatches normalized events,
+persists runs and dependency-ordered steps, recovers leases, retries with durable deadlines,
+records cancellation, and dead-letters work that cannot continue. Effect execution is not
+available. Definitions with prompt or message text stop in `source_refetch_required` because the
+gateway does not install a read-only source resolver. The remaining work should follow this order.
 
 The foundation rejects hard-delete and raw external URL steps, requires named local connections,
 checks verified editor identity, intersects definition budgets with local caps, and stores source
 digests instead of raw definition text. Normalized events use closed enums and bounded payloads.
 The definition observer discovers configured workflow objects, checks native editor identity and
 local authority, stores immutable versions, and emits deduplicated definition events. It does not
-observe workflow target objects or create runs and effects.
+observe workflow target objects. The runner ignores those control-plane definition events and waits
+for normalized target, chat, schedule, or manual events.
 
 ### 1. Infrastructure specification
 
@@ -24,8 +28,8 @@ The proposed process and recovery contract is in
 fencing, crash recovery, timers, cancellation, effect receipts, retention, backup restoration, and
 single-host operation. Reviewing that design is the gate for the observer and runner work below.
 
-The topology document is the design contract for the shipped definition observer and the proposed
-runner. The observer currently implements only the definition-discovery subset.
+The topology document is the design contract for the shipped definition observer and durable runner
+core. Effect receipts, projections, target-data observation, and effect workers remain proposed.
 
 ### 2. Remaining observation and reconciliation
 
@@ -35,13 +39,13 @@ runner. The observer currently implements only the definition-discovery subset.
 - Add first-activation baselines, optional backfill, coalescing, and self-write suppression.
 - Add global and per-space API budgets to the existing fair, bounded definition polling.
 
-### 3. Durable runner
+### 3. Runner completion
 
-- Add run, step, attempt, lease, timer, effect, retry, cancellation, and dead-letter state machines.
-- Recover expired leases after a crash without losing a run.
-- Deliver events at least once and require idempotent effects.
-- Enforce concurrency, rate, cost, and causal-depth limits.
-- Record an audit entry for every policy decision and external effect.
+- Add durable timer events and per-step waiting timers.
+- Add effect intent, receipt, and unknown-outcome recovery before any external executor ships.
+- Extend the current concurrency, hourly-rate, step, and causal-depth checks with cost accounting.
+- Add a complete policy-decision and effect audit view.
+- Add CLI inspection and operator controls for runs, cancellation, retries, and dead letters.
 
 ### 4. Steps and approvals
 

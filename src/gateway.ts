@@ -8,6 +8,7 @@ import { DiscussionAnytypePort, HeartDiscussionAdapter } from "./discussions.js"
 import { Store } from "./store.js";
 import type { AnytypePort, ChatMessage, ConversationRef, RuntimeDriver } from "./types.js";
 import { WorkflowObserver } from "./automation/observer.js";
+import { WorkflowRunner } from "./automation/runner.js";
 import { decideWake, mergeWakeOverride, sameIdentity } from "./wake.js";
 import {
   principalAuditFields,
@@ -161,6 +162,10 @@ export class Gateway {
       if (this.config.directMessages.enabled)
         this.track(this.discoverDirectMessages(this.config.directMessages));
       if (!this.tasks.size) throw new Error("Configuration produced no chat or discussion routes");
+      if (this.config.automation.enabled && this.config.automation.execution)
+        this.track(
+          new WorkflowRunner(this.store, this.config.automation, this.log).run(this.abort.signal),
+        );
       if (this.config.automation.enabled && this.config.automation.observation)
         this.trackAuxiliary(
           new WorkflowObserver(this.anytype, this.store, this.config.automation, this.log).run(

@@ -23,6 +23,8 @@ export declare class Store {
     private migrateToVersion9;
     private migrateToVersion10;
     private migrateToVersion11;
+    private migrateToVersion12;
+    private migrateToVersion13;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;
@@ -195,6 +197,7 @@ export declare class Store {
     workflowVersion(workflowId: string, versionHash: string): WorkflowVersionRecord | undefined;
     recordWorkflowApproval(input: Omit<WorkflowApprovalDecision, "sequence">): WorkflowApprovalDecision;
     currentWorkflowApproval(workflowId: string, approvalHash: string, authorityHash: string, now?: number): WorkflowApprovalDecision | undefined;
+    latestWorkflowApproval(workflowId: string, approvalHash: string): WorkflowApprovalDecision | undefined;
     recordNormalizedEvent(input: NormalizedEventRecord): NormalizedEventRecord;
     hasNormalizedEvent(dedupeKey: string): boolean;
     hasNormalizedObjectEvent(spaceId: string, objectId: string): boolean;

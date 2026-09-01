@@ -405,6 +405,20 @@ export const configSchema = z.object({
         })
             .strict()
             .default({ minimumIntervalSeconds: 10, maximumIntervalSeconds: 300, pageSize: 100 }),
+        runner: z
+            .object({
+            pollIntervalMilliseconds: z.number().int().min(50).max(60_000).default(1_000),
+            leaseSeconds: z.number().int().min(5).max(3_600).default(30),
+            workerCount: z.number().int().min(1).max(16).default(2),
+            batchSize: z.number().int().min(1).max(500).default(100),
+        })
+            .strict()
+            .default({
+            pollIntervalMilliseconds: 1_000,
+            leaseSeconds: 30,
+            workerCount: 2,
+            batchSize: 100,
+        }),
         ...workflowAuthorityFields,
         heartHints: z.boolean().default(false),
     })
@@ -435,12 +449,6 @@ export const configSchema = z.object({
                 path: ["observation"],
                 message: "automation.observation is required before execution",
             });
-        else if (value.execution)
-            context.addIssue({
-                code: "custom",
-                path: ["execution"],
-                message: "automation.execution is not available in this release",
-            });
         if (value.heartHints && !value.observation)
             context.addIssue({
                 code: "custom",
@@ -452,6 +460,12 @@ export const configSchema = z.object({
                 code: "custom",
                 path: ["execution"],
                 message: "automation.execution is required before authoring or data products",
+            });
+        else if (value.authoring || value.dataProducts)
+            context.addIssue({
+                code: "custom",
+                path: [value.authoring ? "authoring" : "dataProducts"],
+                message: "automation authoring and data products are not available in this release",
             });
         if (value.polling.maximumIntervalSeconds < value.polling.minimumIntervalSeconds)
             context.addIssue({
@@ -468,6 +482,12 @@ export const configSchema = z.object({
         dataProducts: false,
         definitionTypeKeys: ["knot-workflow"],
         polling: { minimumIntervalSeconds: 10, maximumIntervalSeconds: 300, pageSize: 100 },
+        runner: {
+            pollIntervalMilliseconds: 1_000,
+            leaseSeconds: 30,
+            workerCount: 2,
+            batchSize: 100,
+        },
         allowedAuthorIds: [],
         allowedSpaceIds: [],
         allowedCapabilities: [],

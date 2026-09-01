@@ -231,6 +231,12 @@ const workflowDefinitionObjectSchema = z
 })
     .strict()
     .superRefine((workflow, context) => {
+    if (workflow.spec.steps.length > workflow.spec.budget.maximumStepsPerRun)
+        context.addIssue({
+            code: "custom",
+            path: ["spec", "steps"],
+            message: `Workflow has ${workflow.spec.steps.length} steps but maximumStepsPerRun is ${workflow.spec.budget.maximumStepsPerRun}`,
+        });
     const stepIds = new Set();
     for (const [index, step] of workflow.spec.steps.entries()) {
         if (stepIds.has(step.id))
@@ -369,7 +375,7 @@ function redactSensitiveWorkflowStrings(value, path = []) {
     const result = {};
     for (const [key, nested] of Object.entries(value)) {
         const nestedPath = [...path, key];
-        if ((key === "prompt" || key === "message") && typeof nested === "string") {
+        if (isSensitiveWorkflowTextPath(nestedPath) && typeof nested === "string") {
             result[key] = {
                 redacted: true,
                 digest: sensitiveWorkflowFieldDigest(nestedPath, nested),
@@ -379,6 +385,14 @@ function redactSensitiveWorkflowStrings(value, path = []) {
             result[key] = redactSensitiveWorkflowStrings(nested, nestedPath);
     }
     return result;
+}
+export function isSensitiveWorkflowTextPath(path) {
+    return (path.length === 5 &&
+        path[0] === "spec" &&
+        path[1] === "steps" &&
+        /^\d+$/.test(path[2]) &&
+        path[3] === "config" &&
+        (path[4] === "prompt" || path[4] === "message"));
 }
 function sensitiveWorkflowFieldDigest(path, value) {
     const digest = createHash("sha256")
@@ -400,6 +414,13 @@ export function workflowSourceDigest(source) {
     const digest = createHash("sha256")
         .update("knot.workflow.source.v1\0")
         .update(source)
+        .digest("hex");
+    return `sha256:${digest}`;
+}
+export function workflowPrincipalDigest(participantId) {
+    const digest = createHash("sha256")
+        .update("knot.workflow.principal.v1\0")
+        .update(participantId)
         .digest("hex");
     return `sha256:${digest}`;
 }

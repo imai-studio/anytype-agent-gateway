@@ -1,7 +1,8 @@
 # Workflow runtime process topology
 
-Status: process contract for Phase 2. The read-only workflow definition observer is implemented.
-Target-object observation and the workflow runner remain proposed.
+Status: process contract for Phase 2. The workflow definition observer and durable runner core are
+implemented. Target-object observation, effect executors, receipts, and status projection remain
+proposed.
 
 This document fixes the process and recovery rules for the workflow runtime. Later implementation
 PRs may add tables and modules, but they must keep these rules unless a new architecture decision
@@ -9,14 +10,14 @@ changes them.
 
 ## Scope
 
-The Phase 2 runtime runs inside the existing Knot service. The current release adds the definition
-observer. The full design has two long-lived supervisors:
+The Phase 2 runtime runs inside the existing Knot service. The current release has two long-lived
+supervisors:
 
 - the observer turns Anytype changes, chat messages, schedules, and manual requests into normalized
   events;
 - the runner matches events to approved workflow versions and advances durable step attempts.
 
-The observer and future runner do not replace the current chat gateway. The gateway keeps its route,
+The observer and runner do not replace the current chat gateway. The gateway keeps its route,
 session, steering, and response projection behavior. Workflow agent steps call the existing runtime
 drivers through a separate execution path and persist their results before later steps begin.
 
@@ -99,9 +100,9 @@ Knot starts the workflow runtime in this order:
 9. Attach chat SSE and optional Heart hints after the reconciliation scheduler is ready.
 10. Report the service as ready.
 
-The following order describes the complete runtime. The current release skips runner and projection
-startup, then starts only read-only definition polling when `automation.observation` is enabled.
-It rejects `automation.execution`.
+The current release performs the queue recovery and runner startup steps when
+`automation.execution` is enabled. It skips the effect worker and Anytype projection worker because
+neither has shipped.
 
 The runner will start before new observations so recovered work does not wait behind a burst of fresh
 events. Observation still uses a baseline on first activation, so enabling a workflow does not turn
@@ -214,8 +215,8 @@ pending -> running -> waiting -> succeeded
 ```
 
 `waiting` means no worker owns the run because it waits for a retry timer, schedule time, approval,
-or an upstream step. `dead_letter` means automatic progress stopped and an operator must inspect the
-run.
+source refetch, or an upstream step. `dead_letter` means automatic progress stopped and an operator
+must inspect the run.
 
 Step states are:
 
@@ -224,6 +225,7 @@ blocked -> ready -> leased -> running -> succeeded
                                   -> waiting_retry -> ready
                                   -> waiting_timer -> ready
                                   -> waiting_approval -> ready
+                                  -> source_refetch_required -> ready
                                   -> failed
                                   -> cancelled
                                   -> dead_letter
@@ -234,6 +236,11 @@ or dead-letter dependency prevents downstream execution. Fan-out and joins use t
 
 Attempts are immutable records. A retry appends another attempt. It never clears the error or
 receipt from an earlier attempt.
+
+`source_refetch_required` records why Knot refused to execute a redacted definition. A read-only
+resolver can move the step back to `ready` only after it matches the stored source revision, native
+editor, version hash, approval hash, and local policy. The runner keeps refetched text in memory and
+never writes it to SQLite or logs.
 
 ## Leases and fencing
 
@@ -381,8 +388,10 @@ Deleting that evidence before the first long soak would make failure analysis gu
 Knot may compact replaceable Anytype run-status projections and transient debug logs. It must not
 compact SQLite execution truth in v0.3.
 
-`knot doctor` must report database size, oldest event, oldest unresolved run, dead-letter count,
-and estimated growth. A later retention command needs its own reviewed design. It must refuse to
+The current `knot doctor` checks connectivity and runtime configuration; it does not yet report
+workflow queue health. Queue-health reporting should add database size, oldest event, oldest
+unresolved run, dead-letter count, and estimated growth before retention is enabled. A later
+retention command needs its own reviewed design. It must refuse to
 delete a record referenced by a live run, approval, effect receipt, mirror provenance record, or
 backup manifest.
 

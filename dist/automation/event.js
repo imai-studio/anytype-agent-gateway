@@ -22,6 +22,7 @@ export const normalizedEventSourceSchema = z.enum([
     "external",
     "manual",
     "self",
+    "workflow",
 ]);
 const normalizedEventObjectSchema = z
     .object({

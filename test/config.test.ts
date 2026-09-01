@@ -46,6 +46,12 @@ describe("loadConfig", () => {
       maximumIntervalSeconds: 300,
       pageSize: 100,
     });
+    expect(config.automation.runner).toEqual({
+      pollIntervalMilliseconds: 1_000,
+      leaseSeconds: 30,
+      workerCount: 2,
+      batchSize: 100,
+    });
   });
 
   it("requires explicit workflow authors and spaces before enabling automation", () => {
@@ -81,6 +87,18 @@ describe("loadConfig", () => {
         },
       }),
     ).toThrow("observation");
+    expect(
+      configSchema.parse({
+        ...base,
+        automation: {
+          enabled: true,
+          observation: true,
+          execution: true,
+          allowedAuthorIds: ["operator"],
+          allowedSpaceIds: ["space"],
+        },
+      }).automation.execution,
+    ).toBe(true);
     expect(() =>
       configSchema.parse({
         ...base,
@@ -88,6 +106,7 @@ describe("loadConfig", () => {
           enabled: true,
           observation: true,
           execution: true,
+          authoring: true,
           allowedAuthorIds: ["operator"],
           allowedSpaceIds: ["space"],
         },

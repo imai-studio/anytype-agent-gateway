@@ -7,6 +7,7 @@ import {
 } from "../src/automation/policy.js";
 import {
   canonicalJson,
+  canonicalStoredWorkflowDefinition,
   workflowApprovalMaterial,
   workflowApprovalHash,
   workflowDefinitionSchema,
@@ -58,6 +59,33 @@ describe("workflow foundation", () => {
     );
   });
 
+  it("redacts only schema-defined author text paths", () => {
+    const authorText = workflow({
+      steps: [{ id: "agent", kind: "agent", config: { prompt: "private author text" } }],
+      capabilities: ["agent.invoke"],
+    });
+    expect(canonicalStoredWorkflowDefinition(authorText)).not.toContain("private author text");
+
+    const ordinaryData = workflowDefinitionSchema.parse({
+      ...workflow(),
+      metadata: { name: "Labels", labels: { prompt: "classification" } },
+      spec: {
+        ...workflow().spec,
+        steps: [
+          {
+            id: "write",
+            kind: "anytype.write",
+            config: { values: { prompt: "ordinary object property" } },
+          },
+        ],
+        capabilities: ["anytype.write"],
+      },
+    });
+    const stored = canonicalStoredWorkflowDefinition(ordinaryData);
+    expect(stored).toContain("classification");
+    expect(stored).toContain("ordinary object property");
+  });
+
   it("keeps every behavior-bearing spec field in approval material", () => {
     const definition = workflow();
     const material = workflowApprovalMaterial(definition) as {
@@ -86,6 +114,15 @@ describe("workflow foundation", () => {
         ],
       }),
     ).toThrow("acyclic");
+    expect(() =>
+      workflow({
+        steps: [
+          { id: "one", kind: "transform" },
+          { id: "two", kind: "transform" },
+        ],
+        budget: { maximumStepsPerRun: 1 },
+      }),
+    ).toThrow("maximumStepsPerRun is 1");
   });
 
   it("fails closed on unknown workflow-owned fields", () => {

@@ -66,7 +66,7 @@ function versionRecord(
 describe("automation persistence foundation", () => {
   it("retains the v7 automation foundation tables without enabling execution", () => {
     const store = new Store(":memory:");
-    expect(store.schemaVersion()).toBe(11);
+    expect(store.schemaVersion()).toBe(13);
     for (const table of [
       "workflow_definitions",
       "workflow_approval_subjects",
@@ -74,6 +74,11 @@ describe("automation persistence foundation", () => {
       "workflow_approval_decisions",
       "normalized_events",
       "workflow_observer_spaces",
+      "workflow_runner_state",
+      "workflow_deliveries",
+      "workflow_runs",
+      "workflow_steps",
+      "workflow_attempts",
     ])
       expect(
         store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table),
@@ -99,10 +104,10 @@ describe("automation persistence foundation", () => {
 
     const reports: string[] = [];
     const store = new Store(path, (message) => reports.push(message));
-    expect(store.schemaVersion()).toBe(11);
+    expect(store.schemaVersion()).toBe(13);
     expect(store.migrationBackupPath).toBeTruthy();
     expect(store.migrationBackupPath).toContain(".pre-v6.");
-    expect(reports[0]).toContain("from schema 6 to 11");
+    expect(reports[0]).toContain("from schema 6 to 13");
     expect(statSync(store.migrationBackupPath!).mode & 0o777).toBe(0o600);
     const backup = new DatabaseSync(store.migrationBackupPath!, { readOnly: true });
     expect(
@@ -110,6 +115,44 @@ describe("automation persistence foundation", () => {
     ).toBe(6);
     expect(backup.prepare("SELECT value FROM fixture").get()).toEqual({ value: "kept" });
     backup.close();
+    store.close();
+  });
+
+  it("adds durable delivery deferral when upgrading schema 12", () => {
+    const directory = mkdtempSync(join(tmpdir(), "knot-v12-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE workflow_deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE normalized_events (
+        event_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        source TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      INSERT INTO normalized_events VALUES(
+        'legacy-control','object.updated','poll','{"controlPlane":"workflow-definition"}'
+      );
+      PRAGMA user_version=12;
+    `);
+    legacy.close();
+
+    const store = new Store(path, () => {});
+
+    expect(store.schemaVersion()).toBe(13);
+    expect(
+      store.db
+        .prepare("SELECT 1 FROM pragma_table_info('workflow_deliveries') WHERE name=?")
+        .get("next_dispatch_at"),
+    ).toBeDefined();
+    expect(store.db.prepare("SELECT source FROM normalized_events").get()).toEqual({
+      source: "workflow",
+    });
     store.close();
   });
 

@@ -88,7 +88,7 @@ function observationDigest(markdown: string): string {
 function eventRows(store: Store): Array<Record<string, unknown>> {
   return store.db
     .prepare(
-      `SELECT kind,source_modified_at,source_fingerprint,editor_principal_digest,payload_json
+      `SELECT kind,source,source_modified_at,source_fingerprint,editor_principal_digest,payload_json
        FROM normalized_events ORDER BY recorded_at,event_id`,
     )
     .all() as Array<Record<string, unknown>>;
@@ -125,10 +125,12 @@ describe("read-only workflow observer", () => {
       source_digest: definitionDigest(object.source!),
     });
     expect(eventRows(store)).toHaveLength(1);
+    expect(eventRows(store)[0]!.source).toBe("workflow");
     expect(JSON.parse(String(eventRows(store)[0]!.payload_json))).toMatchObject({
       enabled: false,
       valid: true,
     });
+    expect(String(eventRows(store)[0]!.payload_json).includes("controlPlane")).toBe(false);
     store.close();
   });
 

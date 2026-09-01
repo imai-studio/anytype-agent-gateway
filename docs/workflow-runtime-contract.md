@@ -1,7 +1,8 @@
 # Workflow runtime foundation
 
-This document freezes the Phase 2 foundation contract. Knot now has a read-only observer for
-workflow definition objects. It does not observe workflow target data or execute workflow steps.
+This document freezes the Phase 2 foundation contract. Knot has a read-only observer for workflow
+definition objects and a durable local runner core. It does not observe workflow target data or
+execute agent, Anytype, HTTP, notification, or other effect steps.
 
 The companion [process topology](workflow-runtime-topology.md) defines ownership, leases, crash
 recovery, timers, cancellation, effects, shutdown, retention, and restore behavior for the code that
@@ -29,8 +30,21 @@ exceeds the matching local cap. The effective value is the lower of the two limi
 
 `automation.enabled` is false by default. Set `automation.observation` to start the read-only
 definition observer. The configuration must also name allowed spaces, allowed native editor IDs,
-allowed capabilities, and one or more workflow object type keys. `automation.execution` is rejected
-because the runner is not available. Authoring and data-product gates remain unavailable with it.
+allowed capabilities, and one or more workflow object type keys. Set `automation.execution` to
+start the durable matcher, dispatcher, and bounded workers. Execution requires observation.
+Authoring and data-product gates remain unavailable.
+
+The runner stores deliveries, runs, steps, and attempts before it claims work. Claims have a worker
+ID, lease deadline, and random fencing token. A stale worker cannot complete a reclaimed step.
+Retry deadlines, cancellation requests, dead letters, the event cursor, and the fair-claim hint are
+durable. Dispatch and resume re-evaluate current local authority and the exact approval decision.
+The only shipped successful executor is an empty transform with no transform or input reference.
+Every other step fails closed at the executor boundary without an external effect.
+If a definition contains a prompt or message, the runner moves its first claimed step to
+`source_refetch_required` instead of reading text from SQLite. The optional resolver contract is
+read-only. It must return the exact definition source, native revision, and verified editor. Knot
+then checks the source, version, approval, editor, policy, and current authority hashes before it
+can resume the step. The current gateway does not install a resolver or effect executor.
 
 The observer polls every allowed space through the public Anytype API. It stores one durable page
 cursor, reconciliation boundary, revision watermark, failure count, and next-scan time per space.
@@ -113,7 +127,7 @@ The remaining object, collection, schedule, and manual observation work will use
 contract. First activation does not backfill unless requested.
 Normalized event kinds and sources use closed enums. Payloads and property diffs have bounded,
 strict schemas. Native editor provenance and the source revision fingerprint remain attached to the
-immutable event. Event IDs and dedupe keys provide immutable input facts; later runner delivery is
+immutable event. Event IDs and dedupe keys provide immutable input facts; runner delivery is
 at-least-once. Self-writes are suppressed by default, compatible object changes may coalesce, and
 causal depth bounds terminate loops.
 
@@ -141,11 +155,6 @@ stores their digests. The pre-migration backup still contains the old text by de
 backup like the live database and remove it only after the operator has verified the migration and
 accepted the loss of that rollback point.
 
-Schema 11 redacts author prompt and message strings from stored definition and approval records.
-The backup created before a schema 11 migration can still contain those plaintext strings. Keep it
-mode `0600`, restrict access to the operator, and remove it after the migration and rollback window
-have been verified.
-
 Schema 11 is also the first release boundary that writes observer approval material. Approval rows
 whose behavior-reference ordering came from an unpublished development build are therefore not a
 supported migration input; those development databases must be recreated or their workflows
@@ -154,3 +163,15 @@ Schema 10 added definition source digests and durable per-space observer state. 
 saved page and reconciliation boundary. Repeated pages and repeated revisions reuse the same event
 dedupe key. An interrupted observation repairs a missing event on the next pass before it advances
 past that source revision.
+
+Schema 11 redacts author prompt and message strings from stored definition and approval records.
+The backup created before a schema 11 migration can still contain those plaintext strings. Keep it
+mode `0600`, restrict access to the operator, and remove it after the migration and rollback window
+have been verified.
+
+Schema 12 adds the runner cursor, deliveries, runs, steps, and attempts. Schema 13 adds durable
+delivery deferral so an unapproved delivery cannot starve later approved work. The runner records retry deadlines,
+cancellation, leases, and fences in SQLite. A restart recovers an expired claim from this state. The
+runner does not infer success from a missing worker process. It also records
+`source_refetch_required` for a claimed step and attempt when the immutable version contains
+redacted source text.

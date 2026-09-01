@@ -187,7 +187,7 @@ program
         ).length;
       }
       console.log(
-        `ok: read-only workflow observer (${config.automation.allowedSpaceIds.length} spaces, ${config.automation.definitionTypeKeys.length} type keys, ${visible} visible sample definitions, ${verifiedEditors} with native editor identity; runner unavailable)`,
+        `ok: read-only workflow observer (${config.automation.allowedSpaceIds.length} spaces, ${config.automation.definitionTypeKeys.length} type keys, ${visible} visible sample definitions, ${verifiedEditors} with native editor identity)`,
       );
       if (visible > 0 && verifiedEditors === 0)
         console.warn(
@@ -196,6 +196,10 @@ program
       else if (visible > 0 && authorizedEditors === 0)
         console.warn(
           "warning: visible workflow definitions have verified editors, but none match automation.allowedAuthorIds",
+        );
+      if (config.automation.execution)
+        console.log(
+          `ok: durable workflow runner (${config.automation.runner.workerCount} workers, ${config.automation.runner.leaseSeconds}s leases; effect executors disabled)`,
         );
     }
     const runtime = makeRuntime(config, undefined, configPath);

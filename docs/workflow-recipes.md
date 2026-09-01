@@ -4,10 +4,16 @@ This guide shows how to configure common Knot workflows that are available in th
 Here, a workflow means a supported conversation pattern built from routes, wake rules, runtime
 sessions, and scoped tools.
 
-Knot's Phase 2 declarative workflow runner is not available yet. Do not create `Knot Workflow`
-objects expecting them to execute. Its frozen contracts and remaining implementation work are in
+Knot has the Phase 2 durable runner core, but it does not yet include agent, Anytype, HTTP, or
+notification effect executors. Do not create `Knot Workflow` objects expecting those steps to
+perform work. The shipped queue can exercise an empty transform step for recovery testing. Its
+contracts and remaining implementation work are in
 [`workflow-runtime-contract.md`](workflow-runtime-contract.md) and
 [`planned-work.md`](planned-work.md).
+
+Definitions may contain prompts and approval messages, but Knot stores only their digests. The
+current gateway has no source resolver. Such a run stops in `source_refetch_required` before any
+executor receives definition text.
 
 ## Before you start
 
