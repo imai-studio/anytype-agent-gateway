@@ -66,7 +66,7 @@ function versionRecord(
 describe("automation persistence foundation", () => {
   it("retains the v7 automation foundation tables without enabling execution", () => {
     const store = new Store(":memory:");
-    expect(store.schemaVersion()).toBe(16);
+    expect(store.schemaVersion()).toBe(17);
     for (const table of [
       "workflow_definitions",
       "workflow_approval_subjects",
@@ -104,10 +104,10 @@ describe("automation persistence foundation", () => {
 
     const reports: string[] = [];
     const store = new Store(path, (message) => reports.push(message));
-    expect(store.schemaVersion()).toBe(16);
+    expect(store.schemaVersion()).toBe(17);
     expect(store.migrationBackupPath).toBeTruthy();
     expect(store.migrationBackupPath).toContain(".pre-v6.");
-    expect(reports[0]).toContain("from schema 6 to 16");
+    expect(reports[0]).toContain("from schema 6 to 17");
     expect(statSync(store.migrationBackupPath!).mode & 0o777).toBe(0o600);
     const backup = new DatabaseSync(store.migrationBackupPath!, { readOnly: true });
     expect(
@@ -260,7 +260,7 @@ describe("automation persistence foundation", () => {
 
     const store = new Store(path, () => {});
 
-    expect(store.schemaVersion()).toBe(16);
+    expect(store.schemaVersion()).toBe(17);
     expect(
       store.db
         .prepare("SELECT 1 FROM pragma_table_info('workflow_deliveries') WHERE name=?")
@@ -294,6 +294,13 @@ describe("automation persistence foundation", () => {
     seeded.close();
     const legacy = new DatabaseSync(path);
     legacy.exec(`
+      DROP TRIGGER workflow_operator_audit_no_update;
+      DROP TRIGGER workflow_operator_audit_no_delete;
+      DROP INDEX workflow_operator_audit_run;
+      DROP INDEX workflow_operator_audit_workflow;
+      DROP INDEX workflow_operator_audit_created;
+      DROP TABLE workflow_operator_audit;
+      DROP TABLE workflow_operator_overrides;
       DROP TRIGGER workflow_effect_receipts_no_delete;
       DROP INDEX workflow_effect_receipts_state;
       DROP TABLE workflow_effect_receipts;
@@ -302,7 +309,7 @@ describe("automation persistence foundation", () => {
     legacy.close();
 
     const store = new Store(path, () => {});
-    expect(store.schemaVersion()).toBe(16);
+    expect(store.schemaVersion()).toBe(17);
     expect(
       store.db
         .prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?")
@@ -340,13 +347,50 @@ describe("automation persistence foundation", () => {
     store.close();
 
     const reopened = new Store(path);
-    expect(reopened.schemaVersion()).toBe(16);
+    expect(reopened.schemaVersion()).toBe(17);
     expect(
       reopened.db
         .prepare("SELECT state FROM workflow_effect_receipts WHERE effect_key='effect-1'")
         .get(),
     ).toEqual({ state: "prepared" });
     reopened.close();
+  });
+
+  it("upgrades schema 16 additively with durable operator overrides and append-only audit", () => {
+    const directory = mkdtempSync(join(tmpdir(), "knot-v16-operator-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state.sqlite");
+    const seeded = new Store(path);
+    seeded.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      DROP TRIGGER workflow_operator_audit_no_update;
+      DROP TRIGGER workflow_operator_audit_no_delete;
+      DROP INDEX workflow_operator_audit_run;
+      DROP INDEX workflow_operator_audit_workflow;
+      DROP INDEX workflow_operator_audit_created;
+      DROP TABLE workflow_operator_audit;
+      DROP TABLE workflow_operator_overrides;
+      PRAGMA user_version=16;
+    `);
+    legacy.close();
+
+    const store = new Store(path, () => {});
+    expect(store.schemaVersion()).toBe(17);
+    for (const table of ["workflow_operator_overrides", "workflow_operator_audit"])
+      expect(
+        store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table),
+      ).toBeDefined();
+    for (const trigger of [
+      "workflow_operator_audit_no_update",
+      "workflow_operator_audit_no_delete",
+    ])
+      expect(
+        store.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?")
+          .get(trigger),
+      ).toBeDefined();
+    store.close();
   });
 
   it("scrubs legacy raw workflow source during the v8 to v9 migration", () => {

@@ -8,11 +8,17 @@ import type {
   WorkflowRunnerCursor,
   WorkflowStepRecord,
   WorkflowVersionRecord,
+  WorkflowOperatorAuditRecord,
 } from "./store-types.js";
 import { canonicalJson, type JsonValue, type WorkflowDefinition } from "./workflow.js";
 
 const MAX_STORED_STEP_RESULT_BYTES = 64 * 1024;
 const MAX_STORED_STEP_ERROR_CHARACTERS = 4_000;
+
+function assertListLimit(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500)
+    throw new Error("Workflow list limit must be an integer between 1 and 500");
+}
 
 type WorkflowDeliveryInput = Omit<
   WorkflowDeliveryRecord,
@@ -104,12 +110,46 @@ export class WorkflowQueue {
     return rows.map(mapEvent);
   }
 
+  recentEvents(limit = 100): NormalizedEventRecord[] {
+    assertListLimit(limit);
+    const rows = this.store.db
+      .prepare("SELECT * FROM normalized_events ORDER BY recorded_at DESC,event_id DESC LIMIT ?")
+      .all(limit) as unknown as EventRow[];
+    return rows.map(mapEvent);
+  }
+
+  runs(limit = 100, state?: WorkflowRunRecord["state"]): WorkflowRunRecord[] {
+    assertListLimit(limit);
+    const rows = state
+      ? (this.store.db
+          .prepare(
+            "SELECT * FROM workflow_runs WHERE state=? ORDER BY created_at DESC,run_id DESC LIMIT ?",
+          )
+          .all(state, limit) as unknown as RunRow[])
+      : (this.store.db
+          .prepare("SELECT * FROM workflow_runs ORDER BY created_at DESC,run_id DESC LIMIT ?")
+          .all(limit) as unknown as RunRow[]);
+    return rows.map(mapRun);
+  }
+
+  deadLetterDeliveries(limit = 100): WorkflowDeliveryRecord[] {
+    assertListLimit(limit);
+    const rows = this.store.db
+      .prepare(
+        "SELECT * FROM workflow_deliveries WHERE state='dead_letter' ORDER BY created_at DESC,delivery_id DESC LIMIT ?",
+      )
+      .all(limit) as unknown as DeliveryRow[];
+    return rows.map(mapDelivery);
+  }
+
   activeWorkflowVersions(): WorkflowVersionRecord[] {
     const rows = this.store.db
       .prepare(
         `SELECT d.workflow_id,d.active_version_hash
          FROM workflow_definitions d
+         LEFT JOIN workflow_operator_overrides o ON o.workflow_id=d.workflow_id
          WHERE d.state='valid' AND d.active_version_hash IS NOT NULL
+           AND COALESCE(o.enabled,1)=1
          ORDER BY d.workflow_id`,
       )
       .all() as Array<{ workflow_id: string; active_version_hash: string }>;
@@ -255,8 +295,10 @@ export class WorkflowQueue {
     return Boolean(
       this.store.db
         .prepare(
-          `SELECT 1 FROM workflow_definitions
-           WHERE workflow_id=? AND state='valid' AND active_version_hash=?`,
+          `SELECT 1 FROM workflow_definitions d
+           LEFT JOIN workflow_operator_overrides o ON o.workflow_id=d.workflow_id
+           WHERE d.workflow_id=? AND d.state='valid' AND d.active_version_hash=?
+             AND COALESCE(o.enabled,1)=1`,
         )
         .get(workflowId, versionHash),
     );
@@ -570,7 +612,11 @@ export class WorkflowQueue {
              AND s.fencing_token=? AND s.lease_expires_at>?
              AND r.state IN ('pending','running','waiting')
              AND r.cancel_requested_at IS NULL
-             AND d.state='valid' AND d.active_version_hash=r.version_hash`,
+             AND d.state='valid' AND d.active_version_hash=r.version_hash
+             AND NOT EXISTS(
+               SELECT 1 FROM workflow_operator_overrides o
+               WHERE o.workflow_id=r.workflow_id AND o.enabled=0
+             )`,
         )
         .get(runId, stepId, fencingToken, now),
     );
@@ -973,9 +1019,22 @@ export class WorkflowQueue {
     actorPrincipalDigest: string,
     reason: string,
     now = Date.now(),
+    audit?: Omit<WorkflowOperatorAuditRecord, "sequence" | "createdAt">,
   ): boolean {
+    if (
+      audit &&
+      (audit.action !== "run.cancel" ||
+        audit.runId !== runId ||
+        audit.actorPrincipalDigest !== actorPrincipalDigest)
+    )
+      throw new Error("Workflow cancellation audit does not match the cancellation mutation");
     this.store.db.exec("BEGIN IMMEDIATE");
     try {
+      if (audit) {
+        const run = this.run(runId);
+        if (!run || audit.workflowId !== run.workflowId)
+          throw new Error("Workflow cancellation audit does not match the run workflow");
+      }
       const changed = this.store.db
         .prepare(
           `UPDATE workflow_runs SET cancel_requested_at=COALESCE(cancel_requested_at,?),
@@ -998,6 +1057,90 @@ export class WorkflowQueue {
         )
         .run(now, runId);
       this.finishCancellationInTransaction(runId, now);
+      if (audit) this.store.appendWorkflowOperatorAudit({ ...audit, createdAt: now });
+      this.store.db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.store.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  retryRun(
+    runId: string,
+    authorityHash: string,
+    actorPrincipalDigest: string,
+    reasonCode: string,
+    auditId: string,
+    now = Date.now(),
+  ): boolean {
+    this.store.db.exec("BEGIN IMMEDIATE");
+    try {
+      const run = this.run(runId);
+      if (
+        !run ||
+        !["failed", "dead_letter"].includes(run.state) ||
+        run.cancelRequestedAt !== undefined ||
+        !this.isActiveVersion(run.workflowId, run.versionHash) ||
+        !this.store.currentWorkflowApproval(run.workflowId, run.approvalHash, authorityHash, now)
+      ) {
+        this.store.db.exec("COMMIT");
+        return false;
+      }
+      const unsafeReceipt = this.store.db
+        .prepare(
+          `SELECT 1 FROM workflow_effect_receipts
+           WHERE run_id=? AND state IN ('running','outcome_unknown') LIMIT 1`,
+        )
+        .get(runId);
+      const activeStep = this.store.db
+        .prepare(
+          "SELECT 1 FROM workflow_steps WHERE run_id=? AND state IN ('leased','running') LIMIT 1",
+        )
+        .get(runId);
+      if (unsafeReceipt || activeStep) {
+        this.store.db.exec("COMMIT");
+        return false;
+      }
+      const steps = this.store.db
+        .prepare("SELECT step_id,state,dependencies_json FROM workflow_steps WHERE run_id=?")
+        .all(runId) as Array<{
+        step_id: string;
+        state: WorkflowStepRecord["state"];
+        dependencies_json: string;
+      }>;
+      const states = new Map(steps.map((step) => [step.step_id, step.state]));
+      const update = this.store.db.prepare(
+        `UPDATE workflow_steps SET state=?,available_at=?,lease_owner=NULL,
+         fencing_token=NULL,lease_started_at=NULL,
+         lease_expires_at=NULL,lease_hard_expires_at=NULL,result_json=NULL,error=NULL,
+         run_deadline_at=?+timeout_seconds*1000,authority_hash=?,updated_at=?
+         WHERE run_id=? AND step_id=? AND state!='succeeded'`,
+      );
+      for (const step of steps) {
+        if (step.state === "succeeded") continue;
+        const dependencies = parseJson<string[]>(step.dependencies_json);
+        const state = dependencies.every((dependency) => states.get(dependency) === "succeeded")
+          ? "ready"
+          : "blocked";
+        update.run(state, now, now, authorityHash, now, runId, step.step_id);
+      }
+      this.store.db
+        .prepare(
+          `UPDATE workflow_runs SET state='pending',authority_hash=?,error=NULL,
+           completed_at=NULL,updated_at=? WHERE run_id=?`,
+        )
+        .run(authorityHash, now, runId);
+      this.store.appendWorkflowOperatorAudit({
+        auditId,
+        action: "run.retry",
+        actorPrincipalDigest,
+        workflowId: run.workflowId,
+        runId,
+        reasonCode,
+        details: { approvalHash: run.approvalHash, authorityHash },
+        createdAt: now,
+      });
       this.store.db.exec("COMMIT");
       return true;
     } catch (error) {

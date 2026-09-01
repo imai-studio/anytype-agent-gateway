@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalStoredWorkflowApproval, canonicalStoredWorkflowDefinition, canonicalWorkflowDefinition, redactStoredWorkflowJson, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -13,6 +13,13 @@ function managementCapabilityHash(token) {
 function assertStoredTimestamp(value, label) {
     if (!Number.isSafeInteger(value) || value < 0)
         throw new Error(`${label} must be a non-negative safe integer`);
+}
+function assertOperatorMutation(actorPrincipalDigest, reasonCode, createdAt) {
+    assertStoredTimestamp(createdAt, "Workflow operator mutation time");
+    if (!/^sha256:[a-f0-9]{64}$/u.test(actorPrincipalDigest))
+        throw new Error("Workflow operator actor must be a principal digest");
+    if (reasonCode !== undefined && !/^[a-z][a-z0-9-]{0,63}$/u.test(reasonCode))
+        throw new Error("Workflow operator reason must be a stable lowercase code");
 }
 export class Store {
     reportMigration;
@@ -77,6 +84,8 @@ export class Store {
                 this.migrateToVersion15();
             if (current < 16)
                 this.migrateToVersion16();
+            if (current < 17)
+                this.migrateToVersion17();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -904,6 +913,41 @@ export class Store {
         BEGIN SELECT RAISE(ABORT,'workflow effect receipts are durable'); END;
     `);
     }
+    migrateToVersion17() {
+        this.db.exec(`
+      CREATE TABLE workflow_operator_overrides (
+        workflow_id TEXT PRIMARY KEY REFERENCES workflow_definitions(workflow_id) ON DELETE RESTRICT,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+        actor_principal_digest TEXT NOT NULL,
+        reason_code TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE workflow_operator_audit (
+        audit_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        audit_id TEXT NOT NULL UNIQUE,
+        action TEXT NOT NULL CHECK(action IN (
+          'workflow.approve','workflow.reject','workflow.revoke','workflow.enable',
+          'workflow.disable','workflow.manual_run','run.cancel','run.retry'
+        )),
+        actor_principal_digest TEXT NOT NULL,
+        workflow_id TEXT REFERENCES workflow_definitions(workflow_id) ON DELETE RESTRICT,
+        run_id TEXT REFERENCES workflow_runs(run_id) ON DELETE RESTRICT,
+        reason_code TEXT,
+        details_json TEXT NOT NULL CHECK(json_valid(details_json)),
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX workflow_operator_audit_created
+        ON workflow_operator_audit(created_at,audit_sequence);
+      CREATE INDEX workflow_operator_audit_workflow
+        ON workflow_operator_audit(workflow_id,created_at,audit_sequence);
+      CREATE INDEX workflow_operator_audit_run
+        ON workflow_operator_audit(run_id,created_at,audit_sequence);
+      CREATE TRIGGER workflow_operator_audit_no_update BEFORE UPDATE ON workflow_operator_audit
+        BEGIN SELECT RAISE(ABORT,'workflow operator audit is append-only'); END;
+      CREATE TRIGGER workflow_operator_audit_no_delete BEFORE DELETE ON workflow_operator_audit
+        BEGIN SELECT RAISE(ABORT,'workflow operator audit is append-only'); END;
+    `);
+    }
     isInitialized(routeId) {
         return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));
     }
@@ -1523,6 +1567,19 @@ export class Store {
             .get(spaceId, objectId);
         return row ? mapWorkflowDefinition(row) : undefined;
     }
+    workflowDefinitionById(workflowId) {
+        const row = this.db
+            .prepare("SELECT * FROM workflow_definitions WHERE workflow_id=?")
+            .get(workflowId);
+        return row ? mapWorkflowDefinition(row) : undefined;
+    }
+    workflowDefinitions(limit = 100) {
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
+            throw new Error("Workflow list limit must be from 1 to 500");
+        return this.db
+            .prepare("SELECT * FROM workflow_definitions ORDER BY updated_at DESC,workflow_id LIMIT ?")
+            .all(limit).map(mapWorkflowDefinition);
+    }
     recordWorkflowDefinitionStatus(input) {
         assertStoredTimestamp(input.sourceModifiedAt, "Workflow source modification time");
         assertStoredTimestamp(input.seenAt, "Workflow observation time");
@@ -1736,7 +1793,7 @@ export class Store {
             .get(workflowId, versionHash);
         return row ? mapWorkflowVersion(row) : undefined;
     }
-    recordWorkflowApproval(input) {
+    recordWorkflowApproval(input, audit) {
         for (const [label, value] of [
             ["decision ID", input.decisionId],
             ["authority hash", input.authorityHash],
@@ -1749,6 +1806,18 @@ export class Store {
             assertStoredTimestamp(input.expiresAt, "Workflow approval expiry time");
             if (input.expiresAt <= input.decidedAt)
                 throw new Error("Workflow approval expiry must be after its decision time");
+        }
+        if (audit) {
+            const expectedAction = input.decision === "approved"
+                ? "workflow.approve"
+                : input.decision === "rejected"
+                    ? "workflow.reject"
+                    : "workflow.revoke";
+            if (audit.action !== expectedAction ||
+                audit.workflowId !== input.workflowId ||
+                audit.runId !== undefined ||
+                audit.actorPrincipalDigest !== input.actorPrincipalDigest)
+                throw new Error("Workflow approval audit does not match the approval mutation");
         }
         this.db.exec("BEGIN IMMEDIATE");
         try {
@@ -1768,6 +1837,11 @@ export class Store {
             const decision = this.workflowApprovalBySequence(Number(result.lastInsertRowid));
             if (!decision)
                 throw new Error("Workflow approval decision was not persisted");
+            if (audit)
+                this.appendWorkflowOperatorAudit({
+                    ...audit,
+                    createdAt: audit.createdAt ?? input.decidedAt,
+                });
             this.db.exec("COMMIT");
             return decision;
         }
@@ -1792,6 +1866,69 @@ export class Store {
          ORDER BY decision_sequence DESC LIMIT 1`)
             .get(workflowId, approvalHash);
         return row ? mapWorkflowApprovalDecision(row) : undefined;
+    }
+    workflowOperatorOverride(workflowId) {
+        const row = this.db
+            .prepare("SELECT * FROM workflow_operator_overrides WHERE workflow_id=?")
+            .get(workflowId);
+        return row ? mapWorkflowOperatorOverride(row) : undefined;
+    }
+    setWorkflowOperatorOverride(input) {
+        const now = input.now ?? Date.now();
+        if (!this.workflowDefinitionById(input.workflowId))
+            throw new Error("Unknown workflow");
+        assertOperatorMutation(input.actorPrincipalDigest, input.reasonCode, now);
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            this.db
+                .prepare(`INSERT INTO workflow_operator_overrides(
+            workflow_id,enabled,actor_principal_digest,reason_code,updated_at
+          ) VALUES(?,?,?,?,?) ON CONFLICT(workflow_id) DO UPDATE SET
+            enabled=excluded.enabled,actor_principal_digest=excluded.actor_principal_digest,
+            reason_code=excluded.reason_code,updated_at=excluded.updated_at`)
+                .run(input.workflowId, input.enabled ? 1 : 0, input.actorPrincipalDigest, input.reasonCode, now);
+            this.appendWorkflowOperatorAudit({
+                auditId: input.auditId,
+                action: input.enabled ? "workflow.enable" : "workflow.disable",
+                actorPrincipalDigest: input.actorPrincipalDigest,
+                workflowId: input.workflowId,
+                reasonCode: input.reasonCode,
+                details: { enabled: input.enabled },
+                createdAt: now,
+            });
+            this.db.exec("COMMIT");
+            return this.workflowOperatorOverride(input.workflowId);
+        }
+        catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+        }
+    }
+    appendWorkflowOperatorAudit(input) {
+        assertOperatorMutation(input.actorPrincipalDigest, input.reasonCode, input.createdAt);
+        if (!input.auditId.trim())
+            throw new Error("Workflow operator audit ID must not be empty");
+        const detailsJson = canonicalJson(input.details);
+        if (Buffer.byteLength(detailsJson, "utf8") > 8 * 1024)
+            throw new Error("Workflow operator audit details exceed 8 KiB");
+        const result = this.db
+            .prepare(`INSERT INTO workflow_operator_audit(
+          audit_id,action,actor_principal_digest,workflow_id,run_id,reason_code,details_json,created_at
+        ) VALUES(?,?,?,?,?,?,?,?)`)
+            .run(input.auditId, input.action, input.actorPrincipalDigest, input.workflowId ?? null, input.runId ?? null, input.reasonCode ?? null, detailsJson, input.createdAt);
+        const row = this.db
+            .prepare("SELECT * FROM workflow_operator_audit WHERE audit_sequence=?")
+            .get(Number(result.lastInsertRowid));
+        if (!row)
+            throw new Error("Workflow operator audit was not persisted");
+        return mapWorkflowOperatorAudit(row);
+    }
+    workflowOperatorAudits(limit = 100) {
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
+            throw new Error("Workflow audit limit must be from 1 to 500");
+        return this.db
+            .prepare("SELECT * FROM workflow_operator_audit ORDER BY created_at DESC,audit_sequence DESC LIMIT ?")
+            .all(limit).map(mapWorkflowOperatorAudit);
     }
     recordNormalizedEvent(input) {
         const event = normalizedEventSchema.parse(input);
@@ -2027,6 +2164,28 @@ function mapWorkflowApprovalDecision(row) {
         ...(row.supersedes_decision_id === null
             ? {}
             : { supersedesDecisionId: row.supersedes_decision_id }),
+    };
+}
+function mapWorkflowOperatorOverride(row) {
+    return {
+        workflowId: row.workflow_id,
+        enabled: row.enabled === 1,
+        actorPrincipalDigest: row.actor_principal_digest,
+        reasonCode: row.reason_code,
+        updatedAt: Number(row.updated_at),
+    };
+}
+function mapWorkflowOperatorAudit(row) {
+    return {
+        sequence: Number(row.audit_sequence),
+        auditId: row.audit_id,
+        action: row.action,
+        actorPrincipalDigest: row.actor_principal_digest,
+        ...(row.workflow_id === null ? {} : { workflowId: row.workflow_id }),
+        ...(row.run_id === null ? {} : { runId: row.run_id }),
+        ...(row.reason_code === null ? {} : { reasonCode: row.reason_code }),
+        details: parseJson(row.details_json),
+        createdAt: Number(row.created_at),
     };
 }
 function mapNormalizedEvent(row) {

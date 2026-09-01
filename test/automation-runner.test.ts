@@ -974,6 +974,29 @@ describe("durable workflow runner", () => {
     store.close();
   });
 
+  it("closes the execution fence immediately when an operator disables a workflow", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, workflow(), "workflow-disabled");
+    const claim = queue.claimStep("worker", new Set([run.authorityHash]), 5_000, 500)!;
+    expect(queue.startStep(run.runId, "noop", claim.attempt.fencingToken, 501)).toBe(true);
+
+    store.setWorkflowOperatorOverride({
+      workflowId: run.workflowId,
+      enabled: false,
+      actorPrincipalDigest: workflowPrincipalDigest("operator"),
+      reasonCode: "maintenance",
+      auditId: "audit-disable",
+      now: 502,
+    });
+
+    expect(queue.isActiveVersion(run.workflowId, run.versionHash)).toBe(false);
+    expect(queue.claimMayExecute(run.runId, "noop", claim.attempt.fencingToken, 503)).toBe(false);
+    expect(store.workflowOperatorAudits()).toMatchObject([{ action: "workflow.disable" }]);
+    store.close();
+  });
+
   it("aborts an in-flight executor cooperatively after cancellation", async () => {
     const store = new Store(":memory:");
     const config = runnerConfig();

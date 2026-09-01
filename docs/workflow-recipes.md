@@ -6,10 +6,11 @@ sessions, and scoped tools.
 
 Knot's Phase 2 runner supports the closed Anytype read/query/write/upsert/materialize, declarative
 transform, named notification, capability-narrowed Codex agent, and `publish.web` steps. Generic HTTP,
-JavaScript, shell, and filesystem steps are not available. Workflow type bootstrap and interactive
-Anytype approval/status controls are also not shipped, so operators must provision compatible
-workflow objects through a controlled setup and use the existing exact approval records. The
-contracts and remaining operator-surface work are in
+JavaScript, shell, and filesystem steps are not available. Knot now includes a local operator CLI
+for exact approvals, overrides, manual triggers, run control, and redacted inspection. Native
+Anytype type bootstrap and Anytype approval/status projections are not shipped, so operators must
+still provision compatible workflow objects through a controlled setup. The contracts and
+remaining operator-surface work are in
 [`workflow-runtime-contract.md`](workflow-runtime-contract.md) and
 [`planned-work.md`](planned-work.md).
 
@@ -65,11 +66,71 @@ automation:
 
 Grant `anytype.bulk`, `anytype.archive`, or `anytype.cross-space` only when the definition actually
 needs that behavior. T1 and T2 definitions need an exact approval record; T2 approval must be
-manual. The current release does not provide an interactive workflow approval command, so this
-configuration alone does not make a newly authored definition executable.
+manual. Configuration alone does not approve a newly authored definition.
 
 Use stable Anytype participant or identity IDs in every allowlist. A display name is never proof of
 identity and must not grant access.
+
+## Operate the durable workflow runner
+
+All commands require the exact agent configuration because its local state database and authority
+grants are the security boundary. The operating-system account and mode-`0600` configuration/state
+files authenticate the local operator; the actor digest attributes the decision and does not replace
+that OS boundary. Mutations also require the domain-separated digest of an exact
+participant ID already present in `automation.allowedAuthorIds` and an explicit `--yes`. This keeps
+the sensitive raw participant ID out of process arguments and output. The digest is
+`workflowPrincipalDigest(<participant-id>)` from Knot's workflow library. When exactly one author
+is allowlisted, Knot selects that digest without another option. With multiple authors, pass the
+intended digest through `--actor-digest`; never pass the raw participant ID.
+
+Start by reading the active hashes:
+
+```bash
+knot workflow list --config /absolute/path/to/agent.yaml
+knot workflow show <workflow-id> --config /absolute/path/to/agent.yaml
+```
+
+Approve only the exact active approval hash shown by `workflow show`:
+
+```bash
+knot workflow approve <workflow-id> \
+  --config /absolute/path/to/agent.yaml \
+  --approval-hash sha256:<exact-active-hash> \
+  --yes
+```
+
+Use `workflow reject` or `workflow revoke` with the same exact hash plus a stable lowercase
+`--reason`. `workflow disable` persists an override, closes the execution fence for in-flight work,
+and records an append-only audit row. `workflow enable` removes that execution block while leaving
+normal approval and authority checks intact.
+
+Queue a manual trigger only after approval:
+
+```bash
+knot workflow run <workflow-id> \
+  --config /absolute/path/to/agent.yaml \
+  --approval-hash sha256:<exact-active-hash> \
+  --yes
+```
+
+Inspect runs and local evidence without printing event payloads, step results, or stored errors:
+
+```bash
+knot workflow runs list --config /absolute/path/to/agent.yaml
+knot workflow runs show <run-id> --config /absolute/path/to/agent.yaml
+knot workflow events --config /absolute/path/to/agent.yaml
+knot workflow audit --config /absolute/path/to/agent.yaml
+knot workflow dead-letters --config /absolute/path/to/agent.yaml
+```
+
+Cancellation and retry require an allowlisted actor, a stable reason, and `--yes`. Retry is
+available only for a failed or dead-letter run whose exact version and approval are current, which
+has no active lease, and whose effect receipts prove that no external outcome is unknown. Knot
+refuses an ambiguous effect instead of repeating it.
+
+Knot does not create native Anytype object types or properties. The current Anytype port can create
+objects of an existing type, but it cannot provision the `Knot Workflow` type or its property
+schema. Create that schema outside Knot; the CLI will not simulate it with ordinary objects.
 
 ## Choose a recipe
 

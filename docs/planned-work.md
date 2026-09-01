@@ -50,8 +50,8 @@ separate effect workers remain proposed.
 
 - Add durable timer events and per-step waiting timers.
 - Extend the current concurrency, hourly-rate, step, and causal-depth checks with cost accounting.
-- Add a complete policy-decision and effect audit view.
-- Add CLI inspection and operator controls for runs, cancellation, retries, and dead letters.
+- Add a complete policy-decision and effect audit view beyond the shipped redacted local operator
+  audit.
 
 ### 4. Steps and approvals
 
@@ -61,14 +61,12 @@ separate effect workers remain proposed.
 ### 5. Anytype authoring
 
 - Bootstrap the Knot workflow, approval, run, and connection-reference types.
-- Add approval, disable, retry, and cancel commands.
 - Project bounded run status into Anytype without creating self-trigger loops.
 
 ### 6. Data products and operations
 
 - Add ingestion templates and deterministic collection or dashboard materialization.
 - Add experimental one-way mirrors with explicit property grants and provenance.
-- Add run, event, audit, and dead-letter CLI inspection.
 - Build simulation, fault injection, end-to-end tests, and a representative 72-hour soak.
 
 Phase 2 does not include arbitrary JavaScript steps, two-way mirrors, ACL bypass, hosted

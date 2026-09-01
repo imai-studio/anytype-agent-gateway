@@ -1,6 +1,6 @@
 import type { Store } from "../store.js";
 import { type NormalizedEventRecord } from "./event.js";
-import type { WorkflowAttemptRecord, WorkflowDeliveryRecord, WorkflowRunRecord, WorkflowRunnerCursor, WorkflowStepRecord, WorkflowVersionRecord } from "./store-types.js";
+import type { WorkflowAttemptRecord, WorkflowDeliveryRecord, WorkflowRunRecord, WorkflowRunnerCursor, WorkflowStepRecord, WorkflowVersionRecord, WorkflowOperatorAuditRecord } from "./store-types.js";
 import { type JsonValue, type WorkflowDefinition } from "./workflow.js";
 type WorkflowDeliveryInput = Omit<WorkflowDeliveryRecord, "state" | "createdAt" | "nextDispatchAt" | "dispatchAttemptCount" | "approvalPending" | "dispatchedAt">;
 export interface WorkflowRetryPolicy {
@@ -27,6 +27,9 @@ export declare class WorkflowQueue {
     cursor(): WorkflowRunnerCursor;
     initializeMatcher(now?: number): boolean;
     eventsAfter(cursor: WorkflowRunnerCursor, limit: number): NormalizedEventRecord[];
+    recentEvents(limit?: number): NormalizedEventRecord[];
+    runs(limit?: number, state?: WorkflowRunRecord["state"]): WorkflowRunRecord[];
+    deadLetterDeliveries(limit?: number): WorkflowDeliveryRecord[];
     activeWorkflowVersions(): WorkflowVersionRecord[];
     createDelivery(input: WorkflowDeliveryInput, now?: number): WorkflowDeliveryRecord;
     createDeliveriesAndAdvanceCursor(event: NormalizedEventRecord, inputs: readonly WorkflowDeliveryInput[], now?: number): WorkflowDeliveryRecord[];
@@ -59,7 +62,8 @@ export declare class WorkflowQueue {
     recoverExpiredLeases(retryFor: (runId: string, stepId: string) => WorkflowRetryPolicy, now?: number, limit?: number): number;
     recoverTimedOutClaim(runId: string, stepId: string, fencingToken: string, retry: WorkflowRetryPolicy, now?: number): boolean;
     expireRunDeadlines(now?: number, limit?: number): number;
-    cancelRun(runId: string, actorPrincipalDigest: string, reason: string, now?: number): boolean;
+    cancelRun(runId: string, actorPrincipalDigest: string, reason: string, now?: number, audit?: Omit<WorkflowOperatorAuditRecord, "sequence" | "createdAt">): boolean;
+    retryRun(runId: string, authorityHash: string, actorPrincipalDigest: string, reasonCode: string, auditId: string, now?: number): boolean;
     pauseRunForApproval(runId: string, reason: string, now?: number): boolean;
     resumeRunWithAuthority(runId: string, authorityHash: string, now?: number): boolean;
     deadLetterRun(runId: string, error: string, now?: number): boolean;

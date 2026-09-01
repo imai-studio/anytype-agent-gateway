@@ -69,6 +69,25 @@ export interface WorkflowApprovalDecision {
     expiresAt?: number;
     supersedesDecisionId?: string;
 }
+export type WorkflowOperatorAction = "workflow.approve" | "workflow.reject" | "workflow.revoke" | "workflow.enable" | "workflow.disable" | "workflow.manual_run" | "run.cancel" | "run.retry";
+export interface WorkflowOperatorAuditRecord {
+    sequence: number;
+    auditId: string;
+    action: WorkflowOperatorAction;
+    actorPrincipalDigest: string;
+    workflowId?: string;
+    runId?: string;
+    reasonCode?: string;
+    details: JsonValue;
+    createdAt: number;
+}
+export interface WorkflowOperatorOverride {
+    workflowId: string;
+    enabled: boolean;
+    actorPrincipalDigest: string;
+    reasonCode: string;
+    updatedAt: number;
+}
 export type WorkflowDeliveryState = "pending" | "dispatched" | "cancelled" | "dead_letter";
 export type WorkflowRunState = "pending" | "running" | "waiting" | "succeeded" | "failed" | "cancelled" | "dead_letter";
 export type WorkflowStepState = "blocked" | "ready" | "leased" | "running" | "succeeded" | "waiting_retry" | "waiting_timer" | "waiting_approval" | "source_refetch_required" | "failed" | "cancelled" | "dead_letter";
