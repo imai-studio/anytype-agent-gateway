@@ -1,25 +1,26 @@
 # Knot Cloud architecture
 
-This is a design document, not a setup guide. The imai deployment at `knot.imai.tech` currently
-releases its invitation-only console, health endpoint, protocol metadata endpoint, restricted Neon
-access, and private R2 provider check. Connector, publication, reader, consumer-key, and Anytype data
-routes are not in the production contract. Check the separate Knot Cloud
-[release record](https://github.com/imai-studio/knot-cloud/blob/main/docs/releases.md) before using a
-local client against that deployment.
+This document describes the Cloud protocol and trust boundaries. The imai service at
+`knot.imai.tech` releases connector pairing, signed command and publication routes, scoped consumer
+keys, typed Anytype operations, and the reader at `pages.imai.studio`. Check the Knot Cloud
+[release record](https://github.com/imai-studio/knot-cloud/blob/main/docs/releases.md) for the exact
+deployed contract.
 
 The local package implements the signed connector, bounded publication client, default-off Cloud
-command bridge, typed Anytype command executor, and `publish.web` workflow step. Those clients do
-not make an unreleased Cloud route available.
+command bridge, typed Anytype command executor, and `publish.web` workflow step. The service routes
+are released, but command execution and workflows stay disabled until the operator enables the
+local preview gates and grants the corresponding scopes and sites.
 
-| Component                              | Availability in the local package |
-| -------------------------------------- | --------------------------------- |
-| Local Anytype agent gateway            | Released                          |
-| Local workflow observer and runner     | Default-off preview; soak pending |
-| Cloud pairing and signed local client  | Released                          |
-| Bounded publication client and outbox  | Released                          |
-| Default-off Relay and Anytype executor | Implemented; needs matching Cloud |
-| `publish.web` workflow step            | Implemented; default-off preview  |
-| Custom domains and hosted connectors   | Unreleased Cloud work             |
+| Component                             | Status                            |
+| ------------------------------------- | --------------------------------- |
+| Local Anytype agent gateway           | Released                          |
+| Local workflow observer and runner    | Default-off preview; soak pending |
+| Cloud pairing and signed local client | Released                          |
+| Bounded publication client and outbox | Released                          |
+| Relay and Anytype executor            | Implemented; default-off preview  |
+| `publish.web` workflow step           | Implemented; default-off preview  |
+| Cloud custom-domain verification      | Released                          |
+| Cloud hosted connectors               | Unavailable                       |
 
 The product decisions are:
 
@@ -74,38 +75,43 @@ object and verifies the immutable native participant ID. Failure to verify fails
 ## Deployment topology
 
 Knot Cloud runs as a Next.js App Router application on the Node.js runtime. External clients use
-Route Handlers under `/api/v1`. Public pages use Server Components and resolve one mutable
-`current_version_id`; version documents and assets are immutable.
+Route Handlers under `/api/v1`. Reader handlers resolve one mutable `current_version_id`; version
+documents and assets are immutable.
 
 The imai-operated reference deployment uses:
 
 - Vercel for the Next.js dashboard, API, public renderer, previews, and production promotion;
 - Neon PostgreSQL as the sole authoritative store;
 - private Cloudflare R2 buckets for drafts, publication bundles, and media;
-- Upstash Redis for rate limits, replay nonces, and short-lived email/pairing state only;
-- Vercel Queues for optional first-party validation, webhook, indexing, and media work;
-- Vercel Cron for idempotent reconciliation and cleanup only.
+- Upstash Redis for connector and pairing abuse limits only;
+- Vercel Cron for publication maintenance every ten minutes and webhook maintenance every minute.
 
-No correctness depends on process memory, a Vercel Function filesystem, Redis, Queues, Cron timing,
-or cache invalidation. Postgres owns tenants, accounts, invitations, sites, connector public keys,
+Transactional event delivery uses a separate authenticated maintenance route. Cloud webhook
+delivery is released; connecting those event pointers to the default-off local workflow runner is
+still planned. Self-hosted operators must schedule both maintenance routes. No deployed path
+requires Vercel Queues.
+
+No correctness depends on process memory, a Vercel Function filesystem, Redis, Cron timing, or cache
+invalidation. Postgres owns tenants, accounts, invitations, sites, connector public keys,
 API-key hashes, publications, versions, assets, commands, leases, attempts, idempotency records,
 quotas, and audit data. Every authoritative row carries a tenant ID, and database row-level security
 enforces tenant isolation.
 
-Vercel Queues is not the customer connector boundary. A customer laptop must not receive Vercel
-OIDC or Queue API credentials, and the public protocol must not depend on a Vercel product. Commands
-remain in Postgres for as long as the product retention policy permits. Connectors use signed,
-bounded HTTPS polling with adaptive backoff.
+Customer laptops do not receive Vercel credentials, and the public protocol does not depend on a
+Vercel product. Commands remain in Postgres for as long as the product retention policy permits.
+Connectors use signed, bounded HTTPS polling with adaptive backoff.
 
-The dashboard and authenticated API use one origin such as `app.example`. User-controlled public
-content uses a different registrable domain such as `*.example-sites`. Dashboard cookies are never
-valid on the content domain. Customer custom domains are a later addition.
+The dashboard and authenticated API use one registrable domain. User-controlled public content uses
+a different registrable domain. In the imai deployment, the control plane is `knot.imai.tech` and
+managed sites share the fixed `pages.imai.studio` reader host; a verified custom hostname maps to
+one site. Dashboard cookies are never valid on a reader domain. Custom-domain TXT verification is
+released. DNS records, TLS, and service routing remain operator-managed.
 
 The supported self-host deployment uses the same application with Next.js `output: "standalone"`,
-PostgreSQL, S3-compatible private object storage, a replaceable job runner, and a reverse proxy for
-TLS and limits. Provider ports keep Vercel, Neon, R2, Redis, and Queue types out of the wire
-contract. The reference implementation provides Vercel, Neon, R2, and Upstash adapters. Self-host
-adapters are added when a deployment needs them.
+PostgreSQL, private object storage, a replaceable job runner, and a reverse proxy for TLS and limits.
+Provider ports keep Vercel, Neon, R2, and Redis types out of the wire contract. The reference
+implementation provides Vercel, Neon, R2, and Upstash adapters. Its object-store adapter is specific
+to R2 even though it uses the S3 protocol. A general S3-compatible adapter is not released.
 
 The cloud service lives in a separate repository because its continuous Vercel deployment cadence,
 security boundary, and operations differ from the tag-installed Knot CLI:
@@ -117,7 +123,7 @@ imai-studio/knot
 imai-studio/knot-cloud
   apps/cloud                  Next.js service deployed on Vercel or self-hosted
   packages/cloud-contract     schemas, signatures, versions, and protocol fixtures
-  packages/publish-renderer   typed document renderer
+  packages/publication-renderer   typed document renderer
 ```
 
 `@imai/knot-cloud-contract` contains no storage SDK, database client, queue token, framework request
@@ -126,8 +132,8 @@ server. The HTTP protocol, not repository layout, remains the compatibility boun
 
 ## Pairing and credentials
 
-The local CLI prepares and pairs an installation when the selected Cloud server releases the
-matching routes:
+The local CLI prepares and pairs an installation with the released imai service or another Cloud
+server that advertises the matching protocol:
 
 ```bash
 knot cloud login --url https://publish.example.com --scope publications.read publications.write
@@ -149,9 +155,6 @@ Each request carries the connection ID, timestamp, nonce, body digest, and signa
 rejects expired timestamps, reused nonces, invalid signatures, and operations outside the key's
 server-side grants. Operators can revoke one machine without rotating every publisher.
 
-An opaque scoped token is a simpler fallback for the first prototype. The protocol should not make
-bearer tokens permanent if local key signing is practical.
-
 Every request includes a protocol version. `GET /api/v1/meta` reports the minimum and maximum
 supported versions and server time. Signature timestamp failures return server time so a connector
 can make one corrected retry, and `knot doctor` reports material clock skew.
@@ -170,9 +173,9 @@ a displayable prefix, never the recoverable key. A key is bound to a tenant, opt
 connectors, typed scopes, expiry, quotas, and revocation state.
 
 The data API manages Anytype through a paired connector. It is asynchronous because the machine
-holding the Anytype identity may be offline. A request creates an operation and normally returns
-`202 Accepted` with an operation ID. A bounded wait option may return the result when the connector
-is already online; it does not change durability or execution semantics.
+holding the Anytype identity may be offline. A new request returns `202 Accepted` with an operation
+ID; an idempotent replay returns `200`. The caller reads the durable operation resource for status
+and results.
 
 The first operation vocabulary is typed and versioned:
 
@@ -263,31 +266,32 @@ uncontrolled cache. The guarantee is that Knot Cloud removes its origin data and
 copies; the product must state this limitation plainly.
 
 The public document is typed JSON, not executable JavaScript, React components, or unsanitized
-HTML. The first schema can support headings, paragraphs, rich text, lists, quotes, code, tables,
-images, files, and a small allowlist of embeds. Renderers must escape text and sanitize every
-allowed HTML fragment.
+HTML. The current schema supports headings, paragraphs, rich text, lists, quotes, code, tables,
+images, and files. The renderer escapes text and accepts no raw HTML.
 
 Source details such as Anytype object IDs and local paths belong in private provenance records.
 They do not appear in public pages unless the publication explicitly includes them.
 
 ## Write protocol
 
-The proposed API starts small:
+The released local clients use these Cloud routes:
 
 ```text
-POST   /api/v1/publications
-PUT    /api/v1/publications/{publicationId}
-POST   /api/v1/publications/{publicationId}/disable
-POST   /api/v1/publications/{publicationId}/unpublish
-POST   /api/v1/publications/{publicationId}/rollback
-GET    /api/v1/publications/{publicationId}
-POST   /api/v1/assets/uploads
-GET    /api/v1/operations/{operationId}
-POST   /api/v1/anytype/operations
+GET    /api/v1/meta
+POST   /api/v1/pairing/poll
+POST   /api/v1/connectors/{connectorId}/assets/request
+POST   /api/v1/connectors/{connectorId}/assets/commit
+POST   /api/v1/connectors/{connectorId}/publications
+POST   /api/v1/connectors/{connectorId}/publications/{publicationId}/status
+POST   /api/v1/connectors/{connectorId}/publications/{publicationId}/control
 POST   /api/v1/connectors/{connectorId}/commands/claim
 POST   /api/v1/connectors/{connectorId}/commands/extend
 POST   /api/v1/connectors/{connectorId}/commands/result
 ```
+
+External consumer API clients use `POST /api/v1/operations` and
+`GET /api/v1/operations/{operationId}`. The Knot CLI does not submit those operations. The local
+connector can claim and process them only when its default-off command bridge is enabled.
 
 Large assets use short-lived upload URLs. Knot hashes each file before upload. The server verifies
 the digest before attaching it to a version.
@@ -333,7 +337,7 @@ The released constrained MCP tool accepts a configured connection name, slug, ti
 document, assets, and visibility. It returns the publication ID, committed version, content hash,
 and public URL. Knot can then post that URL in Anytype.
 
-The first local client provides connector setup and diagnostics without bypassing local policy:
+The released local CLI provides connector setup and diagnostics without bypassing local policy:
 
 ```text
 knot cloud login
@@ -341,12 +345,17 @@ knot cloud pair
 knot cloud status
 knot cloud doctor
 knot cloud revoke
+knot cloud operation status <operation-id>
+knot cloud operation retry <operation-id>
+knot cloud commands list|show|approve|reject|cancel|retry
 ```
 
-The commands generate a private local Ed25519 key, consume a human-created one-time pairing, and
-inspect local and protocol state. Remote connector revocation remains a dashboard action because it
-requires an authenticated owner or admin. The local client also implements signed command claim,
-lease extension, result, and rejection calls, but it does not execute a command.
+The commands generate a private local Ed25519 key, consume a human-created one-time pairing, inspect
+local and protocol state, recover publication operations, and manage the durable local preview
+queue. Remote connector revocation remains a dashboard action because it requires an authenticated
+owner or admin. `knot cloud revoke --forget-local` removes only local credentials. The default-off
+command bridge can claim and execute an allowed command through the existing workflow runner after
+the operator configures its local policy and approval gates.
 
 The local publication client provides:
 
@@ -356,7 +365,6 @@ knot publish status <publication-id>
 knot publish rollback <publication-id> --version <version-id>
 knot publish disable <publication-id>
 knot publish unpublish <publication-id> --confirm <publication-id>
-knot cloud operation status <operation-id>
 ```
 
 The default-off Phase 2 workflow uses the same client through a `publish.web` step. Publishing is
@@ -388,49 +396,28 @@ unpublish, cache invalidation, database restoration, and upgrades between adjace
 
 ## Delivery status
 
-### P0: deployed foundation
+### Released service and local clients
 
-The imai deployment has released its invitation-only console, protocol metadata, health check,
-restricted Neon role, private R2 provider check, and standalone container build. The Cloud release
-record is the source of truth for that boundary.
+The imai service releases invitation-only accounts, connector pairing, signed claim, lease, result,
+publication and asset routes, scoped consumer keys, typed asynchronous Anytype operations, public
+and authenticated readers, custom-domain verification, safety limits, audit records, and
+transactional event intake. The Cloud
+[release record](https://github.com/imai-studio/knot-cloud/blob/main/docs/releases.md) is the source
+of truth.
 
-### P1: invitation-only accounts, pairing, and Publish
+The local CLI releases connector setup, pairing, status, diagnostics, local credential removal,
+publication controls, asset manifests, and durable publication outbox recovery. Remote connector
+revocation stays in the Cloud dashboard. The CLI does not submit consumer data-API operations.
 
-Release connector pairing, signed transport, typed document publishing, public pages on an isolated
-content domain, disable, rollback, destructive unpublish, quotas, audit, a tenant kill switch, and
-operator takedown. The local SQLite outbox and `knot publish` commands already exist, but cannot use
-the imai deployment until these server routes are released.
+### Default-off local preview
 
-P1 exits after two-tenant isolation tests, signature replay and revocation tests, failure injection at
-every commit and unpublish boundary, malicious-render tests, backup restoration, and proof that a
-failed publication never replaces the prior live version.
+The Cloud command executor and workflow bridge remain disabled until an operator configures the
+local identity, space, operation, and approval gates. The workflow observer, runner, closed
+executors, and `publish.web` step also remain behind the default-off automation gates while the soak
+continues.
 
-### P2a: typed Anytype data API
+### Unavailable capabilities
 
-Release scoped consumer keys, asynchronous Anytype operation resources, connector claim/extend/
-result, local operation mappings, usage reporting, and revocation. Candidate server and local code
-exists; production migrations, provider configuration, canaries, and the Cloud release record remain
-the gate. Reads and writes both travel through the paired connector; Knot Cloud does not hold the
-Anytype credential.
-
-P2a exits after offline recovery, local policy denial, operation expiry, stale result fencing,
-redelivery deduplication, and adversarial native-sender re-verification tests pass. The API remains
-incapable of arbitrary agent, shell, filesystem, or network execution.
-
-### P2b: events and channel workflows
-
-Release transactional webhooks, channel-origin pointers, local re-fetch and identity verification,
-and explicitly granted chat-send operations. Candidate server and local code exists. Remote
-operations reuse the Phase 2 workflow runner rather than adding another scheduler.
-
-### P3: platform extensions
-
-Release customer custom domains, authenticated readers, media derivatives, billing, broader quotas,
-and optional hosted connectors only after separate security and operational reviews. A hosted
-connector is an isolated off-Vercel container using the public connector protocol, one dedicated
-Anytype member per tenant and agent, and externally managed KMS credentials. It has no privileged
-internal protocol. Hosted Anytype/Heart operation requires a licensing and terms review before a
-public commitment.
-
-No phase is available in production until its migrations, provider configuration, canaries, and
-release record are complete. Repository presence is not a release signal.
+Hosted connectors, billing and paid entitlements, and media transformation execution are not
+released. The Cloud database may store limits or job metadata for them, but that does not enable a
+provider or worker.

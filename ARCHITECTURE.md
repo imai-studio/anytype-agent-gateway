@@ -5,7 +5,8 @@ connector and publication client have separate guides in
 [`docs/cloud-connector.md`](docs/cloud-connector.md) and
 [`docs/cloud-publishing.md`](docs/cloud-publishing.md). Read
 [`docs/planned-work.md`](docs/planned-work.md) for remaining gaps and
-[`docs/publish-architecture.md`](docs/publish-architecture.md) for the Cloud protocol plan.
+[`docs/publish-architecture.md`](docs/publish-architecture.md) for the Cloud protocol and trust
+boundaries.
 
 The workflow observer, runner, executors, and operator CLI are disabled by default while the
 representative soak is pending. Their invariants are part of the local release; enabling them is an

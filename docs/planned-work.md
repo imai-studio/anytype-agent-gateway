@@ -30,23 +30,29 @@ active-active execution, and a second Codex/OpenClaw scheduler are not planned f
 
 ## Knot Cloud production
 
-The imai-operated deployment currently releases only its invitation-only console, health endpoint,
-protocol metadata endpoint, restricted Neon access, and private R2 provider check. Its exact contract
-is the [Knot Cloud release record](https://github.com/imai-studio/knot-cloud/blob/main/docs/releases.md).
+The imai service releases connector pairing, signed command transport, publication and asset routes,
+the isolated reader, consumer API keys, typed asynchronous Anytype operations, transactional event
+intake, custom-domain verification, authenticated readers, safety limits, and audit records. Its
+exact contract is the
+[Knot Cloud release record](https://github.com/imai-studio/knot-cloud/blob/main/docs/releases.md).
 
-The local repository contains signed connector, publication, asset, Relay, and `publish.web` clients.
-They remain unusable with the imai deployment until the matching Cloud routes, migrations, provider
-configuration, and canaries appear in that release record. Remaining Cloud release work includes:
+The local CLI can pair a connector, inspect it, publish content, recover publication outbox work, and
+inspect publication operations. Remote connector revocation remains an owner or admin action in the
+Cloud dashboard. `knot cloud revoke --forget-local` removes only the local key and configuration.
 
-- connector pairing and signed claim, lease, result, and revocation routes;
-- publication upload, an isolated public-content domain, reader routes, rollback, disable, and
-  destructive unpublish;
-- consumer API-key management and typed asynchronous Anytype operations;
-- transactional event and webhook delivery through the existing local runner;
-- production tenant quotas, RLS probes, replay protection, cache-revocation checks, audit evidence,
-  and provider smoke tests;
-- separately reviewed custom domains, authenticated readers, billing, media derivatives, and hosted
-  connectors.
+Knot does not provide a CLI command that submits consumer data-API operations. An API client submits
+the closed operation union to Knot Cloud, and a paired local connector may process the resulting
+command only when the default-off command bridge is explicitly enabled.
+
+Remaining work across the Cloud service and its local integration includes:
+
+- complete the local command executor and workflow bridge soak before changing their default-off
+  status;
+- connect transactional event delivery to the default-off local workflow runner without creating a
+  second scheduler;
+- add media transformation execution, billing and paid entitlements, and hosted connectors only
+  after separate security and operational reviews;
+- add a general S3-compatible object-store adapter in place of the current R2-specific adapter.
 
 Cloud may deliver typed intent. It cannot approve a local workflow, grant a project or space, assert
 an Anytype sender, choose a credential, or bypass the local executor catalog.

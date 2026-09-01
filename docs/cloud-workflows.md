@@ -1,8 +1,8 @@
 # Run cloud commands through a local Knot workflow runtime
 
-Status: default-off local preview. It requires a Knot Cloud release whose command envelope includes
-an authenticated `actor.principalDigest` and `actor.digestVersion`. The imai production release does
-not currently expose those command routes. Do not enable the bridge against an older contract.
+Status: default-off local preview. The imai service exposes the signed command routes and includes
+an authenticated `actor.principalDigest` and `actor.digestVersion` in each command envelope. Do not
+enable the bridge against a service that does not advertise that contract.
 
 Knot Cloud never connects to the laptop. A paired connector signs an outbound claim request, writes
 the returned command to the agent's private SQLite state, checks local policy, and then runs the
