@@ -82,11 +82,23 @@ describe("CloudClient", () => {
   it("uses the presigned asset request, upload, and commit contract without forwarding credentials", async () => {
     const config = await pairedConfig({ scopes: ["publications.write"] });
     const calls: string[] = [];
+    let uploadedHeaders: Record<string, string> | undefined;
+    const requiredHeaders = {
+      "cache-control": "private, no-store, max-age=0",
+      "content-length": "5",
+      "content-type": "image/png",
+      "if-none-match": "*",
+      "x-amz-meta-byte-size": "5",
+      "x-amz-meta-kind": "asset",
+      "x-amz-meta-sha256": "a".repeat(64),
+      "x-amz-meta-tenant-id": "00000000-0000-4000-8000-000000000073",
+    };
     const fetchMock = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
       const url = new URL(String(input));
       calls.push(`${init?.method}:${url.toString()}`);
       if (url.hostname === "uploads.example") {
-        expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+        const headers = new Headers(init?.headers);
+        uploadedHeaders = Object.fromEntries(headers.entries());
         expect(Buffer.from(init?.body as Uint8Array).toString()).toBe("asset");
         return new Response(null, { status: 200 });
       }
@@ -98,7 +110,7 @@ describe("CloudClient", () => {
             uploadId: "00000000-0000-4000-8000-000000000072",
             method: "PUT",
             uploadUrl: "https://uploads.example/object",
-            requiredHeaders: { "content-type": "image/png" },
+            requiredHeaders,
             expiresAt: 1_788_220_900,
           },
           { status: 201 },
@@ -133,6 +145,8 @@ describe("CloudClient", () => {
       expectedByteSize: 5,
       idempotencyKey: "knot-asset-commit-0001",
     });
+    expect(uploadedHeaders).toEqual(requiredHeaders);
+    expect(uploadedHeaders).not.toHaveProperty("authorization");
     expect(calls).toEqual([
       `POST:https://knot.example/api/v1/connectors/${connectorId}/assets/request`,
       "PUT:https://uploads.example/object",
