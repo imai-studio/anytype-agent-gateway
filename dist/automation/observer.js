@@ -4,6 +4,7 @@ import { AnytypeHttpError } from "../anytype-client.js";
 import { principalFromParticipantId } from "../principal.js";
 import { evaluateWorkflowAuthority, evaluateWorkflowPolicy } from "./policy.js";
 import { canonicalJson, canonicalWorkflowDefinition, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./workflow.js";
+const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 export class WorkflowObserver {
     anytype;
     store;
@@ -46,30 +47,29 @@ export class WorkflowObserver {
             let changes = 0;
             let watermarkModifiedAt = state.watermarkModifiedAt;
             let watermarkFingerprint = state.watermarkFingerprint;
-            let objectFailures = 0;
             for (const object of objects) {
                 let observed;
                 try {
                     observed = this.observeObject(spaceId, object, startedAt);
                 }
                 catch {
-                    objectFailures += 1;
+                    observed = this.observeReadFailure(spaceId, object, startedAt, "object_read_failed");
                     this.log("workflow_observer_object_failed", {
                         spaceId,
                         objectIdDigest: stableId("object-log", object.id),
-                        errorCode: "persistence_failed",
+                        errorCode: "object_read_failed",
                     });
-                    continue;
                 }
                 changes += observed.changed ? 1 : 0;
-                if (compareRevision(object.modifiedAt, observed.sourceDigest, watermarkModifiedAt, watermarkFingerprint) > 0) {
-                    watermarkModifiedAt = object.modifiedAt;
+                const modifiedAt = validNativeRevision(object.modifiedAt, startedAt)
+                    ? object.modifiedAt
+                    : 0;
+                if (compareRevision(modifiedAt, observed.sourceDigest, watermarkModifiedAt, watermarkFingerprint) > 0) {
+                    watermarkModifiedAt = modifiedAt;
                     watermarkFingerprint = observed.sourceDigest;
                 }
             }
             const pageComplete = objects.length < this.config.polling.pageSize;
-            if (objectFailures)
-                throw new ObserverScanError("object_persistence_failed");
             const archiveResult = pageComplete
                 ? await this.archiveMissing(spaceId, state.reconcileStartedAt, startedAt, this.config.polling.pageSize)
                 : { changed: 0, complete: false };
@@ -139,29 +139,13 @@ export class WorkflowObserver {
         });
     }
     observeObject(spaceId, object, observedAt) {
+        if (!validNativeRevision(object.modifiedAt, observedAt))
+            return this.observeReadFailure(spaceId, { ...object, modifiedAt: 0 }, observedAt, "native_revision_missing");
         const previous = this.store.workflowDefinition(spaceId, object.id);
-        const workflowId = stableId("workflow", spaceId, object.id);
         const sourceDigest = workflowSourceDigest(object.source ?? "");
-        if (object.observationError) {
-            const current = this.store.recordWorkflowDefinitionReadFailure({
-                workflowId,
-                spaceId,
-                objectId: object.id,
-                name: boundedLabel(object.name),
-                sourceDigest,
-                seenAt: observedAt,
-                errorCode: object.observationError,
-            });
-            const inserted = this.recordEvent(this.store.hasNormalizedObjectEvent(spaceId, object.id)
-                ? "object.updated"
-                : "object.created", spaceId, object, sourceDigest, observedAt, { workflowId, state: "invalid", valid: false, errorCode: object.observationError });
-            return {
-                changed: inserted ||
-                    previous?.state !== current.state ||
-                    previous?.sourceDigest !== current.sourceDigest,
-                sourceDigest,
-            };
-        }
+        if (object.observationError)
+            return this.observeReadFailure(spaceId, object, observedAt, object.observationError);
+        const workflowId = stableId("workflow", spaceId, object.id);
         if (object.archived) {
             this.store.recordWorkflowDefinitionStatus({
                 workflowId,
@@ -282,6 +266,27 @@ export class WorkflowObserver {
             });
         return { changed: changed || inserted, sourceDigest };
     }
+    observeReadFailure(spaceId, object, observedAt, errorCode) {
+        const previous = this.store.workflowDefinition(spaceId, object.id);
+        const workflowId = stableId("workflow", spaceId, object.id);
+        const sourceDigest = workflowSourceDigest("");
+        const current = this.store.recordWorkflowDefinitionReadFailure({
+            workflowId,
+            spaceId,
+            objectId: object.id,
+            name: boundedLabel(object.name),
+            sourceDigest,
+            seenAt: observedAt,
+            errorCode,
+        });
+        const inserted = this.recordEvent(this.store.hasNormalizedObjectEvent(spaceId, object.id) ? "object.updated" : "object.created", spaceId, object, sourceDigest, observedAt, { workflowId, state: "invalid", valid: false, errorCode });
+        return {
+            changed: inserted ||
+                previous?.state !== current.state ||
+                previous?.sourceDigest !== current.sourceDigest,
+            sourceDigest,
+        };
+    }
     async archiveMissing(spaceId, startedAt, observedAt, limit) {
         const candidates = this.store.workflowDefinitionsMissingSince(spaceId, startedAt, limit + 1);
         const batch = candidates.slice(0, limit);
@@ -399,13 +404,6 @@ class ObserverValidationError extends Error {
         this.code = code;
     }
 }
-class ObserverScanError extends Error {
-    code;
-    constructor(code) {
-        super(code);
-        this.code = code;
-    }
-}
 function sourceErrorCode(error) {
     return error instanceof ObserverValidationError ? error.code : "source_invalid";
 }
@@ -429,8 +427,6 @@ function authorityErrorCode(error) {
     return "authority_rejected";
 }
 function observerErrorCode(error) {
-    if (error instanceof ObserverScanError)
-        return error.code;
     if (error instanceof AnytypeHttpError) {
         if (error.status === 401)
             return "anytype_unauthorized";
@@ -441,6 +437,11 @@ function observerErrorCode(error) {
         return error.status >= 500 ? "anytype_unavailable" : "anytype_request_failed";
     }
     return "scan_failed";
+}
+function validNativeRevision(modifiedAt, observedAt) {
+    return (Number.isSafeInteger(modifiedAt) &&
+        modifiedAt >= 0 &&
+        modifiedAt <= observedAt + MAX_FUTURE_CLOCK_SKEW_MS);
 }
 function boundedLabel(value) {
     const label = [...value.trim()].slice(0, 256).join("");

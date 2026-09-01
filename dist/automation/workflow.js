@@ -54,7 +54,10 @@ const workflowTriggerSchema = z.discriminatedUnion("kind", [
     z
         .object({
         kind: z.literal("anytype.event"),
-        events: z.array(z.enum(["created", "updated", "archived"])).min(1),
+        events: z
+            .array(z.enum(["created", "updated", "archived"]))
+            .min(1)
+            .max(3),
         spaceId: z.string().min(1).optional(),
         objectTypeId: z.string().min(1).optional(),
         filter: z.record(z.string(), jsonValueSchema).default({}),
@@ -102,14 +105,14 @@ const anytypeMaterializeConfigSchema = z
     .strict();
 const externalReferenceConfig = {
     connectionRef: z.string().min(1),
-    secretRefs: z.array(z.string().min(1)).default([]),
+    secretRefs: z.array(z.string().min(1)).max(100).default([]),
 };
 function workflowStep(kind, config) {
     return z
         .object({
         id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
         kind: z.literal(kind),
-        dependsOn: z.array(z.string()).default([]),
+        dependsOn: z.array(z.string()).max(1_000).default([]),
         config: config.optional(),
         retry: retrySchema.optional(),
         timeoutSeconds: z.number().int().min(1).max(86_400).optional(),
@@ -172,15 +175,18 @@ const workflowDefinitionObjectSchema = z
         .object({
         name: z.string().trim().min(1).max(160),
         description: z.string().max(2_000).optional(),
-        labels: z.record(z.string(), z.string()).default({}),
+        labels: z
+            .record(z.string(), z.string())
+            .refine((labels) => Object.keys(labels).length <= 100, "At most 100 labels are allowed")
+            .default({}),
     })
         .strict(),
     spec: z
         .object({
         enabled: z.boolean().default(false),
-        triggers: z.array(workflowTriggerSchema).min(1),
-        steps: z.array(workflowStepSchema).min(1),
-        capabilities: z.array(workflowCapabilitySchema).default([]),
+        triggers: z.array(workflowTriggerSchema).min(1).max(100),
+        steps: z.array(workflowStepSchema).min(1).max(1_000),
+        capabilities: z.array(workflowCapabilitySchema).max(100).default([]),
         retry: retrySchema.default({
             attempts: 3,
             initialDelaySeconds: 5,
@@ -217,6 +223,7 @@ const workflowDefinitionObjectSchema = z
             digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
         })
             .strict())
+            .max(1_000)
             .default([]),
         concurrency: z.number().int().min(1).max(100).default(1),
     })
@@ -322,7 +329,7 @@ export function workflowApprovalMaterial(workflow) {
         policyVersion: WORKFLOW_POLICY_VERSION,
         spec: {
             behavior: workflow.spec.behavior,
-            behaviorReferences: [...workflow.spec.behaviorReferences].sort((left, right) => `${left.kind}\0${left.id}\0${left.digest}`.localeCompare(`${right.kind}\0${right.id}\0${right.digest}`)),
+            behaviorReferences: [...workflow.spec.behaviorReferences].sort((left, right) => compareBytewise(`${left.kind}\0${left.id}\0${left.digest}`, `${right.kind}\0${right.id}\0${right.digest}`)),
             budget: workflow.spec.budget,
             capabilities: [...new Set(workflow.spec.capabilities)].sort(),
             concurrency: workflow.spec.concurrency,
@@ -331,6 +338,9 @@ export function workflowApprovalMaterial(workflow) {
             triggers: workflow.spec.triggers,
         },
     };
+}
+function compareBytewise(left, right) {
+    return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 export function workflowApprovalHash(workflow) {
     const digest = createHash("sha256")

@@ -188,6 +188,83 @@ describe("Anytype object REST client", () => {
     ]);
   });
 
+  it("rejects future workflow timestamps as missing native revisions", async () => {
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.method === "POST") {
+        response.end(
+          JSON.stringify({ data: [{ id: "workflow-1", type: { key: "knot-workflow" } }] }),
+        );
+        return;
+      }
+      response.end(
+        JSON.stringify({
+          object: {
+            id: "workflow-1",
+            type: { key: "knot-workflow" },
+            modified_at: Date.now() + 10 * 60 * 1_000,
+          },
+        }),
+      );
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "knot-workflow-future-revision-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "Knot", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    await expect(client.searchWorkflowObjects("space", ["knot-workflow"], 0, 25)).resolves.toEqual([
+      {
+        id: "workflow-1",
+        name: "workflow-1",
+        typeKey: "knot-workflow",
+        modifiedAt: 0,
+        archived: false,
+        observationError: "native_revision_missing",
+      },
+    ]);
+  });
+
+  it("does not cap general object reads at the observer response limit", async () => {
+    const body = "x".repeat(2 * 1024 * 1024 + 1);
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ object: { id: "large", markdown: body } }));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "knot-general-object-read-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "Knot", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    await expect(client.getObject("space", "large")).resolves.toMatchObject({
+      id: "large",
+      markdown: body,
+    });
+  });
+
   it("downloads file bytes without treating media as JSON", async () => {
     const server = createServer((request, response) => {
       expect(request.url).toBe("/v1/spaces/space/files/video%2Fid");
@@ -533,7 +610,6 @@ describe("Anytype object REST client", () => {
     ]);
     expect(JSON.parse(calls[0]!.body)).toEqual({
       query: "roadmap",
-      sort: { direction: "desc", property_key: "last_modified_date" },
       types: ["page"],
     });
     expect(JSON.parse(calls[10]!.body)).toEqual({ name: "klee:imai", color: "blue" });

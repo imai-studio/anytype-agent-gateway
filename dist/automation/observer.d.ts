@@ -23,6 +23,7 @@ export declare class WorkflowObserver {
     scanSpaceOnce(spaceId: string): Promise<WorkflowObserverScanResult>;
     private state;
     private observeObject;
+    private observeReadFailure;
     private archiveMissing;
     private recordEvent;
 }

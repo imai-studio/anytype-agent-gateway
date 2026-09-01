@@ -1901,7 +1901,6 @@ export class Store {
         stored.schemaVersion !== input.schemaVersion ||
         stored.canonicalDefinitionJson !== storedDefinitionJson ||
         stored.canonicalApprovalJson !== storedApprovalJson ||
-        stored.sourceDigest !== input.sourceDigest ||
         stored.riskTier !== input.riskTier ||
         JSON.stringify(stored.requiredCapabilities) !== requiredCapabilitiesJson
       )

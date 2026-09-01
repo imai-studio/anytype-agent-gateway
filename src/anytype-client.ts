@@ -359,10 +359,11 @@ export class AnytypeClient implements AnytypePort {
   }
 
   async getObject(spaceId: string, objectId: string): Promise<JsonRecord & { id: string }> {
-    const response = await this.request(
-      `/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`,
-    );
-    const json = await readBoundedJson(response, MAX_OBJECT_RESPONSE_BYTES);
+    const json = (await (
+      await this.request(
+        `/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`,
+      )
+    ).json()) as JsonRecord;
     const object = json.object ?? json;
     return { ...object, id: object.id ?? objectId };
   }
@@ -456,11 +457,19 @@ export class AnytypeClient implements AnytypePort {
     offset: number,
     limit: number,
   ): Promise<AnytypeWorkflowObject[]> {
-    const summaries = await this.searchSpace(spaceId, { types: typeKeys, offset, limit });
+    const summaries = await this.searchSpaceRequest(
+      spaceId,
+      { types: typeKeys, offset, limit },
+      true,
+    );
     return mapConcurrent(summaries, WORKFLOW_OBJECT_READ_CONCURRENCY, async (summary) => {
       const summaryId = boundedName(summary.id, 512) ?? "invalid-object-id";
       try {
-        const raw = await this.getObject(spaceId, summaryId);
+        const response = await this.request(
+          `/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(summaryId)}`,
+        );
+        const json = await readBoundedJson(response, MAX_OBJECT_RESPONSE_BYTES);
+        const raw = json.object ?? json;
         const typeKey = objectTypeKey(raw) ?? objectTypeKey(summary);
         if (!typeKey || !typeKeys.includes(typeKey))
           return invalidWorkflowSummary(summaryId, summary, "object_type_unverified");
@@ -494,6 +503,14 @@ export class AnytypeClient implements AnytypePort {
     spaceId: string,
     input: { query?: string; types?: string[]; offset?: number; limit?: number },
   ): Promise<JsonRecord[]> {
+    return this.searchSpaceRequest(spaceId, input, false);
+  }
+
+  private async searchSpaceRequest(
+    spaceId: string,
+    input: { query?: string; types?: string[]; offset?: number; limit?: number },
+    sortByLastModified: boolean,
+  ): Promise<JsonRecord[]> {
     const query = new URLSearchParams({
       offset: String(input.offset ?? 0),
       limit: String(input.limit ?? 100),
@@ -503,7 +520,9 @@ export class AnytypeClient implements AnytypePort {
         method: "POST",
         body: JSON.stringify({
           query: input.query ?? "",
-          sort: { direction: "desc", property_key: "last_modified_date" },
+          ...(sortByLastModified
+            ? { sort: { direction: "desc", property_key: "last_modified_date" } }
+            : {}),
           ...(input.types?.length ? { types: input.types } : {}),
         }),
       })
@@ -669,7 +688,8 @@ function objectModifiedAt(value: JsonRecord): number | undefined {
           ? Date.parse(candidate)
           : Number.NaN;
   if (!Number.isSafeInteger(parsed) || parsed < 0) return undefined;
-  return parsed < 100_000_000_000 ? parsed * 1_000 : parsed;
+  const milliseconds = parsed < 100_000_000_000 ? parsed * 1_000 : parsed;
+  return milliseconds <= Date.now() + 5 * 60 * 1_000 ? milliseconds : undefined;
 }
 
 function objectEditorParticipantId(value: JsonRecord): string | undefined {

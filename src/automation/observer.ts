@@ -22,6 +22,7 @@ import {
 } from "./workflow.js";
 
 type ObserverConfig = AgentConfig["automation"];
+const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 
 export type WorkflowObserverScanResult = {
   spaceId: string;
@@ -79,35 +80,35 @@ export class WorkflowObserver {
       let changes = 0;
       let watermarkModifiedAt = state.watermarkModifiedAt;
       let watermarkFingerprint = state.watermarkFingerprint;
-      let objectFailures = 0;
       for (const object of objects) {
         let observed: { changed: boolean; sourceDigest: string };
         try {
           observed = this.observeObject(spaceId, object, startedAt);
         } catch {
-          objectFailures += 1;
+          observed = this.observeReadFailure(spaceId, object, startedAt, "object_read_failed");
           this.log("workflow_observer_object_failed", {
             spaceId,
             objectIdDigest: stableId("object-log", object.id),
-            errorCode: "persistence_failed",
+            errorCode: "object_read_failed",
           });
-          continue;
         }
         changes += observed.changed ? 1 : 0;
+        const modifiedAt = validNativeRevision(object.modifiedAt, startedAt)
+          ? object.modifiedAt
+          : 0;
         if (
           compareRevision(
-            object.modifiedAt,
+            modifiedAt,
             observed.sourceDigest,
             watermarkModifiedAt,
             watermarkFingerprint,
           ) > 0
         ) {
-          watermarkModifiedAt = object.modifiedAt;
+          watermarkModifiedAt = modifiedAt;
           watermarkFingerprint = observed.sourceDigest;
         }
       }
       const pageComplete = objects.length < this.config.polling.pageSize;
-      if (objectFailures) throw new ObserverScanError("object_persistence_failed");
       const archiveResult = pageComplete
         ? await this.archiveMissing(
             spaceId,
@@ -190,37 +191,18 @@ export class WorkflowObserver {
     object: AnytypeWorkflowObject,
     observedAt: number,
   ): { changed: boolean; sourceDigest: string } {
-    const previous = this.store.workflowDefinition(spaceId, object.id);
-    const workflowId = stableId("workflow", spaceId, object.id);
-    const sourceDigest = workflowSourceDigest(object.source ?? "");
-    if (object.observationError) {
-      const current = this.store.recordWorkflowDefinitionReadFailure({
-        workflowId,
+    if (!validNativeRevision(object.modifiedAt, observedAt))
+      return this.observeReadFailure(
         spaceId,
-        objectId: object.id,
-        name: boundedLabel(object.name),
-        sourceDigest,
-        seenAt: observedAt,
-        errorCode: object.observationError,
-      });
-      const inserted = this.recordEvent(
-        this.store.hasNormalizedObjectEvent(spaceId, object.id)
-          ? "object.updated"
-          : "object.created",
-        spaceId,
-        object,
-        sourceDigest,
+        { ...object, modifiedAt: 0 },
         observedAt,
-        { workflowId, state: "invalid", valid: false, errorCode: object.observationError },
+        "native_revision_missing",
       );
-      return {
-        changed:
-          inserted ||
-          previous?.state !== current.state ||
-          previous?.sourceDigest !== current.sourceDigest,
-        sourceDigest,
-      };
-    }
+    const previous = this.store.workflowDefinition(spaceId, object.id);
+    const sourceDigest = workflowSourceDigest(object.source ?? "");
+    if (object.observationError)
+      return this.observeReadFailure(spaceId, object, observedAt, object.observationError);
+    const workflowId = stableId("workflow", spaceId, object.id);
     if (object.archived) {
       this.store.recordWorkflowDefinitionStatus({
         workflowId,
@@ -357,6 +339,41 @@ export class WorkflowObserver {
     return { changed: changed || inserted, sourceDigest };
   }
 
+  private observeReadFailure(
+    spaceId: string,
+    object: AnytypeWorkflowObject,
+    observedAt: number,
+    errorCode: WorkflowValidationErrorCode,
+  ): { changed: boolean; sourceDigest: string } {
+    const previous = this.store.workflowDefinition(spaceId, object.id);
+    const workflowId = stableId("workflow", spaceId, object.id);
+    const sourceDigest = workflowSourceDigest("");
+    const current = this.store.recordWorkflowDefinitionReadFailure({
+      workflowId,
+      spaceId,
+      objectId: object.id,
+      name: boundedLabel(object.name),
+      sourceDigest,
+      seenAt: observedAt,
+      errorCode,
+    });
+    const inserted = this.recordEvent(
+      this.store.hasNormalizedObjectEvent(spaceId, object.id) ? "object.updated" : "object.created",
+      spaceId,
+      object,
+      sourceDigest,
+      observedAt,
+      { workflowId, state: "invalid", valid: false, errorCode },
+    );
+    return {
+      changed:
+        inserted ||
+        previous?.state !== current.state ||
+        previous?.sourceDigest !== current.sourceDigest,
+      sourceDigest,
+    };
+  }
+
   private async archiveMissing(
     spaceId: string,
     startedAt: number,
@@ -484,12 +501,6 @@ class ObserverValidationError extends Error {
   }
 }
 
-class ObserverScanError extends Error {
-  constructor(readonly code: string) {
-    super(code);
-  }
-}
-
 function sourceErrorCode(error: unknown): WorkflowValidationErrorCode {
   return error instanceof ObserverValidationError ? error.code : "source_invalid";
 }
@@ -507,7 +518,6 @@ function authorityErrorCode(error: string): WorkflowValidationErrorCode {
 }
 
 function observerErrorCode(error: unknown): string {
-  if (error instanceof ObserverScanError) return error.code;
   if (error instanceof AnytypeHttpError) {
     if (error.status === 401) return "anytype_unauthorized";
     if (error.status === 403) return "anytype_forbidden";
@@ -515,6 +525,14 @@ function observerErrorCode(error: unknown): string {
     return error.status >= 500 ? "anytype_unavailable" : "anytype_request_failed";
   }
   return "scan_failed";
+}
+
+function validNativeRevision(modifiedAt: number, observedAt: number): boolean {
+  return (
+    Number.isSafeInteger(modifiedAt) &&
+    modifiedAt >= 0 &&
+    modifiedAt <= observedAt + MAX_FUTURE_CLOCK_SKEW_MS
+  );
 }
 
 function boundedLabel(value: string): string {

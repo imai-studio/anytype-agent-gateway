@@ -187,17 +187,17 @@ describe("automation persistence foundation", () => {
       expect(readFileSync(`${path}-wal`).includes(Buffer.from(secret))).toBe(false);
   });
 
-  it("stores immutable versions idempotently and rejects divergent hash reuse", () => {
+  it("stores immutable versions idempotently across equivalent source formatting", () => {
     const store = new Store(":memory:");
     const input = versionRecord();
     expect(store.saveWorkflowVersion(input)).toEqual(input);
     expect(store.saveWorkflowVersion(input)).toEqual(input);
-    expect(() =>
+    expect(
       store.saveWorkflowVersion({
         ...input,
-        sourceDigest: workflowSourceDigest("divergent source text"),
+        sourceDigest: workflowSourceDigest("# comment-only YAML representation"),
       }),
-    ).toThrow("divergent immutable version");
+    ).toEqual(input);
     expect(store.workflowVersion(input.workflowId, input.versionHash)).toEqual(input);
     expect(
       store.db

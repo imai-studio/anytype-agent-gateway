@@ -165,7 +165,7 @@ describe("read-only workflow observer", () => {
     store.close();
   });
 
-  it("repairs a missing audit event after a partial observation commit", async () => {
+  it("isolates an audit write failure and repairs the valid revision on retry", async () => {
     const directory = mkdtempSync(join(tmpdir(), "knot-observer-repair-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "state.sqlite");
@@ -183,8 +183,12 @@ describe("read-only workflow observer", () => {
         () => {},
         () => 200,
       ).scanSpaceOnce("space-1"),
-    ).toMatchObject({ failed: true });
-    expect(eventRows(store)).toHaveLength(0);
+    ).toMatchObject({ failed: false });
+    expect(eventRows(store)).toHaveLength(1);
+    expect(store.workflowDefinition("space-1", "definition-1")).toMatchObject({
+      state: "invalid",
+      validationErrors: ["object_read_failed"],
+    });
     eventWrite.mockRestore();
     store.close();
 
@@ -198,8 +202,12 @@ describe("read-only workflow observer", () => {
     ).scanSpaceOnce("space-1");
 
     expect(result.changes).toBe(1);
-    expect(eventRows(store)).toHaveLength(1);
-    expect(eventRows(store)[0]!.kind).toBe("object.created");
+    expect(eventRows(store)).toHaveLength(2);
+    expect(eventRows(store).map((event) => event.kind)).toEqual([
+      "object.created",
+      "object.updated",
+    ]);
+    expect(store.workflowDefinition("space-1", "definition-1")?.state).toBe("valid");
     store.close();
   });
 
@@ -233,7 +241,7 @@ describe("read-only workflow observer", () => {
     store.close();
   });
 
-  it("accepts the same canonical definition at a later native revision", async () => {
+  it("accepts comment-only YAML changes at a later native revision", async () => {
     const anytype = new FakeAnytype();
     const store = new Store(":memory:");
     let now = 200;
@@ -247,7 +255,12 @@ describe("read-only workflow observer", () => {
     anytype.workflowObjects = [workflowObject({ modifiedAt: 100 })];
     await observer.scanSpaceOnce("space-1");
     now = 300;
-    anytype.workflowObjects = [workflowObject({ modifiedAt: 150 })];
+    anytype.workflowObjects = [
+      workflowObject({
+        modifiedAt: 150,
+        source: source("Workflow one").replace("metadata:", "# formatting-only comment\nmetadata:"),
+      }),
+    ];
 
     expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ failed: false, changes: 1 });
     expect(eventRows(store).map((event) => event.kind)).toEqual([
@@ -574,6 +587,84 @@ describe("read-only workflow observer", () => {
       validationErrors: ["object_read_failed"],
     });
     expect(store.workflowDefinition("space-1", "good")?.state).toBe("valid");
+    store.close();
+  });
+
+  it("records a poisoned object and advances pagination through reconciliation", async () => {
+    const anytype = new FakeAnytype();
+    anytype.workflowObjects = [
+      workflowObject({ id: "poisoned", source: source("Poisoned") }),
+      workflowObject({ id: "good-1", source: source("Good one") }),
+      workflowObject({ id: "good-2", source: source("Good two") }),
+    ];
+    anytype.missingObjectIds.add("missing");
+    const store = new Store(":memory:");
+    store.recordWorkflowDefinitionStatus({
+      workflowId: "missing-workflow",
+      spaceId: "space-1",
+      objectId: "missing",
+      name: "Missing",
+      state: "invalid",
+      sourceModifiedAt: 1,
+      sourceDigest: workflowSourceDigest("missing"),
+      seenAt: 1,
+      validationErrors: ["source_missing"],
+    });
+    const saveVersion = vi.spyOn(store, "saveWorkflowVersion").mockImplementationOnce(() => {
+      throw new Error("poisoned version record");
+    });
+    let now = 200;
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(2),
+      () => {},
+      () => now++,
+    );
+
+    expect(await observer.scanSpaceOnce("space-1")).toMatchObject({
+      failed: false,
+      objects: 2,
+    });
+    expect(store.workflowObserverState("space-1")?.pageOffset).toBe(2);
+    expect(store.workflowDefinition("space-1", "poisoned")).toMatchObject({
+      state: "invalid",
+      validationErrors: ["object_read_failed"],
+    });
+    expect(await observer.scanSpaceOnce("space-1")).toMatchObject({
+      failed: false,
+      objects: 1,
+      archived: 1,
+    });
+    expect(store.workflowObserverState("space-1")?.pageOffset).toBe(0);
+    expect(store.workflowDefinition("space-1", "good-2")?.state).toBe("valid");
+    expect(store.workflowDefinition("space-1", "missing")?.state).toBe("archived");
+    expect(saveVersion).toHaveBeenCalled();
+    store.close();
+  });
+
+  it("rejects future native revisions without pinning the watermark", async () => {
+    const anytype = new FakeAnytype();
+    anytype.workflowObjects = [
+      workflowObject({ id: "future", modifiedAt: 5 * 60 * 1_000 + 201 }),
+      workflowObject({ id: "current", modifiedAt: 150, source: source("Current") }),
+    ];
+    const store = new Store(":memory:");
+
+    const result = await new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => 200,
+    ).scanSpaceOnce("space-1");
+
+    expect(result.failed).toBe(false);
+    expect(store.workflowDefinition("space-1", "future")).toMatchObject({
+      state: "invalid",
+      validationErrors: ["native_revision_missing"],
+    });
+    expect(store.workflowObserverState("space-1")?.watermarkModifiedAt).toBe(150);
     store.close();
   });
 

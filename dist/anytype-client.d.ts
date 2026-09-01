@@ -88,6 +88,7 @@ export declare class AnytypeClient implements AnytypePort {
         offset?: number;
         limit?: number;
     }): Promise<JsonRecord[]>;
+    private searchSpaceRequest;
     createObject(spaceId: string, input: {
         type_key: string;
         name?: string;

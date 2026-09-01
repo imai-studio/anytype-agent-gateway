@@ -121,6 +121,39 @@ describe("workflow foundation", () => {
     expect(workflowApprovalHash(changed)).not.toBe(workflowApprovalHash(pinned));
   });
 
+  it("sorts behavior references by deterministic UTF-8 bytes", () => {
+    const definition = workflow({
+      behaviorReferences: [
+        { kind: "prompt", id: "ä", digest: `sha256:${"a".repeat(64)}` },
+        { kind: "prompt", id: "z", digest: `sha256:${"b".repeat(64)}` },
+      ],
+    });
+    const material = workflowApprovalMaterial(definition) as {
+      spec: { behaviorReferences: Array<{ id: string }> };
+    };
+
+    expect(material.spec.behaviorReferences.map((reference) => reference.id)).toEqual(["z", "ä"]);
+  });
+
+  it("bounds workflow schema collections", () => {
+    expect(() =>
+      workflow({
+        triggers: Array.from({ length: 101 }, () => ({ kind: "manual" })),
+      }),
+    ).toThrow();
+    expect(() =>
+      workflowDefinitionSchema.parse({
+        ...workflow(),
+        metadata: {
+          name: "Too many labels",
+          labels: Object.fromEntries(
+            Array.from({ length: 101 }, (_, index) => [`label-${index}`, "value"]),
+          ),
+        },
+      }),
+    ).toThrow("At most 100 labels");
+  });
+
   it("classifies read, write, and external workflows into increasing risk tiers", () => {
     expect(evaluateWorkflowPolicy(workflow()).riskTier).toBe("T0");
     const write = workflow({
