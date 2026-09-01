@@ -22,7 +22,7 @@ knot --version
 knot --help
 ```
 
-The checkout-local command is valid before publication. After npm trusted publishing completes, use `pnpm add --global @imai/knot@0.2.0`. After the repository rename and tag exist, use `pnpm add --global github:imai-studio/knot#v0.2.0` for an exact source revision. Existing automation that still installs from `github:imai-studio/anytype-agent-gateway` depends on GitHub's permanent redirect and should be updated when convenient, not during an emergency upgrade.
+The checkout-local command is valid before publication. After npm trusted publishing completes, use `pnpm add --global @imai/knot@0.2.0`. After the `v0.2.0` tag exists, use `pnpm add --global github:imai-studio/knot#v0.2.0` for an exact source revision. Existing automation that still installs from `github:imai-studio/anytype-agent-gateway` depends on GitHub's permanent redirect and should be updated when convenient, not during an emergency upgrade.
 
 Do not continue if `knot --version` fails. Do not work around the failure by downloading unreviewed binaries or disabling package-manager security globally.
 
@@ -150,7 +150,7 @@ One configuration should describe one identity and one runtime agent. Use explic
 
 Enable `directMessages` only with explicit stable Anytype identity IDs. Knot scans for `anytype.onetoone` spaces, verifies both the configured agent and an allowed peer are active members, and listens to every message in that DM without requiring a mention. The default `createMissing: false` is scan-only. Opt in to `createMissing: true` when the local Heart adapter should initialize an absent authorized pairwise DM and send its one-to-one inbox invitation. Successful initialization is persisted; failures use exponential backoff and do not block ordinary DM discovery indefinitely. Wildcards and mention-only DM policies are rejected. Shared spaces and group chats remain governed by their own configured routes.
 
-DM routes inherit the response and harness behavior but not route self-management: change their sender allowlist and wake policy in `directMessages` operator configuration. Anytype object tools remain limited to `tools.anytype.allowedSpaceIds`. When that list is empty, the current DM backing space is the turn's default Anytype space and is therefore accessible. Configure an explicit list of shared-space IDs to prevent object access to DM backing spaces; discovering a DM never widens an explicit list.
+DM routes inherit the response and runtime behavior but not route self-management: change their sender allowlist and wake policy in `directMessages` operator configuration. Anytype object tools remain limited to `tools.anytype.allowedSpaceIds`. When that list is empty, the current DM backing space is the turn's default Anytype space and is therefore accessible. Configure an explicit list of shared-space IDs to prevent object access to DM backing spaces; discovering a DM never widens an explicit list.
 
 ## 5. Validate before connecting
 
@@ -203,10 +203,10 @@ This installs a user-level launchd service on macOS or systemd user service on L
 - Codex, OpenClaw, or the operating-system sandbox enforces the declared project limits.
 - The foreground test covers mentions, silence, progress edits, final replies, and steering.
 - Thinking is replaced by the following text in one message; later distinct text parts appear as new streamed messages.
-- A `/new` message resets the native harness context without changing the Anytype route.
+- A `/new` message resets the native runtime context without changing the Anytype route.
 - A Codex-backed chat can select its project with an Anytype Chat `Tag` named `agent-name:project-name`, such as `klee:imai`. Knot validates the tag against `runtime.defaultProject` and `runtime.allowedProjects` on every `/new`; invalid or ambiguous tags fail closed instead of falling back to another workspace.
 - `/projects`, `/project <name>`, and `/project default` list, set, and remove the current agent's Chat project tag. Enable writes with `management.allowProjectChanges` and explicit `projectAdmins`.
-- `/models`, `/model <id>`, `/model default`, and `/new --model <id>` use the harness's native model controls. Enable changes with `management.allowModelChanges` and explicit `modelAdmins`; restrict the live catalog with `models.allowed`.
+- `/models`, `/model <id>`, `/model default`, and `/new --model <id>` use the runtime's native model controls. Enable changes with `management.allowModelChanges` and explicit `modelAdmins`; restrict the live catalog with `models.allowed`.
 - Allowed Anytype object operations work and denied spaces, archive, and upload paths fail closed.
 - OpenClaw's native channel is installed, its exact operator session is bound, and native scheduled/background output returns after a Knot restart.
 - Only one foreground/service process owns the configuration and SQLite state.

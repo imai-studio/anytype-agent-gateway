@@ -534,7 +534,7 @@ responses:
 - `single` shows the answer without tool milestones.
 - `milestones` shows concise tool lifecycle updates while work is active.
 - `verbose` also includes runtime status output.
-- `thinking: stream` shows safe progress text from the harness, not hidden chain-of-thought.
+- `thinking: stream` shows safe progress text from the runtime, not hidden chain-of-thought.
 - A runtime may return `[[AAG_STAY_SILENT]]` when it intentionally has nothing to post.
 
 The working reaction belongs to the triggering Anytype message. The first reply is edited as work

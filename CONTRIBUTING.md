@@ -1,7 +1,5 @@
 # Contributing
 
-Thanks for helping improve Knot.
-
 ## Development setup
 
 Use Node.js 24 or newer. Go 1.25.7 is required only for the optional Heart discussion adapter.

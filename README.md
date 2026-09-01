@@ -235,7 +235,7 @@ mentions, replies, and agent claims never grant authority.
 | `knot mcp`             | Start the policy-mediated Anytype tool server                  |
 | `knot join`            | Join another Anytype space with the current identity           |
 
-Inside an authorized Anytype chat, `/new` starts a fresh harness session. Codex-backed agents also
+Inside an authorized Anytype chat, `/new` starts a fresh runtime session. Codex-backed agents also
 support `/projects`, `/project <name>`, `/models`, and `/model <id>` when the operator enables the
 matching management permissions.
 
