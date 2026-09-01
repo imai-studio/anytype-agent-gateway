@@ -46,7 +46,16 @@ export interface WorkflowPolicyEvaluation {
 
 export const workflowAuthorityFields = {
   allowedAuthorIds: z.array(z.string().min(1)).default([]),
-  allowedSpaceIds: z.array(z.string().min(1)).default([]),
+  allowedSpaceIds: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .max(512)
+        .refine((value) => !value.includes("\0")),
+    )
+    .default([]),
   allowedCapabilities: z.array(workflowCapabilitySchema).default([]),
   allowedConnections: z.array(z.string().min(1)).default([]),
   allowedSecretNames: z.array(z.string().min(1)).default([]),

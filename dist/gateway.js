@@ -1,5 +1,6 @@
 import { AgentController, messageFingerprint, } from "./controller.js";
 import { DiscussionAnytypePort } from "./discussions.js";
+import { WorkflowObserver } from "./automation/observer.js";
 import { decideWake, mergeWakeOverride, sameIdentity } from "./wake.js";
 import { principalAuditFields, principalFromMessage, principalFromParticipantId, } from "./principal.js";
 const INTERRUPTED_RUN_RECOVERY_GRACE_MS = 60 * 60 * 1000;
@@ -17,6 +18,7 @@ export class Gateway {
     abort = new AbortController();
     routeIds = new Set();
     tasks = new Set();
+    auxiliaryTasks = new Set();
     controller;
     discussionAnytype;
     terminal;
@@ -91,6 +93,8 @@ export class Gateway {
                 this.track(this.discoverDirectMessages(this.config.directMessages));
             if (!this.tasks.size)
                 throw new Error("Configuration produced no chat or discussion routes");
+            if (this.config.automation.enabled && this.config.automation.observation)
+                this.trackAuxiliary(new WorkflowObserver(this.anytype, this.store, this.config.automation, this.log).run(this.abort.signal), "workflow_observer_stopped");
             await this.terminal;
         }
         finally {
@@ -98,7 +102,7 @@ export class Gateway {
             if (this.pruneTimer)
                 clearInterval(this.pruneTimer);
             this.pruneTimer = undefined;
-            await Promise.allSettled([...this.tasks]);
+            await Promise.allSettled([...this.tasks, ...this.auxiliaryTasks]);
             await this.controller.stop({ drain: this.drainOnStop });
         }
     }
@@ -122,6 +126,14 @@ export class Gateway {
                 this.rejectTerminal(error);
             }
         });
+    }
+    trackAuxiliary(task, failureEvent) {
+        const guarded = task.catch(() => {
+            if (!this.abort.signal.aborted)
+                this.log(failureEvent, { errorCode: "unexpected_failure" });
+        });
+        this.auxiliaryTasks.add(guarded);
+        void guarded.finally(() => this.auxiliaryTasks.delete(guarded));
     }
     async runRoute(route) {
         const { conversation } = route;

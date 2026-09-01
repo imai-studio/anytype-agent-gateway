@@ -31,6 +31,7 @@ describe("workflow foundation", () => {
     expect(canonicalJson({ z: 1, a: { y: true, b: [2, 1] } })).toBe(
       '{"a":{"b":[2,1],"y":true},"z":1}',
     );
+    expect(canonicalJson({ ä: 1, z: 2 })).toBe('{"z":2,"ä":1}');
   });
 
   it("produces stable approval hashes and ignores descriptive metadata", () => {
@@ -119,6 +120,53 @@ describe("workflow foundation", () => {
       behaviorReferences: [{ kind: "prompt", id: "digest", digest: `sha256:${"b".repeat(64)}` }],
     });
     expect(workflowApprovalHash(changed)).not.toBe(workflowApprovalHash(pinned));
+  });
+
+  it("sorts behavior references by deterministic UTF-8 bytes", () => {
+    const definition = workflow({
+      behaviorReferences: [
+        { kind: "prompt", id: "ä", digest: `sha256:${"a".repeat(64)}` },
+        { kind: "prompt", id: "z", digest: `sha256:${"b".repeat(64)}` },
+      ],
+    });
+    const material = workflowApprovalMaterial(definition) as {
+      spec: { behaviorReferences: Array<{ id: string }> };
+    };
+
+    expect(material.spec.behaviorReferences.map((reference) => reference.id)).toEqual(["z", "ä"]);
+  });
+
+  it("sorts dependency IDs by deterministic UTF-8 bytes", () => {
+    const material = workflowApprovalMaterial(
+      workflow({
+        steps: [
+          { id: "z", kind: "transform" },
+          { id: "a", kind: "transform" },
+          { id: "final", kind: "transform", dependsOn: ["z", "a"] },
+        ],
+      }),
+    ) as { spec: { steps: Array<{ id: string; dependsOn: string[] }> } };
+
+    expect(material.spec.steps[2]!.dependsOn).toEqual(["a", "z"]);
+  });
+
+  it("bounds workflow schema collections", () => {
+    expect(() =>
+      workflow({
+        triggers: Array.from({ length: 101 }, () => ({ kind: "manual" })),
+      }),
+    ).toThrow();
+    expect(() =>
+      workflowDefinitionSchema.parse({
+        ...workflow(),
+        metadata: {
+          name: "Too many labels",
+          labels: Object.fromEntries(
+            Array.from({ length: 101 }, (_, index) => [`label-${index}`, "value"]),
+          ),
+        },
+      }),
+    ).toThrow("At most 100 labels");
   });
 
   it("classifies read, write, and external workflows into increasing risk tiers", () => {

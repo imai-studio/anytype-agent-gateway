@@ -70,7 +70,10 @@ const workflowTriggerSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("anytype.event"),
-      events: z.array(z.enum(["created", "updated", "archived"])).min(1),
+      events: z
+        .array(z.enum(["created", "updated", "archived"]))
+        .min(1)
+        .max(3),
       spaceId: z.string().min(1).optional(),
       objectTypeId: z.string().min(1).optional(),
       filter: z.record(z.string(), jsonValueSchema).default({}),
@@ -119,7 +122,7 @@ const anytypeMaterializeConfigSchema = z
   .strict();
 const externalReferenceConfig = {
   connectionRef: z.string().min(1),
-  secretRefs: z.array(z.string().min(1)).default([]),
+  secretRefs: z.array(z.string().min(1)).max(100).default([]),
 };
 
 function workflowStep<K extends z.infer<typeof workflowStepKindSchema>, T extends z.ZodTypeAny>(
@@ -130,7 +133,7 @@ function workflowStep<K extends z.infer<typeof workflowStepKindSchema>, T extend
     .object({
       id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
       kind: z.literal(kind),
-      dependsOn: z.array(z.string()).default([]),
+      dependsOn: z.array(z.string()).max(1_000).default([]),
       config: config.optional(),
       retry: retrySchema.optional(),
       timeoutSeconds: z.number().int().min(1).max(86_400).optional(),
@@ -207,15 +210,18 @@ const workflowDefinitionObjectSchema = z
       .object({
         name: z.string().trim().min(1).max(160),
         description: z.string().max(2_000).optional(),
-        labels: z.record(z.string(), z.string()).default({}),
+        labels: z
+          .record(z.string(), z.string())
+          .refine((labels) => Object.keys(labels).length <= 100, "At most 100 labels are allowed")
+          .default({}),
       })
       .strict(),
     spec: z
       .object({
         enabled: z.boolean().default(false),
-        triggers: z.array(workflowTriggerSchema).min(1),
-        steps: z.array(workflowStepSchema).min(1),
-        capabilities: z.array(workflowCapabilitySchema).default([]),
+        triggers: z.array(workflowTriggerSchema).min(1).max(100),
+        steps: z.array(workflowStepSchema).min(1).max(1_000),
+        capabilities: z.array(workflowCapabilitySchema).max(100).default([]),
         retry: retrySchema.default({
           attempts: 3,
           initialDelaySeconds: 5,
@@ -254,6 +260,7 @@ const workflowDefinitionObjectSchema = z
               })
               .strict(),
           )
+          .max(1_000)
           .default([]),
         concurrency: z.number().int().min(1).max(100).default(1),
       })
@@ -344,7 +351,7 @@ export function canonicalJson(value: JsonValue): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   return `{${Object.keys(value)
-    .sort()
+    .sort(compareBytewise)
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`)
     .join(",")}}`;
 }
@@ -353,7 +360,7 @@ export function workflowApprovalMaterial(workflow: WorkflowDefinition): JsonValu
   const normalizedSteps = workflow.spec.steps.map((step) => ({
     ...step,
     config: step.config ?? {},
-    dependsOn: [...new Set(step.dependsOn)].sort(),
+    dependsOn: [...new Set(step.dependsOn)].sort(compareBytewise),
   }));
   return {
     apiVersion: workflow.apiVersion,
@@ -362,18 +369,23 @@ export function workflowApprovalMaterial(workflow: WorkflowDefinition): JsonValu
     spec: {
       behavior: workflow.spec.behavior,
       behaviorReferences: [...workflow.spec.behaviorReferences].sort((left, right) =>
-        `${left.kind}\0${left.id}\0${left.digest}`.localeCompare(
+        compareBytewise(
+          `${left.kind}\0${left.id}\0${left.digest}`,
           `${right.kind}\0${right.id}\0${right.digest}`,
         ),
       ),
       budget: workflow.spec.budget,
-      capabilities: [...new Set(workflow.spec.capabilities)].sort(),
+      capabilities: [...new Set(workflow.spec.capabilities)].sort(compareBytewise),
       concurrency: workflow.spec.concurrency,
       retry: workflow.spec.retry,
       steps: normalizedSteps,
       triggers: workflow.spec.triggers,
     },
   } as JsonValue;
+}
+
+function compareBytewise(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
 export function workflowApprovalHash(workflow: WorkflowDefinition): string {
@@ -386,6 +398,49 @@ export function workflowApprovalHash(workflow: WorkflowDefinition): string {
 
 export function canonicalWorkflowDefinition(workflow: WorkflowDefinition): string {
   return canonicalJson(JSON.parse(JSON.stringify(workflow)) as JsonValue);
+}
+
+export function canonicalStoredWorkflowDefinition(workflow: WorkflowDefinition): string {
+  return canonicalJson(redactSensitiveWorkflowStrings(workflow) as JsonValue);
+}
+
+export function canonicalStoredWorkflowApproval(workflow: WorkflowDefinition): string {
+  return canonicalJson(
+    redactSensitiveWorkflowStrings(workflowApprovalMaterial(workflow)) as JsonValue,
+  );
+}
+
+export function redactStoredWorkflowJson(value: string): string {
+  return canonicalJson(redactSensitiveWorkflowStrings(JSON.parse(value)) as JsonValue);
+}
+
+function redactSensitiveWorkflowStrings(value: unknown, path: string[] = []): unknown {
+  if (Array.isArray(value))
+    return value.map((item, index) =>
+      redactSensitiveWorkflowStrings(item, [...path, String(index)]),
+    );
+  if (!value || typeof value !== "object") return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const nestedPath = [...path, key];
+    if ((key === "prompt" || key === "message") && typeof nested === "string") {
+      result[key] = {
+        redacted: true,
+        digest: sensitiveWorkflowFieldDigest(nestedPath, nested),
+      };
+    } else result[key] = redactSensitiveWorkflowStrings(nested, nestedPath);
+  }
+  return result;
+}
+
+function sensitiveWorkflowFieldDigest(path: string[], value: string): string {
+  const digest = createHash("sha256")
+    .update("knot.workflow.sensitive-field.v1\0")
+    .update(path.join("\0"))
+    .update("\0")
+    .update(value)
+    .digest("hex");
+  return `sha256:${digest}`;
 }
 
 export function workflowVersionHash(workflow: WorkflowDefinition): string {

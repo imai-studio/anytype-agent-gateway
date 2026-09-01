@@ -3,6 +3,21 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { runProcess } from "./process.js";
 import { sameIdentity } from "./principal.js";
+const MAX_OBJECT_RESPONSE_BYTES = 2 * 1024 * 1024;
+const WORKFLOW_OBJECT_READ_CONCURRENCY = 4;
+export class AnytypeHttpError extends Error {
+    status;
+    method;
+    endpoint;
+    constructor(status, method, path) {
+        const endpoint = anytypeEndpointTemplate(path);
+        super(`Anytype ${method} ${endpoint} request failed (${status})`);
+        this.status = status;
+        this.method = method;
+        this.name = "AnytypeHttpError";
+        this.endpoint = endpoint;
+    }
+}
 export class AnytypeClient {
     base;
     headers;
@@ -54,8 +69,8 @@ export class AnytypeClient {
                     return response;
                 const retryable = response.status === 429 || (method === "GET" && response.status >= 500);
                 const retryAfter = response.status === 429 ? retryAfterMs(response.headers.get("retry-after")) : undefined;
-                const body = (await response.text()).slice(0, 1000);
-                const error = new Error(`Anytype ${method} ${path} failed (${response.status}): ${body}`);
+                await response.body?.cancel().catch(() => undefined);
+                const error = new AnytypeHttpError(response.status, method, path);
                 if (attempt + 1 >= attempts || !retryable)
                     throw error;
                 lastError = error;
@@ -260,6 +275,14 @@ export class AnytypeClient {
         const object = json.object ?? json;
         return { ...object, id: object.id ?? objectId };
     }
+    async getWorkflowObject(spaceId, objectId) {
+        const boundedSpaceId = requiredIdentifier(spaceId, "workflow space");
+        const boundedObjectId = requiredIdentifier(objectId, "workflow object");
+        const response = await this.request(`/v1/spaces/${encodeURIComponent(boundedSpaceId)}/objects/${encodeURIComponent(boundedObjectId)}`);
+        const json = await readBoundedJson(response, MAX_OBJECT_RESPONSE_BYTES);
+        const object = json.object ?? json;
+        return { ...object, id: boundedObjectId };
+    }
     async listTypes(spaceId) {
         return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/types`);
     }
@@ -306,7 +329,49 @@ export class AnytypeClient {
             ...(item.type?.key ? { type: item.type.key } : item.type ? { type: String(item.type) } : {}),
         }));
     }
+    async searchWorkflowObjects(spaceId, typeKeys, offset, limit) {
+        const boundedSpaceId = requiredIdentifier(spaceId, "workflow space");
+        const summaries = (await this.searchSpaceRequest(boundedSpaceId, { types: typeKeys, offset, limit }, true)).slice(0, limit);
+        return mapConcurrent(summaries, WORKFLOW_OBJECT_READ_CONCURRENCY, async (summary) => {
+            const summaryId = validIdentifier(summary.id, 512);
+            if (!summaryId)
+                return invalidWorkflowSummary("", summary, "object_identifier_invalid");
+            try {
+                const raw = await this.getWorkflowObject(boundedSpaceId, summaryId);
+                const typeKey = objectTypeKey(raw) ?? objectTypeKey(summary);
+                if (!typeKey || !typeKeys.includes(typeKey))
+                    return invalidWorkflowSummary(summaryId, summary, "object_type_unverified");
+                const modifiedAt = objectModifiedAt(raw);
+                if (modifiedAt === undefined)
+                    return invalidWorkflowSummary(summaryId, summary, "native_revision_missing");
+                const source = objectSource(raw);
+                const editorParticipantId = objectEditorParticipantId(raw);
+                return {
+                    id: validIdentifier(raw.id ?? summary.id, 512) ?? summaryId,
+                    name: boundedName(raw.name ?? summary.name ?? raw.id ?? summary.id, 256) ?? "Workflow",
+                    typeKey,
+                    ...(source === undefined ? {} : { source }),
+                    modifiedAt,
+                    ...(editorParticipantId ? { editorParticipantId } : {}),
+                    archived: raw.archived === true || raw.is_archived === true,
+                };
+            }
+            catch (error) {
+                const observationError = error instanceof AnytypeHttpError && [404, 410].includes(error.status)
+                    ? "object_not_found"
+                    : error instanceof Error && error.message === "Anytype object response is too large"
+                        ? "object_too_large"
+                        : error instanceof AnytypeHttpError
+                            ? "anytype_request_failed"
+                            : "object_read_failed";
+                return invalidWorkflowSummary(summaryId, summary, observationError);
+            }
+        });
+    }
     async searchSpace(spaceId, input) {
+        return this.searchSpaceRequest(spaceId, input, false);
+    }
+    async searchSpaceRequest(spaceId, input, sortByLastModified) {
         const query = new URLSearchParams({
             offset: String(input.offset ?? 0),
             limit: String(input.limit ?? 100),
@@ -315,6 +380,9 @@ export class AnytypeClient {
             method: "POST",
             body: JSON.stringify({
                 query: input.query ?? "",
+                ...(sortByLastModified
+                    ? { sort: { direction: "desc", property_key: "last_modified_date" } }
+                    : {}),
                 ...(input.types?.length ? { types: input.types } : {}),
             }),
         })).json());
@@ -397,6 +465,156 @@ export class AnytypeClient {
         }
         return items;
     }
+}
+function objectTypeKey(value) {
+    const candidate = value.type?.key ?? value.type_key ?? value.typeKey;
+    return typeof candidate === "string" && candidate ? candidate : undefined;
+}
+function objectSource(value) {
+    const candidate = value.markdown ?? value.body;
+    return typeof candidate === "string" ? candidate : undefined;
+}
+function objectModifiedAt(value) {
+    const candidate = value.modified_at ?? value.modifiedAt ?? value.updated_at ?? value.details?.lastModifiedDate;
+    const parsed = typeof candidate === "number"
+        ? candidate
+        : typeof candidate === "string" && /^\d+$/.test(candidate)
+            ? Number(candidate)
+            : typeof candidate === "string"
+                ? Date.parse(candidate)
+                : Number.NaN;
+    if (!Number.isSafeInteger(parsed) || parsed < 0)
+        return undefined;
+    const milliseconds = parsed < 100_000_000_000 ? parsed * 1_000 : parsed;
+    return milliseconds <= Date.now() + 5 * 60 * 1_000 ? milliseconds : undefined;
+}
+function objectEditorParticipantId(value) {
+    const property = Array.isArray(value.properties)
+        ? value.properties.find((candidate) => candidate &&
+            typeof candidate === "object" &&
+            candidate.key === "last_modified_by")
+        : undefined;
+    if (!property || !Array.isArray(property.objects) || property.objects.length !== 1)
+        return undefined;
+    return validIdentifier(property.objects[0], 512);
+}
+function invalidWorkflowSummary(id, summary, observationError) {
+    return {
+        id,
+        name: boundedName(summary.name ?? id, 256) ?? "Workflow",
+        typeKey: objectTypeKey(summary) ?? "unverified",
+        modifiedAt: objectModifiedAt(summary) ?? 0,
+        archived: summary.archived === true || summary.is_archived === true,
+        observationError,
+    };
+}
+function boundedName(value, maximum) {
+    if (typeof value !== "string")
+        return undefined;
+    const normalized = value.trim();
+    return normalized ? [...normalized].slice(0, maximum).join("") : undefined;
+}
+function validIdentifier(value, maximumCodeUnits) {
+    if (typeof value !== "string" ||
+        !value ||
+        value.length > maximumCodeUnits ||
+        value.includes("\0"))
+        return undefined;
+    for (let index = 0; index < value.length; index += 1) {
+        const codeUnit = value.charCodeAt(index);
+        if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+            const next = value.charCodeAt(index + 1);
+            if (next < 0xdc00 || next > 0xdfff)
+                return undefined;
+            index += 1;
+        }
+        else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff)
+            return undefined;
+    }
+    return value;
+}
+function requiredIdentifier(value, label) {
+    const identifier = validIdentifier(value, 512);
+    if (!identifier)
+        throw new Error(`Anytype ${label} ID is invalid`);
+    return identifier;
+}
+function anytypeEndpointTemplate(path) {
+    const identifiers = new Map([
+        ["spaces", "spaceId"],
+        ["objects", "objectId"],
+        ["chats", "chatId"],
+        ["messages", "messageId"],
+        ["types", "typeId"],
+        ["properties", "propertyId"],
+        ["files", "fileId"],
+        ["members", "memberId"],
+        ["templates", "templateId"],
+    ]);
+    const staticSegments = new Set([
+        "v1",
+        ...identifiers.keys(),
+        "search",
+        "stream",
+        "tags",
+        "reactions",
+        "spaces",
+    ]);
+    const segments = path.split("?", 1)[0].split("/").filter(Boolean);
+    const templated = segments.map((segment, index) => {
+        const parameter = index > 0 ? identifiers.get(segments[index - 1]) : undefined;
+        if (parameter)
+            return `:${parameter}`;
+        return staticSegments.has(segment) ? segment : ":id";
+    });
+    return templated.length ? `/${templated.join("/")}` : "/";
+}
+async function mapConcurrent(items, concurrency, map) {
+    const result = new Array(items.length);
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+        for (;;) {
+            const index = cursor++;
+            if (index >= items.length)
+                return;
+            result[index] = await map(items[index]);
+        }
+    }));
+    return result;
+}
+async function readBoundedJson(response, maximumBytes) {
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maximumBytes) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error("Anytype object response is too large");
+    }
+    if (!response.body)
+        return {};
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done)
+                break;
+            total += value.byteLength;
+            if (total > maximumBytes)
+                throw new Error("Anytype object response is too large");
+            chunks.push(value);
+        }
+    }
+    finally {
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(bytes));
 }
 function retryAfterMs(value) {
     if (!value)

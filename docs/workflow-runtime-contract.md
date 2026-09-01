@@ -1,7 +1,7 @@
 # Workflow runtime foundation
 
-This document freezes the Phase 2 foundation contract. It does not enable workflow observation or
-execution. Those paths remain unavailable unless their local feature gates are enabled in order.
+This document freezes the Phase 2 foundation contract. Knot now has a read-only observer for
+workflow definition objects. It does not observe workflow target data or execute workflow steps.
 
 The companion [process topology](workflow-runtime-topology.md) defines ownership, leases, crash
 recovery, timers, cancellation, effects, shutdown, retention, and restore behavior for the code that
@@ -27,10 +27,18 @@ exceeds the matching local cap. The effective value is the lower of the two limi
 
 ## Feature gates
 
-`automation.enabled` is false by default. Observation, execution, authoring, and data products have
-separate gates. Execution requires observation; authoring and data products require execution. The
-first foundation release provides contracts and durable storage only, so enabling a flag cannot
-silently route work through the existing chat gateway.
+`automation.enabled` is false by default. Set `automation.observation` to start the read-only
+definition observer. The configuration must also name allowed spaces, allowed native editor IDs,
+allowed capabilities, and one or more workflow object type keys. `automation.execution` is rejected
+because the runner is not available. Authoring and data-product gates remain unavailable with it.
+
+The observer polls every allowed space through the public Anytype API. It stores one durable page
+cursor, reconciliation boundary, revision watermark, failure count, and next-scan time per space.
+`minimumIntervalSeconds`, `maximumIntervalSeconds`, and `pageSize` bound that work. The page size is
+limited to the Anytype API maximum of 100. Missing-object confirmation also runs in page-sized
+batches, and the observer preserves the reconciliation boundary until every batch is complete. A
+quiet space backs off to the maximum. A change, incomplete page, or recovery returns to the minimum. Run
+`knot doctor` to verify that the configured type keys are searchable before starting the service.
 
 ## Definition and approval integrity
 
@@ -59,8 +67,10 @@ SHA-256 hash includes:
 Display name, description, labels, and enabled state do not affect the approval hash. Changing any
 behavior-bearing value or referenced content does. Secret reference names may be hashed; secret
 values must never enter the definition, hash material, database, or logs. Knot stores a
-domain-separated digest of the source text, not the source text itself. The canonical definition
-remains because validation, approval, and later execution need it.
+domain-separated digest of the source text, not the source text itself. In stored definition and
+approval records, it replaces author-supplied `prompt` and `message` strings with separately
+domain-separated digests. A future executor must refetch and verify the source or use an encrypted
+content store before it can run those steps.
 
 ## Capability and risk policy
 
@@ -84,8 +94,23 @@ authorized.
 
 ## Observation correctness boundary
 
-Polling plus reconciliation is the correctness mechanism. Heart or streaming events may lower
-latency but never replace reconciliation. First activation does not backfill unless requested.
+Polling plus reconciliation is the correctness mechanism. The shipped observer applies this rule
+to workflow definition objects. Heart and streaming hints are not connected to this loop. The
+observer pages fairly across configured spaces and performs a complete pass before it considers a
+missing definition archived. It then requires a direct object read to confirm an archive or native
+404/410 response.
+
+Each definition must contain one fenced YAML block. Knot reads the native modification timestamp
+and the `last_modified_by` system object property from the full object response. Top-level aliases,
+display names, and creator fallbacks do not authorize the definition. Missing or unauthorized editor
+identity leaves the definition invalid. Knot stores a digest of the complete raw object body as the
+observation revision, plus a separate digest of the fenced YAML on an accepted immutable version.
+It also stores closed bounded error codes and an immutable normalized definition event. It stores the redacted parsed version only after schema
+and local authority checks pass. It never stores the raw source body, author prompt text, upstream
+response body, or validation input in workflow tables or event payloads.
+
+The remaining object, collection, schedule, and manual observation work will use the same event
+contract. First activation does not backfill unless requested.
 Normalized event kinds and sources use closed enums. Payloads and property diffs have bounded,
 strict schemas. Native editor provenance and the source revision fingerprint remain attached to the
 immutable event. Event IDs and dedupe keys provide immutable input facts; later runner delivery is
@@ -93,8 +118,9 @@ at-least-once. Self-writes are suppressed by default, compatible object changes 
 causal depth bounds terminate loops.
 
 Anytype can report two workflow edits with the same modification timestamp. Knot compares the
-domain-separated source digests for those ties and selects the lexicographically greater digest.
-This produces the same active version regardless of observation order.
+domain-separated raw object-body digests byte by byte for those ties and selects the greater digest.
+This produces the same active state and version regardless of observation order, including when one
+revision is invalid.
 
 ## State migration and retention
 
@@ -114,3 +140,17 @@ The schema 9 migration replaces legacy `workflow_versions.source_text` values wi
 stores their digests. The pre-migration backup still contains the old text by design. Protect that
 backup like the live database and remove it only after the operator has verified the migration and
 accepted the loss of that rollback point.
+
+Schema 11 redacts author prompt and message strings from stored definition and approval records.
+The backup created before a schema 11 migration can still contain those plaintext strings. Keep it
+mode `0600`, restrict access to the operator, and remove it after the migration and rollback window
+have been verified.
+
+Schema 11 is also the first release boundary that writes observer approval material. Approval rows
+whose behavior-reference ordering came from an unpublished development build are therefore not a
+supported migration input; those development databases must be recreated or their workflows
+re-authored. Rewriting their approval hashes in place would break the append-only approval ledger.
+Schema 10 added definition source digests and durable per-space observer state. A restart resumes the
+saved page and reconciliation boundary. Repeated pages and repeated revisions reuse the same event
+dedupe key. An interrupted observation repairs a missing event on the next pass before it advances
+past that source revision.

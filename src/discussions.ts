@@ -6,6 +6,7 @@ import type {
   AnytypePort,
   AnytypeSpace,
   AnytypeTag,
+  AnytypeWorkflowObject,
   ChatAttachment,
   ChatMessage,
   TextMark,
@@ -238,6 +239,12 @@ export class DiscussionAnytypePort implements AnytypePort {
   ): Promise<{ id: string; name?: string; markdown?: string }> {
     return this.base.getObject(spaceId, objectId);
   }
+  async getWorkflowObject(
+    spaceId: string,
+    objectId: string,
+  ): Promise<{ id: string; name?: string; markdown?: string }> {
+    return this.base.getWorkflowObject(spaceId, objectId);
+  }
   async listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]> {
     return this.base.listPropertyTags(spaceId, propertyId);
   }
@@ -274,5 +281,13 @@ export class DiscussionAnytypePort implements AnytypePort {
     limit: number,
   ): Promise<Array<{ id: string; name?: string; type?: string }>> {
     return this.base.searchObjects(spaceId, offset, limit);
+  }
+  async searchWorkflowObjects(
+    spaceId: string,
+    typeKeys: string[],
+    offset: number,
+    limit: number,
+  ): Promise<AnytypeWorkflowObject[]> {
+    return this.base.searchWorkflowObjects(spaceId, typeKeys, offset, limit);
   }
 }

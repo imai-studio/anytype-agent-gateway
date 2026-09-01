@@ -14,6 +14,7 @@ export declare class Gateway {
     private readonly abort;
     private readonly routeIds;
     private readonly tasks;
+    private readonly auxiliaryTasks;
     private readonly controller;
     private readonly discussionAnytype;
     private readonly terminal;
@@ -32,6 +33,7 @@ export declare class Gateway {
     }): void;
     private addRoute;
     private track;
+    private trackAuxiliary;
     private runRoute;
     private catchUp;
     private processMessage;

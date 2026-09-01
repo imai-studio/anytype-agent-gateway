@@ -4,6 +4,7 @@ export declare const normalizedEventKindSchema: z.ZodEnum<{
     "chat.message": "chat.message";
     "object.created": "object.created";
     "object.updated": "object.updated";
+    "object.unreadable": "object.unreadable";
     "object.archived": "object.archived";
     "property.changed": "property.changed";
     "collection.added": "collection.added";
@@ -28,6 +29,7 @@ export declare const normalizedEventSchema: z.ZodPipe<z.ZodTransform<unknown, un
         "chat.message": "chat.message";
         "object.created": "object.created";
         "object.updated": "object.updated";
+        "object.unreadable": "object.unreadable";
         "object.archived": "object.archived";
         "property.changed": "property.changed";
         "collection.added": "collection.added";

@@ -5,6 +5,7 @@ export const normalizedEventKindSchema = z.enum([
     "chat.message",
     "object.created",
     "object.updated",
+    "object.unreadable",
     "object.archived",
     "property.changed",
     "collection.added",

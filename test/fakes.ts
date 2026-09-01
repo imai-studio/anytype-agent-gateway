@@ -5,6 +5,7 @@ import type {
   AnytypePort,
   AnytypeSpace,
   AnytypeTag,
+  AnytypeWorkflowObject,
   ChatAttachment,
   ChatMessage,
   RuntimeDriver,
@@ -13,6 +14,7 @@ import type {
   RuntimeResult,
   TextMark,
 } from "../src/types.js";
+import { AnytypeHttpError } from "../src/anytype-client.js";
 
 export class FakeAnytype implements AnytypePort {
   messages: ChatMessage[] = [];
@@ -22,6 +24,9 @@ export class FakeAnytype implements AnytypePort {
   reactions: Array<{ id: string; emoji: string; present: boolean }> = [];
   reactionParticipants: Array<string | undefined> = [];
   objects = new Map<string, Record<string, unknown>>();
+  workflowObjects: AnytypeWorkflowObject[] = [];
+  workflowSearchFailures = 0;
+  missingObjectIds = new Set<string>();
   properties: Record<string, unknown>[] = [];
   propertyTags: AnytypeTag[] = [];
   private nextId = 1;
@@ -113,12 +118,28 @@ export class FakeAnytype implements AnytypePort {
     _spaceId: string,
     objectId: string,
   ): Promise<{ id: string; name?: string; markdown?: string } & Record<string, unknown>> {
+    if (this.missingObjectIds.has(objectId))
+      throw new AnytypeHttpError(404, "GET", "/objects/redacted");
+    const workflow = this.workflowObjects.find((candidate) => candidate.id === objectId);
+    if (workflow)
+      return {
+        id: workflow.id,
+        name: workflow.name,
+        ...(workflow.source === undefined ? {} : { markdown: workflow.source }),
+        archived: workflow.archived,
+      };
     return {
       id: objectId,
       name: "Object",
       markdown: "Object context",
       ...this.objects.get(objectId),
     };
+  }
+  async getWorkflowObject(
+    spaceId: string,
+    objectId: string,
+  ): Promise<{ id: string; name?: string; markdown?: string } & Record<string, unknown>> {
+    return this.getObject(spaceId, objectId);
   }
   async listPropertyTags(_spaceId: string, _propertyId: string): Promise<AnytypeTag[]> {
     return this.propertyTags;
@@ -155,6 +176,20 @@ export class FakeAnytype implements AnytypePort {
   }
   async searchObjects(): Promise<Array<{ id: string; name?: string; type?: string }>> {
     return [];
+  }
+  async searchWorkflowObjects(
+    _spaceId: string,
+    typeKeys: string[],
+    offset: number,
+    limit: number,
+  ): Promise<AnytypeWorkflowObject[]> {
+    if (this.workflowSearchFailures > 0) {
+      this.workflowSearchFailures -= 1;
+      throw new Error("workflow search unavailable");
+    }
+    return this.workflowObjects
+      .filter((object) => typeKeys.includes(object.typeKey))
+      .slice(offset, offset + limit);
   }
 }
 

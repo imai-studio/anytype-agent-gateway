@@ -1,6 +1,12 @@
 import type { AgentConfig } from "./config.js";
-import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, AnytypeTag, ChatAttachment, ChatMessage, TextMark } from "./types.js";
+import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, AnytypeTag, AnytypeWorkflowObject, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 type JsonRecord = Record<string, any>;
+export declare class AnytypeHttpError extends Error {
+    readonly status: number;
+    readonly method: string;
+    readonly endpoint: string;
+    constructor(status: number, method: string, path: string);
+}
 export declare class AnytypeClient implements AnytypePort {
     private readonly base;
     private readonly headers;
@@ -60,6 +66,9 @@ export declare class AnytypeClient implements AnytypePort {
     getObject(spaceId: string, objectId: string): Promise<JsonRecord & {
         id: string;
     }>;
+    getWorkflowObject(spaceId: string, objectId: string): Promise<JsonRecord & {
+        id: string;
+    }>;
     listTypes(spaceId: string): Promise<JsonRecord[]>;
     getType(spaceId: string, typeId: string): Promise<JsonRecord>;
     listProperties(spaceId: string): Promise<JsonRecord[]>;
@@ -75,12 +84,14 @@ export declare class AnytypeClient implements AnytypePort {
         name?: string;
         type?: string;
     }>>;
+    searchWorkflowObjects(spaceId: string, typeKeys: string[], offset: number, limit: number): Promise<AnytypeWorkflowObject[]>;
     searchSpace(spaceId: string, input: {
         query?: string;
         types?: string[];
         offset?: number;
         limit?: number;
     }): Promise<JsonRecord[]>;
+    private searchSpaceRequest;
     createObject(spaceId: string, input: {
         type_key: string;
         name?: string;

@@ -280,5 +280,8 @@ export declare function canonicalJson(value: JsonValue): string;
 export declare function workflowApprovalMaterial(workflow: WorkflowDefinition): JsonValue;
 export declare function workflowApprovalHash(workflow: WorkflowDefinition): string;
 export declare function canonicalWorkflowDefinition(workflow: WorkflowDefinition): string;
+export declare function canonicalStoredWorkflowDefinition(workflow: WorkflowDefinition): string;
+export declare function canonicalStoredWorkflowApproval(workflow: WorkflowDefinition): string;
+export declare function redactStoredWorkflowJson(value: string): string;
 export declare function workflowVersionHash(workflow: WorkflowDefinition): string;
 export declare function workflowSourceDigest(source: string): string;

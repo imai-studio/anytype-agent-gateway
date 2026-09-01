@@ -1,7 +1,7 @@
 # Workflow runtime process topology
 
-Status: proposed process contract for Phase 2. Knot does not observe or execute workflow definitions
-yet.
+Status: process contract for Phase 2. The read-only workflow definition observer is implemented.
+Target-object observation and the workflow runner remain proposed.
 
 This document fixes the process and recovery rules for the workflow runtime. Later implementation
 PRs may add tables and modules, but they must keep these rules unless a new architecture decision
@@ -9,13 +9,14 @@ changes them.
 
 ## Scope
 
-The Phase 2 runtime runs inside the existing Knot service. It adds two long-lived supervisors:
+The Phase 2 runtime runs inside the existing Knot service. The current release adds the definition
+observer. The full design has two long-lived supervisors:
 
 - the observer turns Anytype changes, chat messages, schedules, and manual requests into normalized
   events;
 - the runner matches events to approved workflow versions and advances durable step attempts.
 
-The observer and runner do not replace the current chat gateway. The gateway keeps its route,
+The observer and future runner do not replace the current chat gateway. The gateway keeps its route,
 session, steering, and response projection behavior. Workflow agent steps call the existing runtime
 drivers through a separate execution path and persist their results before later steps begin.
 
@@ -98,7 +99,11 @@ Knot starts the workflow runtime in this order:
 9. Attach chat SSE and optional Heart hints after the reconciliation scheduler is ready.
 10. Report the service as ready.
 
-The runner starts before new observations so recovered work does not wait behind a burst of fresh
+The following order describes the complete runtime. The current release skips runner and projection
+startup, then starts only read-only definition polling when `automation.observation` is enabled.
+It rejects `automation.execution`.
+
+The runner will start before new observations so recovered work does not wait behind a burst of fresh
 events. Observation still uses a baseline on first activation, so enabling a workflow does not turn
 existing objects into historical events unless its approved definition requests backfill.
 
@@ -112,22 +117,27 @@ the shared database. The default is to fail the service.
 
 ## Observer loops
 
-One adaptive scheduler owns object and collection reconciliation for every configured space. It
-does not create one interval per workflow.
+One adaptive scheduler now owns workflow definition reconciliation for every configured space. It
+does not create one interval per workflow. Later work extends the same ownership model to target
+objects and collection membership.
 
-The scheduler keeps durable per-space and per-source cursors. Each cycle:
+The current scheduler keeps durable per-space page cursors, reconciliation boundaries, revision
+watermarks, failure counts, and next-scan times. Each cycle:
 
 1. selects spaces fairly from the durable next-scan state;
-2. spends from the local per-space and global API budgets;
-3. fetches a bounded page of objects or collection membership;
-4. compares canonical snapshots and writes property-level differences;
-5. inserts normalized events and updated snapshots in one transaction;
-6. advances the cursor only after that transaction commits;
-7. records the next scan time with bounded backoff and jitter.
+2. fetches a bounded page of at most 100 configured workflow definition objects;
+3. validates the source and native editor identity, then stores immutable versions and definition
+   state;
+4. inserts one deduplicated normalized event per source revision;
+5. advances the cursor only after those durable writes succeed;
+6. records the next scan time with bounded backoff and jitter.
 
-A full reconciliation periodically revisits every configured object set and collection. This is the
-path that finds missed updates and archives. Heart events and streaming messages only request an
-earlier targeted fetch. Knot behaves the same when Heart is absent, apart from latency.
+A complete definition pass finds missed updates. A search miss alone never archives a definition;
+Knot requires a direct read to confirm the archive or native 404/410 response. Those confirmation
+reads use bounded batches, and the reconciliation boundary advances only after all batches finish.
+A restart resumes the saved page. Re-reading a page is safe, and an
+interrupted write is repaired by the event dedupe key on the next pass. Heart-assisted target fetch,
+property-level snapshot diffs, collection reconciliation, and self-write suppression remain planned.
 
 Chat SSE uses the gateway's reconnect and REST catch-up behavior, then converts eligible messages
 to the normalized workflow event contract. It does not skip route sender authorization. A workflow
@@ -147,8 +157,9 @@ causal depth above the local limit. It records verified editor provenance and a 
 revision when the source supplies them. Display metadata is not a fallback identity.
 
 If two workflow observations have the same Anytype modification timestamp, the observer compares
-their domain-separated source digests. The lexicographically greater digest becomes active. This
-tie-breaker gives every observation order the same result without treating a timestamp as unique.
+their domain-separated raw object-body digests byte by byte. The greater digest becomes active. A
+separate fenced-YAML digest identifies an accepted immutable version. This tie-breaker gives every
+observation order the same result without treating a timestamp as unique.
 
 The observer computes two identities:
 
@@ -390,8 +401,11 @@ An operator restore follows this order:
 5. Let startup recovery reconcile events, leases, effects, timers, and projections.
 6. Keep the displaced files until the restored service passes `knot doctor` and live checks.
 
-A backup contains workflow definitions, local execution history, and actor digests. Operators must
-protect it like the live state database. It must never contain API keys or connection secret values.
+A backup contains workflow definitions, local execution history, and actor digests. A backup made
+before the schema 11 redaction migration can also contain plaintext workflow prompt and message
+fields. Operators must protect backups like the live state database and delete superseded plaintext
+backups after verifying the migration and rollback window. Backups must never contain API keys or
+connection secret values.
 
 ## Failure policy
 
@@ -415,7 +429,10 @@ authority.
 The next implementation layers may proceed after review accepts this document and the contract
 hardening PR removes the known unsafe placeholders in the foundation schema.
 
-Before enabling observation or execution, tests must prove:
+The definition observer tests prove restart recovery, duplicate revision deduplication,
+same-timestamp digest ordering, explicit and reconciled archives, disabled definitions, unverified
+editors, and bounded backoff. Before target-data observation or execution ships, tests must also
+prove:
 
 - one process owns the database and a second process cannot poll or lease;
 - every crash point in the recovery table preserves the logical run and effect evidence;

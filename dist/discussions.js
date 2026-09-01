@@ -158,6 +158,9 @@ export class DiscussionAnytypePort {
     async getObject(spaceId, objectId) {
         return this.base.getObject(spaceId, objectId);
     }
+    async getWorkflowObject(spaceId, objectId) {
+        return this.base.getWorkflowObject(spaceId, objectId);
+    }
     async listPropertyTags(spaceId, propertyId) {
         return this.base.listPropertyTags(spaceId, propertyId);
     }
@@ -177,5 +180,8 @@ export class DiscussionAnytypePort {
     }
     async searchObjects(spaceId, offset, limit) {
         return this.base.searchObjects(spaceId, offset, limit);
+    }
+    async searchWorkflowObjects(spaceId, typeKeys, offset, limit) {
+        return this.base.searchWorkflowObjects(spaceId, typeKeys, offset, limit);
     }
 }
