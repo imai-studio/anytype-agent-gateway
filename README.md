@@ -309,7 +309,7 @@ vulnerabilities through GitHub's private vulnerability reporting flow, not a pub
 | [Roadmap](docs/knot-roadmap.md)                                | Product direction and completed migration phases           |
 | [Planned work](docs/planned-work.md)                           | Work that has not shipped                                  |
 | [Workflow runtime topology](docs/workflow-runtime-topology.md) | Proposed Phase 2 process and recovery contract             |
-| [Knot Publish proposal](docs/publish-architecture.md)          | Proposed self-hosted web publishing architecture           |
+| [Knot Cloud proposal](docs/publish-architecture.md)            | Hosted and self-hostable Cloud and Publish design          |
 
 Proposals are marked as proposals. A document in planned work does not make its commands, service,
 or protocol available in the current release.
