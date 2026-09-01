@@ -160,10 +160,11 @@ export class Gateway {
       if (this.config.directMessages.enabled)
         this.track(this.discoverDirectMessages(this.config.directMessages));
       if (this.config.automation.enabled && this.config.automation.observation)
-        this.track(
+        this.trackAuxiliary(
           new WorkflowObserver(this.anytype, this.store, this.config.automation, this.log).run(
             this.abort.signal,
           ),
+          "workflow_observer_stopped",
         );
       if (!this.tasks.size) throw new Error("Configuration produced no chat or discussion routes");
       await this.terminal;
@@ -200,6 +201,14 @@ export class Gateway {
         }
       },
     );
+  }
+
+  private trackAuxiliary(task: Promise<void>, failureEvent: string): void {
+    const guarded = task.catch(() => {
+      if (!this.abort.signal.aborted) this.log(failureEvent, { errorCode: "unexpected_failure" });
+    });
+    this.tasks.add(guarded);
+    void guarded.finally(() => this.tasks.delete(guarded));
   }
 
   private async runRoute(route: Route): Promise<void> {

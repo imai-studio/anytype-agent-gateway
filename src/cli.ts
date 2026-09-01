@@ -166,13 +166,26 @@ program
     }
     if (config.automation.enabled && config.automation.observation) {
       let visible = 0;
-      for (const spaceId of config.automation.allowedSpaceIds)
-        visible += (
-          await anytype.searchWorkflowObjects(spaceId, config.automation.definitionTypeKeys, 0, 1)
+      let verifiedEditors = 0;
+      for (const spaceId of config.automation.allowedSpaceIds) {
+        const definitions = await anytype.searchWorkflowObjects(
+          spaceId,
+          config.automation.definitionTypeKeys,
+          0,
+          10,
+        );
+        visible += definitions.length;
+        verifiedEditors += definitions.filter(
+          (definition) => !definition.observationError && definition.editorParticipantId,
         ).length;
+      }
       console.log(
-        `ok: read-only workflow observer (${config.automation.allowedSpaceIds.length} spaces, ${config.automation.definitionTypeKeys.length} type keys, ${visible} visible first-page definitions; runner unavailable)`,
+        `ok: read-only workflow observer (${config.automation.allowedSpaceIds.length} spaces, ${config.automation.definitionTypeKeys.length} type keys, ${visible} visible sample definitions, ${verifiedEditors} with native editor identity; runner unavailable)`,
       );
+      if (visible > 0 && verifiedEditors === 0)
+        console.warn(
+          "warning: Anytype did not expose the last_modified_by system object property; workflow definitions will remain invalid",
+        );
     }
     const runtime = makeRuntime(config, undefined, configPath);
     for (const line of await runtime.doctor()) console.log(`ok: ${line}`);

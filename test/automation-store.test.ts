@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -66,7 +66,7 @@ function versionRecord(
 describe("automation persistence foundation", () => {
   it("retains the v7 automation foundation tables without enabling execution", () => {
     const store = new Store(":memory:");
-    expect(store.schemaVersion()).toBe(10);
+    expect(store.schemaVersion()).toBe(11);
     for (const table of [
       "workflow_definitions",
       "workflow_approval_subjects",
@@ -99,10 +99,10 @@ describe("automation persistence foundation", () => {
 
     const reports: string[] = [];
     const store = new Store(path, (message) => reports.push(message));
-    expect(store.schemaVersion()).toBe(10);
+    expect(store.schemaVersion()).toBe(11);
     expect(store.migrationBackupPath).toBeTruthy();
     expect(store.migrationBackupPath).toContain(".pre-v6.");
-    expect(reports[0]).toContain("from schema 6 to 10");
+    expect(reports[0]).toContain("from schema 6 to 11");
     expect(statSync(store.migrationBackupPath!).mode & 0o777).toBe(0o600);
     const backup = new DatabaseSync(store.migrationBackupPath!, { readOnly: true });
     expect(
@@ -154,6 +154,37 @@ describe("automation persistence foundation", () => {
       store.db.prepare("UPDATE workflow_versions SET source_text='restored'").run(),
     ).toThrow("append-only");
     store.close();
+  });
+
+  it("removes author prompt text from a migrated live database and WAL", () => {
+    const directory = mkdtempSync(join(tmpdir(), "knot-v10-redaction-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state.sqlite");
+    const secret = "prompt-that-must-not-survive-in-live-sqlite";
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE workflow_versions (
+        canonical_definition_json TEXT NOT NULL
+      );
+      CREATE TABLE workflow_approval_subjects (
+        canonical_approval_json TEXT NOT NULL
+      );
+      INSERT INTO workflow_versions VALUES(
+        '{"spec":{"steps":[{"config":{"prompt":"${secret}"}}]}}'
+      );
+      INSERT INTO workflow_approval_subjects VALUES(
+        '{"spec":{"steps":[{"config":{"prompt":"${secret}"}}]}}'
+      );
+      PRAGMA user_version=10;
+    `);
+    legacy.close();
+
+    const store = new Store(path);
+    store.close();
+
+    expect(readFileSync(path).includes(Buffer.from(secret))).toBe(false);
+    if (existsSync(`${path}-wal`))
+      expect(readFileSync(`${path}-wal`).includes(Buffer.from(secret))).toBe(false);
   });
 
   it("stores immutable versions idempotently and rejects divergent hash reuse", () => {
@@ -278,6 +309,79 @@ describe("automation persistence foundation", () => {
       ).toEqual({ active_version_hash: expected.versionHash, name: expected.name });
       store.close();
     }
+  });
+
+  it("reactivates a prior content version when a newer native revision reverts", () => {
+    const store = new Store(":memory:");
+    const firstDefinition = workflowDefinitionSchema.parse({
+      apiVersion: "knot.imai.studio/v1alpha1",
+      kind: "KnotWorkflow",
+      metadata: { name: "First" },
+      spec: {
+        triggers: [{ kind: "manual" }],
+        steps: [{ id: "read", kind: "anytype.read", config: { objectId: "one" } }],
+        capabilities: ["anytype.read"],
+      },
+    });
+    const secondDefinition = workflowDefinitionSchema.parse({
+      ...firstDefinition,
+      metadata: { name: "Second" },
+      spec: {
+        ...firstDefinition.spec,
+        steps: [{ id: "read", kind: "anytype.read", config: { objectId: "two" } }],
+      },
+    });
+    const first = store.saveWorkflowVersion(
+      versionRecord(firstDefinition, { sourceModifiedAt: 100, createdAt: 100 }),
+    );
+    store.saveWorkflowVersion(
+      versionRecord(secondDefinition, { sourceModifiedAt: 200, createdAt: 200 }),
+    );
+    store.saveWorkflowVersion(
+      versionRecord(firstDefinition, { sourceModifiedAt: 300, createdAt: 300 }),
+    );
+
+    expect(
+      store.db
+        .prepare("SELECT active_version_hash,source_modified_at,name FROM workflow_definitions")
+        .get(),
+    ).toEqual({
+      active_version_hash: first.versionHash,
+      source_modified_at: 300,
+      name: "First",
+    });
+    store.close();
+  });
+
+  it("persists prompt and message digests without plaintext content", () => {
+    const store = new Store(":memory:");
+    const secret = "private author prompt that must never enter SQLite";
+    const definition = workflowDefinitionSchema.parse({
+      apiVersion: "knot.imai.studio/v1alpha1",
+      kind: "KnotWorkflow",
+      metadata: { name: "Prompted" },
+      spec: {
+        triggers: [{ kind: "manual" }],
+        steps: [{ id: "ask", kind: "agent", config: { prompt: secret } }],
+        capabilities: ["agent.invoke"],
+      },
+    });
+
+    const stored = store.saveWorkflowVersion(versionRecord(definition));
+    expect(stored.canonicalDefinitionJson).not.toContain(secret);
+    expect(stored.canonicalApprovalJson).not.toContain(secret);
+    expect(stored.canonicalDefinitionJson).toContain('"redacted":true');
+    expect(stored.canonicalApprovalJson).toContain('"redacted":true');
+    expect(
+      JSON.stringify(
+        store.db
+          .prepare(
+            "SELECT canonical_definition_json FROM workflow_versions UNION ALL SELECT canonical_approval_json FROM workflow_approval_subjects",
+          )
+          .all(),
+      ),
+    ).not.toContain(secret);
+    store.close();
   });
 
   it("keeps an append-only approval ledger tied to the current authority hash", () => {

@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
 import YAML from "yaml";
+import { AnytypeHttpError } from "../anytype-client.js";
 import type { AgentConfig } from "../config.js";
 import { principalFromParticipantId } from "../principal.js";
 import { Store } from "../store.js";
 import type { AnytypePort, AnytypeWorkflowObject } from "../types.js";
 import { evaluateWorkflowAuthority, evaluateWorkflowPolicy } from "./policy.js";
-import type { WorkflowObserverState, WorkflowVersionRecord } from "./store-types.js";
+import type {
+  WorkflowObserverState,
+  WorkflowValidationErrorCode,
+  WorkflowVersionRecord,
+} from "./store-types.js";
 import {
   canonicalJson,
   canonicalWorkflowDefinition,
@@ -74,8 +79,20 @@ export class WorkflowObserver {
       let changes = 0;
       let watermarkModifiedAt = state.watermarkModifiedAt;
       let watermarkFingerprint = state.watermarkFingerprint;
+      let objectFailures = 0;
       for (const object of objects) {
-        const observed = this.observeObject(spaceId, object, startedAt);
+        let observed: { changed: boolean; sourceDigest: string };
+        try {
+          observed = this.observeObject(spaceId, object, startedAt);
+        } catch {
+          objectFailures += 1;
+          this.log("workflow_observer_object_failed", {
+            spaceId,
+            objectIdDigest: stableId("object-log", object.id),
+            errorCode: "persistence_failed",
+          });
+          continue;
+        }
         changes += observed.changed ? 1 : 0;
         if (
           compareRevision(
@@ -90,8 +107,9 @@ export class WorkflowObserver {
         }
       }
       const complete = objects.length < this.config.polling.pageSize;
+      if (objectFailures) throw new ObserverScanError("object_persistence_failed");
       const archived = complete
-        ? this.archiveMissing(spaceId, state.reconcileStartedAt, startedAt)
+        ? await this.archiveMissing(spaceId, state.reconcileStartedAt, startedAt)
         : 0;
       changes += archived;
       const minimum = this.config.polling.minimumIntervalSeconds * 1_000;
@@ -131,8 +149,7 @@ export class WorkflowObserver {
         consecutiveFailures: state.consecutiveFailures + 1,
         nextScanAt: startedAt + jitter(interval, this.random),
         lastScanAt: startedAt,
-        lastError:
-          error instanceof Error ? error.message.slice(0, 1_000) : String(error).slice(0, 1_000),
+        lastError: observerErrorCode(error),
       };
       this.store.saveWorkflowObserverState(nextState);
       return {
@@ -169,12 +186,40 @@ export class WorkflowObserver {
     const previous = this.store.workflowDefinition(spaceId, object.id);
     const workflowId = stableId("workflow", spaceId, object.id);
     let sourceDigest = workflowSourceDigest(object.source ?? "");
+    if (object.observationError) {
+      const current = this.store.recordWorkflowDefinitionReadFailure({
+        workflowId,
+        spaceId,
+        objectId: object.id,
+        name: boundedLabel(object.name),
+        sourceDigest,
+        seenAt: observedAt,
+        errorCode: object.observationError,
+      });
+      const inserted = this.recordEvent(
+        this.store.hasNormalizedObjectEvent(spaceId, object.id)
+          ? "object.updated"
+          : "object.created",
+        spaceId,
+        object,
+        sourceDigest,
+        observedAt,
+        { workflowId, state: "invalid", valid: false, errorCode: object.observationError },
+      );
+      return {
+        changed:
+          inserted ||
+          previous?.state !== current.state ||
+          previous?.sourceDigest !== current.sourceDigest,
+        sourceDigest,
+      };
+    }
     if (object.archived) {
       this.store.recordWorkflowDefinitionStatus({
         workflowId,
         spaceId,
         objectId: object.id,
-        name: object.name,
+        name: boundedLabel(object.name),
         state: "archived",
         sourceModifiedAt: object.modifiedAt,
         sourceDigest,
@@ -195,7 +240,7 @@ export class WorkflowObserver {
     }
 
     let definition: ReturnType<typeof workflowDefinitionSchema.parse> | undefined;
-    const errors: string[] = [];
+    const errors: WorkflowValidationErrorCode[] = [];
     try {
       const definitionSource = extractWorkflowSource(object.source);
       sourceDigest = workflowSourceDigest(definitionSource);
@@ -203,31 +248,22 @@ export class WorkflowObserver {
       try {
         parsed = YAML.parse(definitionSource, { maxAliasCount: 0 });
       } catch {
-        errors.push("Workflow YAML could not be parsed");
+        errors.push("yaml_invalid");
       }
       if (parsed !== undefined) {
         const result = workflowDefinitionSchema.safeParse(parsed);
         if (result.success) definition = result.data;
-        else
-          errors.push(
-            ...result.error.issues.map(
-              (issue) =>
-                `${issue.path.length ? issue.path.join(".") : "definition"}: ${issue.message}`,
-            ),
-          );
+        else errors.push("schema_invalid");
       }
     } catch (error) {
-      errors.push(error instanceof Error ? error.message : "Workflow source is invalid");
+      errors.push(sourceErrorCode(error));
     }
     const principal = principalFromParticipantId(object.editorParticipantId);
-    if (!principal) errors.push("Workflow editor identity is not verified");
+    if (!principal) errors.push("editor_unverified");
     let version: WorkflowVersionRecord | undefined;
     if (definition) {
       const policy = evaluateWorkflowPolicy(definition, { sourceSpaceId: spaceId });
-      if (policy.missingCapabilities.length)
-        errors.push(
-          `Workflow omits required capabilities: ${policy.missingCapabilities.join(", ")}`,
-        );
+      if (policy.missingCapabilities.length) errors.push("capabilities_missing");
       const authority = evaluateWorkflowAuthority(definition, this.config, {
         sourceSpaceId: spaceId,
         ...(principal
@@ -239,7 +275,7 @@ export class WorkflowObserver {
             }
           : {}),
       });
-      errors.push(...authority.violations);
+      errors.push(...authority.violations.map(authorityErrorCode));
       if (!errors.length) {
         const candidate: WorkflowVersionRecord = {
           workflowId,
@@ -263,20 +299,16 @@ export class WorkflowObserver {
             : {}),
           createdAt: observedAt,
         };
-        version =
-          this.store.workflowVersion(workflowId, candidate.versionHash) ??
-          this.store.saveWorkflowVersion(candidate);
+        version = this.store.saveWorkflowVersion(candidate);
       }
     }
     const state = errors.length ? "invalid" : "valid";
-    const validationErrors = [...new Set(errors.map((error) => error.slice(0, 500)))]
-      .sort()
-      .slice(0, 50);
+    const validationErrors = [...new Set(errors)].sort().slice(0, 50);
     const current = this.store.recordWorkflowDefinitionStatus({
       workflowId,
       spaceId,
       objectId: object.id,
-      name: definition?.metadata.name ?? object.name,
+      name: boundedLabel(definition?.metadata.name ?? object.name),
       state,
       sourceModifiedAt: object.modifiedAt,
       sourceDigest,
@@ -317,11 +349,31 @@ export class WorkflowObserver {
     return { changed: changed || inserted, sourceDigest };
   }
 
-  private archiveMissing(spaceId: string, startedAt: number, observedAt: number): number {
-    const archived = this.store.workflowDefinitionsMissingSince(spaceId, startedAt);
-    for (const definition of archived) {
+  private async archiveMissing(
+    spaceId: string,
+    startedAt: number,
+    observedAt: number,
+  ): Promise<number> {
+    const candidates = this.store.workflowDefinitionsMissingSince(spaceId, startedAt);
+    let changed = 0;
+    for (const definition of candidates) {
+      let confirmed = false;
+      try {
+        const object = await this.anytype.getObject(spaceId, definition.objectId);
+        confirmed = object.archived === true || object.is_archived === true;
+        if (!confirmed) {
+          this.store.recordWorkflowDefinitionStatus({
+            ...definition,
+            seenAt: observedAt,
+          });
+          continue;
+        }
+      } catch (error) {
+        confirmed = error instanceof AnytypeHttpError && [404, 410].includes(error.status);
+      }
+      if (!confirmed) continue;
       const sourceDigest = definition.sourceDigest || workflowSourceDigest("");
-      this.recordEvent(
+      const inserted = this.recordEvent(
         "object.archived",
         spaceId,
         {
@@ -345,8 +397,9 @@ export class WorkflowObserver {
         sourceDigest,
         seenAt: definition.lastSeenAt,
       });
+      if (inserted || definition.state !== "archived") changed += 1;
     }
-    return archived.length;
+    return changed;
   }
 
   private recordEvent(
@@ -388,12 +441,55 @@ export class WorkflowObserver {
 }
 
 function extractWorkflowSource(source: string | undefined): string {
-  if (!source) throw new Error("Workflow object has no source body");
-  if (source.length > 1_000_000) throw new Error("Workflow source exceeds 1000000 characters");
+  if (!source) throw new ObserverValidationError("source_missing");
+  if (source.length > 1_000_000) throw new ObserverValidationError("source_too_large");
   const matches = [...source.matchAll(/```(?:yaml|yml)\s*\n([\s\S]*?)\n```/gi)];
-  if (matches.length !== 1)
-    throw new Error("Workflow object needs exactly one fenced YAML definition");
+  if (matches.length !== 1) throw new ObserverValidationError("source_fence_invalid");
   return matches[0]![1]!;
+}
+
+class ObserverValidationError extends Error {
+  constructor(readonly code: WorkflowValidationErrorCode) {
+    super(code);
+  }
+}
+
+class ObserverScanError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
+
+function sourceErrorCode(error: unknown): WorkflowValidationErrorCode {
+  return error instanceof ObserverValidationError ? error.code : "source_invalid";
+}
+
+function authorityErrorCode(error: string): WorkflowValidationErrorCode {
+  if (error.startsWith("Capability")) return "capability_unauthorized";
+  if (error.startsWith("Risk tier")) return "risk_tier_unauthorized";
+  if (error.startsWith("Space")) return "space_unauthorized";
+  if (error.startsWith("Workflow editor")) return "editor_unverified";
+  if (error.startsWith("Editor")) return "editor_unauthorized";
+  if (error.startsWith("Project")) return "project_unauthorized";
+  if (error.startsWith("Connection")) return "connection_unauthorized";
+  if (error.startsWith("Secret")) return "secret_unauthorized";
+  return "authority_rejected";
+}
+
+function observerErrorCode(error: unknown): string {
+  if (error instanceof ObserverScanError) return error.code;
+  if (error instanceof AnytypeHttpError) {
+    if (error.status === 401) return "anytype_unauthorized";
+    if (error.status === 403) return "anytype_forbidden";
+    if (error.status === 429) return "anytype_rate_limited";
+    return error.status >= 500 ? "anytype_unavailable" : "anytype_request_failed";
+  }
+  return "scan_failed";
+}
+
+function boundedLabel(value: string): string {
+  const label = [...value.trim()].slice(0, 256).join("");
+  return label || "Workflow";
 }
 
 function stableId(domain: string, ...parts: string[]): string {

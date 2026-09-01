@@ -65,8 +65,10 @@ SHA-256 hash includes:
 Display name, description, labels, and enabled state do not affect the approval hash. Changing any
 behavior-bearing value or referenced content does. Secret reference names may be hashed; secret
 values must never enter the definition, hash material, database, or logs. Knot stores a
-domain-separated digest of the source text, not the source text itself. The canonical definition
-remains because validation, approval, and later execution need it.
+domain-separated digest of the source text, not the source text itself. In stored definition and
+approval records, it replaces author-supplied `prompt` and `message` strings with separately
+domain-separated digests. A future executor must refetch and verify the source or use an encrypted
+content store before it can run those steps.
 
 ## Capability and risk policy
 
@@ -92,16 +94,17 @@ authorized.
 
 Polling plus reconciliation is the correctness mechanism. The shipped observer applies this rule
 to workflow definition objects. Heart and streaming hints are not connected to this loop. The
-observer pages fairly across configured spaces and performs a complete pass before it marks a
-missing definition archived.
+observer pages fairly across configured spaces and performs a complete pass before it considers a
+missing definition archived. It then requires a direct object read to confirm an archive or native
+404/410 response.
 
 Each definition must contain one fenced YAML block. Knot reads the native modification timestamp
-and explicit native editor participant ID from the full object response. A display name, creator
-fallback, or editable property does not authorize the definition. Missing or unauthorized editor
-identity leaves the definition invalid. Knot stores a source digest, bounded validation errors, and
-an immutable normalized definition event. It stores the canonical parsed version only after schema
-and local authority checks pass. It never stores the raw source body in workflow tables or event
-payloads.
+and the `last_modified_by` system object property from the full object response. Top-level aliases,
+display names, and creator fallbacks do not authorize the definition. Missing or unauthorized editor
+identity leaves the definition invalid. Knot stores a source digest, closed bounded error codes, and
+an immutable normalized definition event. It stores the redacted parsed version only after schema
+and local authority checks pass. It never stores the raw source body, author prompt text, upstream
+response body, or validation input in workflow tables or event payloads.
 
 The remaining object, collection, schedule, and manual observation work will use the same event
 contract. First activation does not backfill unless requested.
@@ -134,7 +137,8 @@ stores their digests. The pre-migration backup still contains the old text by de
 backup like the live database and remove it only after the operator has verified the migration and
 accepted the loss of that rollback point.
 
-Schema 10 adds definition source digests and durable per-space observer state. A restart resumes the
+Schema 11 redacts author prompt and message strings from stored definition and approval records.
+Schema 10 added definition source digests and durable per-space observer state. A restart resumes the
 saved page and reconciliation boundary. Repeated pages and repeated revisions reuse the same event
 dedupe key. An interrupted observation repairs a missing event on the next pass before it advances
 past that source revision.

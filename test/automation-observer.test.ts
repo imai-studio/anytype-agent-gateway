@@ -272,6 +272,7 @@ describe("read-only workflow observer", () => {
     await observer.scanSpaceOnce("space-1");
     now = 200;
     anytype.workflowObjects = [];
+    anytype.missingObjectIds.add("definition-1");
 
     expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ archived: 1, changes: 1 });
     expect(store.workflowDefinition("space-1", "definition-1")?.state).toBe("archived");
@@ -326,7 +327,7 @@ describe("read-only workflow observer", () => {
 
     expect(store.workflowDefinition("space-1", "definition-1")).toMatchObject({
       state: "invalid",
-      validationErrors: expect.arrayContaining(["Workflow editor identity is not verified"]),
+      validationErrors: expect.arrayContaining(["editor_unverified"]),
     });
     expect(eventRows(store)[0]!.editor_principal_digest).toBeNull();
     expect(String(eventRows(store)[0]!.payload_json).includes("operator")).toBe(false);
@@ -359,7 +360,7 @@ describe("read-only workflow observer", () => {
 
     const observation = store.workflowDefinition("space-1", "definition-1");
     expect(observation?.state).toBe("invalid");
-    expect(observation?.validationErrors).toEqual(["Workflow YAML could not be parsed"]);
+    expect(observation?.validationErrors).toEqual(["yaml_invalid"]);
     expect(JSON.stringify(observation)).not.toContain("never-store-this");
     expect(String(eventRows(store)[0]!.payload_json)).not.toContain("never-store-this");
     store.close();
@@ -384,7 +385,7 @@ describe("read-only workflow observer", () => {
       consecutiveFailures: 1,
       pollIntervalMilliseconds: 20_000,
       nextScanAt: 20_100,
-      lastError: "workflow search unavailable",
+      lastError: "scan_failed",
     } satisfies Partial<WorkflowObserverState>);
     now = 20_100;
     anytype.workflowObjects = [workflowObject()];
@@ -394,6 +395,129 @@ describe("read-only workflow observer", () => {
       pollIntervalMilliseconds: 10_000,
       lastSuccessAt: 20_100,
     });
+    store.close();
+  });
+
+  it("finishes a multi-page reconciliation before considering missing definitions", async () => {
+    const anytype = new FakeAnytype();
+    anytype.workflowObjects = [
+      workflowObject({ id: "definition-1", source: source("One") }),
+      workflowObject({ id: "definition-2", source: source("Two") }),
+    ];
+    const store = new Store(":memory:");
+    let now = 100;
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(1),
+      () => {},
+      () => now++,
+    );
+
+    expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ objects: 1, archived: 0 });
+    expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ objects: 1, archived: 0 });
+    expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ objects: 0, archived: 0 });
+    expect(store.workflowDefinition("space-1", "definition-1")?.state).toBe("valid");
+    expect(store.workflowDefinition("space-1", "definition-2")?.state).toBe("valid");
+    store.close();
+  });
+
+  it("does not infer archive from a search miss while the object still exists", async () => {
+    const anytype = new FakeAnytype();
+    anytype.workflowObjects = [workflowObject()];
+    const store = new Store(":memory:");
+    let now = 100;
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => now,
+    );
+    await observer.scanSpaceOnce("space-1");
+    now = 200;
+    anytype.workflowObjects = [];
+
+    expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ archived: 0 });
+    expect(store.workflowDefinition("space-1", "definition-1")?.state).toBe("valid");
+    store.close();
+  });
+
+  it("isolates an unreadable object and continues observing the rest of the page", async () => {
+    const anytype = new FakeAnytype();
+    const unreadable = workflowObject({ id: "bad", observationError: "object_read_failed" });
+    delete unreadable.source;
+    delete unreadable.editorParticipantId;
+    anytype.workflowObjects = [unreadable, workflowObject({ id: "good", source: source("Good") })];
+    const store = new Store(":memory:");
+
+    const result = await new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => 200,
+    ).scanSpaceOnce("space-1");
+
+    expect(result).toMatchObject({ failed: false, objects: 2, changes: 2 });
+    expect(store.workflowDefinition("space-1", "bad")).toMatchObject({
+      state: "invalid",
+      validationErrors: ["object_read_failed"],
+    });
+    expect(store.workflowDefinition("space-1", "good")?.state).toBe("valid");
+    store.close();
+  });
+
+  it("requires exact configured participant identity for workflow authority", async () => {
+    const anytype = new FakeAnytype();
+    anytype.workflowObjects = [workflowObject({ editorParticipantId: "_participant_operator" })];
+    const store = new Store(":memory:");
+
+    await new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => 200,
+    ).scanSpaceOnce("space-1");
+
+    expect(store.workflowDefinition("space-1", "definition-1")).toMatchObject({
+      state: "invalid",
+      validationErrors: ["editor_unauthorized"],
+    });
+    store.close();
+  });
+
+  it("keeps pagination and object identity isolated across spaces", async () => {
+    const anytype = new FakeAnytype();
+    const bySpace = new Map([
+      ["space-1", [workflowObject({ id: "shared", source: source("Space one") })]],
+      ["space-2", [workflowObject({ id: "shared", source: source("Space two") })]],
+    ]);
+    vi.spyOn(anytype, "searchWorkflowObjects").mockImplementation(
+      async (spaceId, _typeKeys, offset, limit) =>
+        (bySpace.get(spaceId) ?? []).slice(offset, offset + limit),
+    );
+    const store = new Store(":memory:");
+    const config = {
+      ...automationConfig(),
+      allowedSpaceIds: ["space-1", "space-2"],
+    };
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      config,
+      () => {},
+      () => 200,
+    );
+
+    await observer.scanSpaceOnce("space-1");
+    await observer.scanSpaceOnce("space-2");
+
+    expect(store.workflowDefinition("space-1", "shared")?.name).toBe("Space one");
+    expect(store.workflowDefinition("space-2", "shared")?.name).toBe("Space two");
+    expect(store.workflowObserverState("space-1")).toBeDefined();
+    expect(store.workflowObserverState("space-2")).toBeDefined();
     store.close();
   });
 });

@@ -164,6 +164,12 @@ export type AnytypeWorkflowObject = {
   modifiedAt: number;
   editorParticipantId?: string;
   archived: boolean;
+  observationError?:
+    | "object_read_failed"
+    | "object_not_found"
+    | "object_too_large"
+    | "object_type_unverified"
+    | "native_revision_missing";
 };
 
 export interface AnytypePort {

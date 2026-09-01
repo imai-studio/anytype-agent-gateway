@@ -1,6 +1,12 @@
 import type { AgentConfig } from "./config.js";
 import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, AnytypeTag, AnytypeWorkflowObject, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 type JsonRecord = Record<string, any>;
+export declare class AnytypeHttpError extends Error {
+    readonly status: number;
+    readonly method: string;
+    readonly path: string;
+    constructor(status: number, method: string, path: string);
+}
 export declare class AnytypeClient implements AnytypePort {
     private readonly base;
     private readonly headers;

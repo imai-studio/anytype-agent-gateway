@@ -4,8 +4,8 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
-import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalWorkflowDefinition, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 10;
+import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalStoredWorkflowApproval, canonicalStoredWorkflowDefinition, canonicalWorkflowDefinition, redactStoredWorkflowJson, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
+const SCHEMA_VERSION = 11;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -24,7 +24,7 @@ export class Store {
         if (path !== ":memory:")
             mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
         this.db = new DatabaseSync(path);
-        this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+        this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 5000;");
         this.migrate(path, existed);
     }
     get migrationBackupPath() {
@@ -62,6 +62,8 @@ export class Store {
                 this.migrateToVersion9();
             if (current < 10)
                 this.migrateToVersion10();
+            if (current < 11)
+                this.migrateToVersion11();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -72,6 +74,9 @@ export class Store {
         }
         if (this._migrationBackupPath)
             this.reportMigration(`Knot upgraded the state database from schema ${current} to ${SCHEMA_VERSION}. Backup: ${this._migrationBackupPath}`);
+        if (current > 0 && current < 11) {
+            this.db.exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+        }
     }
     hasUserTables() {
         return Boolean(this.db
@@ -465,6 +470,46 @@ export class Store {
       CREATE INDEX idx_workflow_observer_due
         ON workflow_observer_spaces(next_scan_at,space_id);
     `);
+    }
+    migrateToVersion11() {
+        const versionTable = this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_versions'")
+            .get();
+        if (!versionTable)
+            return;
+        const versionColumns = this.db.prepare("PRAGMA table_info(workflow_versions)").all();
+        const subjectTable = this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_approval_subjects'")
+            .get();
+        this.db.exec(`
+      DROP TRIGGER IF EXISTS workflow_versions_no_update;
+      DROP TRIGGER IF EXISTS workflow_approval_subjects_no_update;
+    `);
+        if (versionColumns.some((column) => column.name === "canonical_definition_json")) {
+            const versions = this.db
+                .prepare("SELECT rowid,canonical_definition_json FROM workflow_versions")
+                .all();
+            const updateVersion = this.db.prepare("UPDATE workflow_versions SET canonical_definition_json=? WHERE rowid=?");
+            for (const row of versions)
+                updateVersion.run(redactStoredWorkflowJson(row.canonical_definition_json), row.rowid);
+        }
+        if (subjectTable) {
+            const subjects = this.db
+                .prepare("SELECT rowid,canonical_approval_json FROM workflow_approval_subjects")
+                .all();
+            const updateSubject = this.db.prepare("UPDATE workflow_approval_subjects SET canonical_approval_json=? WHERE rowid=?");
+            for (const row of subjects)
+                updateSubject.run(redactStoredWorkflowJson(row.canonical_approval_json), row.rowid);
+        }
+        this.db.exec(`
+      CREATE TRIGGER workflow_versions_no_update BEFORE UPDATE ON workflow_versions
+        BEGIN SELECT RAISE(ABORT,'workflow versions are append-only'); END;
+    `);
+        if (subjectTable)
+            this.db.exec(`
+        CREATE TRIGGER workflow_approval_subjects_no_update BEFORE UPDATE ON workflow_approval_subjects
+          BEGIN SELECT RAISE(ABORT,'workflow approval subjects are append-only'); END;
+      `);
     }
     isInitialized(routeId) {
         return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));
@@ -1095,12 +1140,45 @@ export class Store {
           last_seen_at,validation_errors_json,observed_source_digest,created_at,updated_at
         ) VALUES(?,?,?,?,?,NULL,?,?,?,?,?,?)
         ON CONFLICT(workflow_id) DO UPDATE SET
-          space_id=excluded.space_id,object_id=excluded.object_id,name=excluded.name,
-          state=excluded.state,source_modified_at=MAX(workflow_definitions.source_modified_at,
-          excluded.source_modified_at),last_seen_at=excluded.last_seen_at,
-          validation_errors_json=excluded.validation_errors_json,
-          observed_source_digest=excluded.observed_source_digest,updated_at=excluded.updated_at`)
+          last_seen_at=MAX(workflow_definitions.last_seen_at,excluded.last_seen_at),
+          name=CASE WHEN excluded.source_modified_at > workflow_definitions.source_modified_at
+            OR (excluded.source_modified_at=workflow_definitions.source_modified_at
+                AND excluded.observed_source_digest>=workflow_definitions.observed_source_digest)
+            THEN excluded.name ELSE workflow_definitions.name END,
+          state=CASE WHEN excluded.source_modified_at > workflow_definitions.source_modified_at
+            OR (excluded.source_modified_at=workflow_definitions.source_modified_at
+                AND excluded.observed_source_digest>=workflow_definitions.observed_source_digest)
+            THEN excluded.state ELSE workflow_definitions.state END,
+          active_version_hash=CASE WHEN (
+              excluded.source_modified_at > workflow_definitions.source_modified_at OR
+              (excluded.source_modified_at=workflow_definitions.source_modified_at
+               AND excluded.observed_source_digest>=workflow_definitions.observed_source_digest)
+            ) AND excluded.state!='valid'
+            THEN NULL ELSE workflow_definitions.active_version_hash END,
+          source_modified_at=MAX(workflow_definitions.source_modified_at,excluded.source_modified_at),
+          validation_errors_json=CASE WHEN excluded.source_modified_at > workflow_definitions.source_modified_at
+            OR (excluded.source_modified_at=workflow_definitions.source_modified_at
+                AND excluded.observed_source_digest>=workflow_definitions.observed_source_digest)
+            THEN excluded.validation_errors_json ELSE workflow_definitions.validation_errors_json END,
+          observed_source_digest=CASE WHEN excluded.source_modified_at > workflow_definitions.source_modified_at
+            OR (excluded.source_modified_at=workflow_definitions.source_modified_at
+                AND excluded.observed_source_digest>=workflow_definitions.observed_source_digest)
+            THEN excluded.observed_source_digest ELSE workflow_definitions.observed_source_digest END,
+          updated_at=MAX(workflow_definitions.updated_at,excluded.updated_at)`)
             .run(input.workflowId, input.spaceId, input.objectId, input.name, input.state, input.sourceModifiedAt, input.seenAt, validationErrorsJson, input.sourceDigest, input.seenAt, input.seenAt);
+        return this.workflowDefinition(input.spaceId, input.objectId);
+    }
+    recordWorkflowDefinitionReadFailure(input) {
+        assertStoredTimestamp(input.seenAt, "Workflow observation time");
+        this.db
+            .prepare(`INSERT INTO workflow_definitions(
+          workflow_id,space_id,object_id,name,state,active_version_hash,source_modified_at,
+          last_seen_at,validation_errors_json,observed_source_digest,created_at,updated_at
+        ) VALUES(?,?,?,?, 'invalid',NULL,0,?,?,?,?,?)
+        ON CONFLICT(workflow_id) DO UPDATE SET
+          state='invalid',active_version_hash=NULL,last_seen_at=excluded.last_seen_at,
+          validation_errors_json=excluded.validation_errors_json,updated_at=excluded.updated_at`)
+            .run(input.workflowId, input.spaceId, input.objectId, input.name, input.seenAt, JSON.stringify([input.errorCode]), input.sourceDigest, input.seenAt, input.seenAt);
         return this.workflowDefinition(input.spaceId, input.objectId);
     }
     workflowDefinitionsMissingSince(spaceId, reconcileStartedAt) {
@@ -1141,6 +1219,8 @@ export class Store {
         const definition = workflowDefinitionSchema.parse(JSON.parse(input.canonicalDefinitionJson));
         const canonicalDefinitionJson = canonicalWorkflowDefinition(definition);
         const canonicalApprovalJson = canonicalJson(workflowApprovalMaterial(definition));
+        const storedDefinitionJson = canonicalStoredWorkflowDefinition(definition);
+        const storedApprovalJson = canonicalStoredWorkflowApproval(definition);
         const policy = evaluateWorkflowPolicy(definition, { sourceSpaceId: input.spaceId });
         const requiredCapabilitiesJson = JSON.stringify(policy.requiredCapabilities);
         if (input.canonicalDefinitionJson !== canonicalDefinitionJson ||
@@ -1172,26 +1252,21 @@ export class Store {
             workflow_id,space_id,object_id,name,state,active_version_hash,source_modified_at,
             last_seen_at,validation_errors_json,created_at,updated_at
           ) VALUES(?,?,?,?,'valid',NULL,?,?,'[]',?,?)
-          ON CONFLICT(workflow_id) DO UPDATE SET
-            space_id=excluded.space_id,object_id=excluded.object_id,name=excluded.name,state='valid',
-            active_version_hash=NULL,
-            source_modified_at=excluded.source_modified_at,last_seen_at=excluded.last_seen_at,
-            validation_errors_json='[]',updated_at=excluded.updated_at
-          WHERE excluded.source_modified_at > workflow_definitions.source_modified_at`)
+          ON CONFLICT(workflow_id) DO NOTHING`)
                 .run(input.workflowId, input.spaceId, input.objectId, input.name, input.sourceModifiedAt, input.createdAt, input.createdAt, input.createdAt);
             this.db
                 .prepare(`INSERT OR IGNORE INTO workflow_approval_subjects(
             workflow_id,approval_hash,policy_version,canonical_approval_json,risk_tier,
             required_capabilities_json,created_at
           ) VALUES(?,?,?,?,?,?,?)`)
-                .run(input.workflowId, input.approvalHash, WORKFLOW_POLICY_VERSION, canonicalApprovalJson, input.riskTier, requiredCapabilitiesJson, input.createdAt);
+                .run(input.workflowId, input.approvalHash, WORKFLOW_POLICY_VERSION, storedApprovalJson, input.riskTier, requiredCapabilitiesJson, input.createdAt);
             const subject = this.db
                 .prepare(`SELECT policy_version,canonical_approval_json,risk_tier,required_capabilities_json
            FROM workflow_approval_subjects WHERE workflow_id=? AND approval_hash=?`)
                 .get(input.workflowId, input.approvalHash);
             if (!subject ||
                 subject.policy_version !== WORKFLOW_POLICY_VERSION ||
-                subject.canonical_approval_json !== canonicalApprovalJson ||
+                subject.canonical_approval_json !== storedApprovalJson ||
                 subject.risk_tier !== input.riskTier ||
                 subject.required_capabilities_json !== requiredCapabilitiesJson)
                 throw new Error("Workflow approval hash collision or divergent approval material");
@@ -1201,7 +1276,7 @@ export class Store {
             canonical_definition_json,source_text,source_digest,risk_tier,required_capabilities_json,
             source_modified_at,author_principal_digest,editor_provenance,created_at
           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-                .run(input.workflowId, input.spaceId, input.objectId, input.name, input.versionHash, input.approvalHash, input.schemaVersion, canonicalDefinitionJson, "", input.sourceDigest, input.riskTier, requiredCapabilitiesJson, input.sourceModifiedAt, input.editorPrincipalDigest ?? null, input.editorProvenance ?? null, input.createdAt);
+                .run(input.workflowId, input.spaceId, input.objectId, input.name, input.versionHash, input.approvalHash, input.schemaVersion, storedDefinitionJson, "", input.sourceDigest, input.riskTier, requiredCapabilitiesJson, input.sourceModifiedAt, input.editorPrincipalDigest ?? null, input.editorProvenance ?? null, input.createdAt);
             const stored = this.workflowVersion(input.workflowId, input.versionHash);
             if (!stored ||
                 stored.spaceId !== input.spaceId ||
@@ -1209,24 +1284,13 @@ export class Store {
                 stored.name !== input.name ||
                 stored.approvalHash !== input.approvalHash ||
                 stored.schemaVersion !== input.schemaVersion ||
-                stored.canonicalDefinitionJson !== canonicalDefinitionJson ||
-                stored.canonicalApprovalJson !== canonicalApprovalJson ||
+                stored.canonicalDefinitionJson !== storedDefinitionJson ||
+                stored.canonicalApprovalJson !== storedApprovalJson ||
                 stored.sourceDigest !== input.sourceDigest ||
                 stored.riskTier !== input.riskTier ||
-                JSON.stringify(stored.requiredCapabilities) !== requiredCapabilitiesJson ||
-                stored.sourceModifiedAt !== input.sourceModifiedAt ||
-                stored.editorPrincipalDigest !== input.editorPrincipalDigest ||
-                stored.editorProvenance !== input.editorProvenance)
+                JSON.stringify(stored.requiredCapabilities) !== requiredCapabilitiesJson)
                 throw new Error("Workflow version hash collision or divergent immutable version");
-            this.db
-                .prepare(`UPDATE workflow_definitions SET active_version_hash=?,name=?,updated_at=?
-           WHERE workflow_id=? AND source_modified_at=? AND (
-             active_version_hash IS NULL OR ? > COALESCE(
-               (SELECT source_digest FROM workflow_versions
-                WHERE workflow_id=? AND version_hash=active_version_hash), ''
-             )
-           )`)
-                .run(input.versionHash, input.name, input.createdAt, input.workflowId, input.sourceModifiedAt, input.sourceDigest, input.workflowId);
+            this.activateWorkflowVersionObservation(input);
             this.db.exec("COMMIT");
             return stored;
         }
@@ -1234,6 +1298,21 @@ export class Store {
             this.db.exec("ROLLBACK");
             throw error;
         }
+    }
+    activateWorkflowVersionObservation(input) {
+        const version = this.db
+            .prepare("SELECT 1 FROM workflow_versions WHERE workflow_id=? AND version_hash=?")
+            .get(input.workflowId, input.versionHash);
+        if (!version)
+            throw new Error("Cannot activate an unknown workflow version");
+        this.db
+            .prepare(`UPDATE workflow_definitions SET active_version_hash=?,name=?,source_modified_at=?,
+           observed_source_digest=?,updated_at=?
+         WHERE workflow_id=? AND (
+           ? > source_modified_at OR
+           (? = source_modified_at AND ? >= observed_source_digest)
+         )`)
+            .run(input.versionHash, input.name, input.sourceModifiedAt, input.sourceDigest, input.createdAt, input.workflowId, input.sourceModifiedAt, input.sourceModifiedAt, input.sourceDigest);
     }
     workflowVersion(workflowId, versionHash) {
         const row = this.db

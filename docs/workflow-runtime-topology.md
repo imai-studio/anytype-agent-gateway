@@ -132,8 +132,9 @@ watermarks, failure counts, and next-scan times. Each cycle:
 5. advances the cursor only after those durable writes succeed;
 6. records the next scan time with bounded backoff and jitter.
 
-A complete definition pass finds missed updates and archives definitions that disappeared from the
-configured search result. A restart resumes the saved page. Re-reading a page is safe, and an
+A complete definition pass finds missed updates. A search miss alone never archives a definition;
+Knot requires a direct read to confirm the archive or native 404/410 response. A restart resumes the
+saved page. Re-reading a page is safe, and an
 interrupted write is repaired by the event dedupe key on the next pass. Heart-assisted target fetch,
 property-level snapshot diffs, collection reconciliation, and self-write suppression remain planned.
 

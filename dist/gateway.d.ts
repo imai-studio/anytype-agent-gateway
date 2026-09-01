@@ -32,6 +32,7 @@ export declare class Gateway {
     }): void;
     private addRoute;
     private track;
+    private trackAuxiliary;
     private runRoute;
     private catchUp;
     private processMessage;

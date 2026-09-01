@@ -14,6 +14,7 @@ import type {
   RuntimeResult,
   TextMark,
 } from "../src/types.js";
+import { AnytypeHttpError } from "../src/anytype-client.js";
 
 export class FakeAnytype implements AnytypePort {
   messages: ChatMessage[] = [];
@@ -25,6 +26,7 @@ export class FakeAnytype implements AnytypePort {
   objects = new Map<string, Record<string, unknown>>();
   workflowObjects: AnytypeWorkflowObject[] = [];
   workflowSearchFailures = 0;
+  missingObjectIds = new Set<string>();
   properties: Record<string, unknown>[] = [];
   propertyTags: AnytypeTag[] = [];
   private nextId = 1;
@@ -116,6 +118,16 @@ export class FakeAnytype implements AnytypePort {
     _spaceId: string,
     objectId: string,
   ): Promise<{ id: string; name?: string; markdown?: string } & Record<string, unknown>> {
+    if (this.missingObjectIds.has(objectId))
+      throw new AnytypeHttpError(404, "GET", "/objects/redacted");
+    const workflow = this.workflowObjects.find((candidate) => candidate.id === objectId);
+    if (workflow)
+      return {
+        id: workflow.id,
+        name: workflow.name,
+        ...(workflow.source === undefined ? {} : { markdown: workflow.source }),
+        archived: workflow.archived,
+      };
     return {
       id: objectId,
       name: "Object",

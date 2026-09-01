@@ -388,6 +388,49 @@ export function canonicalWorkflowDefinition(workflow: WorkflowDefinition): strin
   return canonicalJson(JSON.parse(JSON.stringify(workflow)) as JsonValue);
 }
 
+export function canonicalStoredWorkflowDefinition(workflow: WorkflowDefinition): string {
+  return canonicalJson(redactSensitiveWorkflowStrings(workflow) as JsonValue);
+}
+
+export function canonicalStoredWorkflowApproval(workflow: WorkflowDefinition): string {
+  return canonicalJson(
+    redactSensitiveWorkflowStrings(workflowApprovalMaterial(workflow)) as JsonValue,
+  );
+}
+
+export function redactStoredWorkflowJson(value: string): string {
+  return canonicalJson(redactSensitiveWorkflowStrings(JSON.parse(value)) as JsonValue);
+}
+
+function redactSensitiveWorkflowStrings(value: unknown, path: string[] = []): unknown {
+  if (Array.isArray(value))
+    return value.map((item, index) =>
+      redactSensitiveWorkflowStrings(item, [...path, String(index)]),
+    );
+  if (!value || typeof value !== "object") return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const nestedPath = [...path, key];
+    if ((key === "prompt" || key === "message") && typeof nested === "string") {
+      result[key] = {
+        redacted: true,
+        digest: sensitiveWorkflowFieldDigest(nestedPath, nested),
+      };
+    } else result[key] = redactSensitiveWorkflowStrings(nested, nestedPath);
+  }
+  return result;
+}
+
+function sensitiveWorkflowFieldDigest(path: string[], value: string): string {
+  const digest = createHash("sha256")
+    .update("knot.workflow.sensitive-field.v1\0")
+    .update(path.join("\0"))
+    .update("\0")
+    .update(value)
+    .digest("hex");
+  return `sha256:${digest}`;
+}
+
 export function workflowVersionHash(workflow: WorkflowDefinition): string {
   const digest = createHash("sha256")
     .update("knot.workflow.version.v1\0")

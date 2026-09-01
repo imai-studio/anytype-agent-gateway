@@ -6,6 +6,30 @@ export type WorkflowEditorProvenance = "anytype-native" | "authenticated-chat" |
 
 export type WorkflowDefinitionState = "discovered" | "valid" | "invalid" | "archived";
 
+export type WorkflowValidationErrorCode =
+  | "anytype_request_failed"
+  | "authority_rejected"
+  | "capabilities_missing"
+  | "capability_unauthorized"
+  | "connection_unauthorized"
+  | "editor_unauthorized"
+  | "editor_unverified"
+  | "native_revision_missing"
+  | "object_not_found"
+  | "object_read_failed"
+  | "object_too_large"
+  | "object_type_unverified"
+  | "project_unauthorized"
+  | "risk_tier_unauthorized"
+  | "schema_invalid"
+  | "secret_unauthorized"
+  | "source_fence_invalid"
+  | "source_invalid"
+  | "source_missing"
+  | "source_too_large"
+  | "space_unauthorized"
+  | "yaml_invalid";
+
 export interface WorkflowDefinitionObservation {
   workflowId: string;
   spaceId: string;
@@ -16,7 +40,7 @@ export interface WorkflowDefinitionObservation {
   sourceModifiedAt: number;
   sourceDigest: string;
   lastSeenAt: number;
-  validationErrors: string[];
+  validationErrors: WorkflowValidationErrorCode[];
 }
 
 export interface WorkflowObserverState {

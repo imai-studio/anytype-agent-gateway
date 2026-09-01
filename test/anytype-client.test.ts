@@ -42,7 +42,13 @@ describe("Anytype object REST client", () => {
               type: { key: "knot-workflow" },
               markdown: "```yaml\nkind: KnotWorkflow\n```",
               modified_at: 1_700_000_000,
-              last_modified_by: { participant_id: "participant-1" },
+              properties: [
+                {
+                  key: "last_modified_by",
+                  format: "objects",
+                  objects: ["participant-1"],
+                },
+              ],
               archived: false,
             },
           }),
@@ -82,12 +88,102 @@ describe("Anytype object REST client", () => {
       {
         method: "POST",
         path: "/v1/spaces/space/search?offset=50&limit=25",
-        body: JSON.stringify({ query: "", types: ["knot-workflow"] }),
+        body: JSON.stringify({
+          query: "",
+          sort: { direction: "desc", property_key: "last_modified_date" },
+          types: ["knot-workflow"],
+        }),
       },
       {
         method: "GET",
         path: "/v1/spaces/space/objects/workflow-1",
         body: "",
+      },
+    ]);
+  });
+
+  it("does not trust undocumented top-level editor aliases", async () => {
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.method === "POST") {
+        response.end(
+          JSON.stringify({ data: [{ id: "workflow-1", type: { key: "knot-workflow" } }] }),
+        );
+        return;
+      }
+      response.end(
+        JSON.stringify({
+          object: {
+            id: "workflow-1",
+            name: "Unverified editor",
+            type: { key: "knot-workflow" },
+            markdown: "```yaml\nkind: KnotWorkflow\n```",
+            modified_at: 1_700_000_000,
+            last_modified_by: { participant_id: "participant-1" },
+          },
+        }),
+      );
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "knot-workflow-editor-alias-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "Knot", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    const [workflow] = await client.searchWorkflowObjects("space", ["knot-workflow"], 0, 25);
+
+    expect(workflow).toMatchObject({ id: "workflow-1", name: "Unverified editor" });
+    expect(workflow).not.toHaveProperty("editorParticipantId");
+  });
+
+  it("isolates oversized workflow object responses as invalid observations", async () => {
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.method === "POST") {
+        response.end(
+          JSON.stringify({ data: [{ id: "workflow-1", type: { key: "knot-workflow" } }] }),
+        );
+        return;
+      }
+      response.setHeader("content-length", String(2 * 1024 * 1024 + 1));
+      response.end("{}");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "knot-workflow-object-limit-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "Knot", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    await expect(client.searchWorkflowObjects("space", ["knot-workflow"], 0, 25)).resolves.toEqual([
+      {
+        id: "workflow-1",
+        name: "workflow-1",
+        typeKey: "knot-workflow",
+        modifiedAt: 0,
+        archived: false,
+        observationError: "object_too_large",
       },
     ]);
   });
@@ -435,7 +531,11 @@ describe("Anytype object REST client", () => {
       ["DELETE", "/v1/spaces/space/lists/list/objects/task-1"],
       ["POST", "/v1/spaces/space/files"],
     ]);
-    expect(JSON.parse(calls[0]!.body)).toEqual({ query: "roadmap", types: ["page"] });
+    expect(JSON.parse(calls[0]!.body)).toEqual({
+      query: "roadmap",
+      sort: { direction: "desc", property_key: "last_modified_date" },
+      types: ["page"],
+    });
     expect(JSON.parse(calls[10]!.body)).toEqual({ name: "klee:imai", color: "blue" });
     expect(JSON.parse(calls[13]!.body)).toEqual({ type_key: "page", name: "Plan", body: "Body" });
     expect(JSON.parse(calls[14]!.body)).toEqual({ name: "Updated", markdown: "Text" });

@@ -3,6 +3,20 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { runProcess } from "./process.js";
 import { sameIdentity } from "./principal.js";
+const MAX_OBJECT_RESPONSE_BYTES = 2 * 1024 * 1024;
+const WORKFLOW_OBJECT_READ_CONCURRENCY = 4;
+export class AnytypeHttpError extends Error {
+    status;
+    method;
+    path;
+    constructor(status, method, path) {
+        super(`Anytype ${method} request failed (${status})`);
+        this.status = status;
+        this.method = method;
+        this.path = path;
+        this.name = "AnytypeHttpError";
+    }
+}
 export class AnytypeClient {
     base;
     headers;
@@ -54,8 +68,8 @@ export class AnytypeClient {
                     return response;
                 const retryable = response.status === 429 || (method === "GET" && response.status >= 500);
                 const retryAfter = response.status === 429 ? retryAfterMs(response.headers.get("retry-after")) : undefined;
-                const body = (await response.text()).slice(0, 1000);
-                const error = new Error(`Anytype ${method} ${path} failed (${response.status}): ${body}`);
+                await response.body?.cancel().catch(() => undefined);
+                const error = new AnytypeHttpError(response.status, method, path);
                 if (attempt + 1 >= attempts || !retryable)
                     throw error;
                 lastError = error;
@@ -256,7 +270,8 @@ export class AnytypeClient {
         }
     }
     async getObject(spaceId, objectId) {
-        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`)).json());
+        const response = await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`);
+        const json = await readBoundedJson(response, MAX_OBJECT_RESPONSE_BYTES);
         const object = json.object ?? json;
         return { ...object, id: object.id ?? objectId };
     }
@@ -308,26 +323,37 @@ export class AnytypeClient {
     }
     async searchWorkflowObjects(spaceId, typeKeys, offset, limit) {
         const summaries = await this.searchSpace(spaceId, { types: typeKeys, offset, limit });
-        return Promise.all(summaries.map(async (summary) => {
-            const raw = await this.getObject(spaceId, String(summary.id));
-            const typeKey = objectTypeKey(raw) ?? objectTypeKey(summary);
-            if (!typeKey || !typeKeys.includes(typeKey))
-                throw new Error(`Anytype workflow object ${String(summary.id)} has no configured type key`);
-            const modifiedAt = objectModifiedAt(raw);
-            if (modifiedAt === undefined)
-                throw new Error(`Anytype workflow object ${String(summary.id)} has no native revision`);
-            const source = objectSource(raw);
-            const editorParticipantId = objectEditorParticipantId(raw);
-            return {
-                id: String(raw.id ?? summary.id),
-                name: String(raw.name ?? summary.name ?? raw.id ?? summary.id),
-                typeKey,
-                ...(source === undefined ? {} : { source }),
-                modifiedAt,
-                ...(editorParticipantId ? { editorParticipantId } : {}),
-                archived: raw.archived === true || raw.is_archived === true,
-            };
-        }));
+        return mapConcurrent(summaries, WORKFLOW_OBJECT_READ_CONCURRENCY, async (summary) => {
+            const summaryId = boundedName(summary.id, 512) ?? "invalid-object-id";
+            try {
+                const raw = await this.getObject(spaceId, summaryId);
+                const typeKey = objectTypeKey(raw) ?? objectTypeKey(summary);
+                if (!typeKey || !typeKeys.includes(typeKey))
+                    return invalidWorkflowSummary(summaryId, summary, "object_type_unverified");
+                const modifiedAt = objectModifiedAt(raw);
+                if (modifiedAt === undefined)
+                    return invalidWorkflowSummary(summaryId, summary, "native_revision_missing");
+                const source = objectSource(raw);
+                const editorParticipantId = objectEditorParticipantId(raw);
+                return {
+                    id: boundedName(raw.id ?? summary.id, 512) ?? summaryId,
+                    name: boundedName(raw.name ?? summary.name ?? raw.id ?? summary.id, 256) ?? "Workflow",
+                    typeKey,
+                    ...(source === undefined ? {} : { source }),
+                    modifiedAt,
+                    ...(editorParticipantId ? { editorParticipantId } : {}),
+                    archived: raw.archived === true || raw.is_archived === true,
+                };
+            }
+            catch (error) {
+                const observationError = error instanceof AnytypeHttpError && [404, 410].includes(error.status)
+                    ? "object_not_found"
+                    : error instanceof Error && error.message === "Anytype object response is too large"
+                        ? "object_too_large"
+                        : "object_read_failed";
+                return invalidWorkflowSummary(summaryId, summary, observationError);
+            }
+        });
     }
     async searchSpace(spaceId, input) {
         const query = new URLSearchParams({
@@ -338,6 +364,7 @@ export class AnytypeClient {
             method: "POST",
             body: JSON.stringify({
                 query: input.query ?? "",
+                sort: { direction: "desc", property_key: "last_modified_date" },
                 ...(input.types?.length ? { types: input.types } : {}),
             }),
         })).json());
@@ -443,13 +470,77 @@ function objectModifiedAt(value) {
     return parsed < 100_000_000_000 ? parsed * 1_000 : parsed;
 }
 function objectEditorParticipantId(value) {
-    const candidate = value.last_modified_by?.participant_id ??
-        value.last_modified_by?.id ??
-        value.updated_by?.participant_id ??
-        value.updated_by?.id ??
-        value.editor?.participant_id ??
-        value.editor?.id;
-    return typeof candidate === "string" ? candidate : undefined;
+    const property = Array.isArray(value.properties)
+        ? value.properties.find((candidate) => candidate &&
+            typeof candidate === "object" &&
+            candidate.key === "last_modified_by")
+        : undefined;
+    if (!property || !Array.isArray(property.objects) || property.objects.length !== 1)
+        return undefined;
+    return boundedName(property.objects[0], 512);
+}
+function invalidWorkflowSummary(id, summary, observationError) {
+    return {
+        id,
+        name: boundedName(summary.name ?? id, 256) ?? "Workflow",
+        typeKey: objectTypeKey(summary) ?? "unverified",
+        modifiedAt: objectModifiedAt(summary) ?? 0,
+        archived: summary.archived === true || summary.is_archived === true,
+        observationError,
+    };
+}
+function boundedName(value, maximum) {
+    if (typeof value !== "string")
+        return undefined;
+    const normalized = value.trim();
+    return normalized ? [...normalized].slice(0, maximum).join("") : undefined;
+}
+async function mapConcurrent(items, concurrency, map) {
+    const result = new Array(items.length);
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+        for (;;) {
+            const index = cursor++;
+            if (index >= items.length)
+                return;
+            result[index] = await map(items[index]);
+        }
+    }));
+    return result;
+}
+async function readBoundedJson(response, maximumBytes) {
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maximumBytes) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error("Anytype object response is too large");
+    }
+    if (!response.body)
+        return {};
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done)
+                break;
+            total += value.byteLength;
+            if (total > maximumBytes)
+                throw new Error("Anytype object response is too large");
+            chunks.push(value);
+        }
+    }
+    finally {
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(bytes));
 }
 function retryAfterMs(value) {
     if (!value)
