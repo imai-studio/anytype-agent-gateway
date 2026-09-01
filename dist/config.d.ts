@@ -380,6 +380,7 @@ export declare const configSchema: z.ZodObject<{
         }>>;
         limits: z.ZodDefault<z.ZodObject<{
             maximumConcurrentRuns: z.ZodDefault<z.ZodNumber>;
+            maximumRunsPerHour: z.ZodDefault<z.ZodNumber>;
             maximumStepsPerRun: z.ZodDefault<z.ZodNumber>;
             maximumEffectsPerRun: z.ZodDefault<z.ZodNumber>;
             maximumRunSeconds: z.ZodDefault<z.ZodNumber>;

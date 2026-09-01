@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
     z.string(),
     z.number().finite(),
@@ -30,7 +30,7 @@ export const workflowCapabilitySchema = z.enum([
 
 export type WorkflowCapability = z.infer<typeof workflowCapabilitySchema>;
 
-export const WORKFLOW_POLICY_VERSION = 1;
+export const WORKFLOW_POLICY_VERSION = 2;
 
 export const workflowStepKindSchema = z.enum([
   "agent",
@@ -96,7 +96,7 @@ const anytypeWriteConfigSchema = z
   .object({
     spaceId: z.string().min(1).optional(),
     objectId: z.string().min(1).optional(),
-    operation: z.enum(["create", "update", "archive", "delete"]).default("update"),
+    operation: z.enum(["create", "update", "archive"]).default("update"),
     bulk: z.boolean().default(false),
     values: jsonObjectSchema.default({}),
   })
@@ -118,7 +118,7 @@ const anytypeMaterializeConfigSchema = z
   })
   .strict();
 const externalReferenceConfig = {
-  connectionRef: z.string().min(1).optional(),
+  connectionRef: z.string().min(1),
   secretRefs: z.array(z.string().min(1)).default([]),
 };
 
@@ -168,7 +168,12 @@ const workflowStepSchema = z.discriminatedUnion("kind", [
     z
       .object({
         ...externalReferenceConfig,
-        url: z.string().url().optional(),
+        path: z
+          .string()
+          .trim()
+          .regex(/^\/(?!\/)/)
+          .max(2_000)
+          .optional(),
         method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).default("GET"),
       })
       .strict(),
@@ -179,7 +184,15 @@ const workflowStepSchema = z.discriminatedUnion("kind", [
     z
       .object({
         ...externalReferenceConfig,
-        destination: z.string().min(1).optional(),
+        destination: z
+          .string()
+          .trim()
+          .min(1)
+          .max(1_024)
+          .refine((value) => !/^[a-z][a-z0-9+.-]*:\/\//i.test(value), {
+            message: "destination must be a connection-local reference, not a URL",
+          })
+          .optional(),
         message: z.string().max(100_000).optional(),
       })
       .strict(),
@@ -307,7 +320,7 @@ export const workflowDefinitionSchema = z.preprocess((value, context) => {
   return value;
 }, workflowDefinitionObjectSchema);
 
-function unsafeObjectKey(value: unknown, seen = new WeakSet<object>()): string | undefined {
+export function unsafeObjectKey(value: unknown, seen = new WeakSet<object>()): string | undefined {
   if (!value || typeof value !== "object" || seen.has(value)) return undefined;
   seen.add(value);
   if (Array.isArray(value)) {
@@ -379,6 +392,14 @@ export function workflowVersionHash(workflow: WorkflowDefinition): string {
   const digest = createHash("sha256")
     .update("knot.workflow.version.v1\0")
     .update(canonicalWorkflowDefinition(workflow))
+    .digest("hex");
+  return `sha256:${digest}`;
+}
+
+export function workflowSourceDigest(source: string): string {
+  const digest = createHash("sha256")
+    .update("knot.workflow.source.v1\0")
+    .update(source)
     .digest("hex");
   return `sha256:${digest}`;
 }

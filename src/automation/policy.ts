@@ -29,12 +29,12 @@ const t2Capabilities = new Set<WorkflowCapability>([
   "anytype.bulk",
   "anytype.cross-space",
   "http.request",
+  "notify",
 ]);
 const t1Capabilities = new Set<WorkflowCapability>([
   "agent.invoke",
   "anytype.materialize",
   "anytype.write",
-  "notify",
 ]);
 
 export interface WorkflowPolicyEvaluation {
@@ -55,6 +55,7 @@ export const workflowAuthorityFields = {
   limits: z
     .object({
       maximumConcurrentRuns: z.number().int().min(1).max(100).default(4),
+      maximumRunsPerHour: z.number().int().min(1).max(10_000).default(60),
       maximumStepsPerRun: z.number().int().min(1).max(1_000).default(100),
       maximumEffectsPerRun: z.number().int().min(0).max(1_000).default(20),
       maximumRunSeconds: z.number().int().min(1).max(604_800).default(3_600),
@@ -63,6 +64,7 @@ export const workflowAuthorityFields = {
     .strict()
     .default({
       maximumConcurrentRuns: 4,
+      maximumRunsPerHour: 60,
       maximumStepsPerRun: 100,
       maximumEffectsPerRun: 20,
       maximumRunSeconds: 3_600,
@@ -78,13 +80,26 @@ export interface WorkflowPolicyContext {
 }
 
 export interface WorkflowAuthorityContext extends WorkflowPolicyContext {
-  authorId?: string;
+  editor?: {
+    principalId: string;
+    provenance: "anytype-native" | "authenticated-chat" | "operator-cli";
+  };
+}
+
+export interface WorkflowEffectiveLimits {
+  maximumConcurrentRuns: number;
+  maximumRunsPerHour: number;
+  maximumStepsPerRun: number;
+  maximumEffectsPerRun: number;
+  maximumRunSeconds: number;
+  maximumCausalDepth: number;
 }
 
 export interface WorkflowAuthorityEvaluation extends WorkflowPolicyEvaluation {
   allowed: boolean;
   violations: string[];
   authorityHash: string;
+  effectiveLimits: WorkflowEffectiveLimits;
 }
 
 export function evaluateWorkflowPolicy(
@@ -124,8 +139,7 @@ function deriveConfiguredRiskCapabilities(
     const config = step.config ?? {};
     if ("spaceId" in config && config.spaceId) configuredSpaces.add(config.spaceId);
     if ("bulk" in config && config.bulk) required.add("anytype.bulk");
-    if ("operation" in config && (config.operation === "archive" || config.operation === "delete"))
-      required.add("anytype.archive");
+    if ("operation" in config && config.operation === "archive") required.add("anytype.archive");
   }
   if (
     configuredSpaces.size > 1 ||
@@ -162,8 +176,9 @@ export function evaluateWorkflowAuthority(
   for (const spaceId of spaces)
     if (!authority.allowedSpaceIds.includes(spaceId))
       violations.push(`Space is not locally authorized: ${spaceId}`);
-  if (context.authorId && !authority.allowedAuthorIds.includes(context.authorId))
-    violations.push(`Author is not locally authorized: ${context.authorId}`);
+  if (!context.editor) violations.push("Workflow editor identity is not verified");
+  else if (!authority.allowedAuthorIds.includes(context.editor.principalId))
+    violations.push(`Editor is not locally authorized: ${context.editor.principalId}`);
   for (const step of workflow.spec.steps) {
     const config = step.config ?? {};
     if (step.kind === "agent" && "project" in config && config.project)
@@ -180,11 +195,31 @@ export function evaluateWorkflowAuthority(
       if (!authority.allowedSecretNames.includes(secretRef))
         violations.push(`Secret is not locally authorized: ${secretRef}`);
   }
+  const definitionLimits: WorkflowEffectiveLimits = {
+    maximumConcurrentRuns: workflow.spec.concurrency,
+    maximumRunsPerHour: workflow.spec.budget.maximumRunsPerHour,
+    maximumStepsPerRun: workflow.spec.budget.maximumStepsPerRun,
+    maximumEffectsPerRun: workflow.spec.budget.maximumEffectsPerRun,
+    maximumRunSeconds: workflow.spec.budget.maximumRunSeconds,
+    maximumCausalDepth: workflow.spec.behavior.maximumCausalDepth,
+  };
+  for (const key of Object.keys(definitionLimits) as Array<keyof WorkflowEffectiveLimits>)
+    if (definitionLimits[key] > authority.limits[key])
+      violations.push(
+        `Workflow ${key} ${definitionLimits[key]} exceeds local maximum ${authority.limits[key]}`,
+      );
+  const effectiveLimits = Object.fromEntries(
+    (Object.keys(definitionLimits) as Array<keyof WorkflowEffectiveLimits>).map((key) => [
+      key,
+      Math.min(definitionLimits[key], authority.limits[key]),
+    ]),
+  ) as unknown as WorkflowEffectiveLimits;
   return {
     ...policy,
     allowed: violations.length === 0,
     violations,
     authorityHash: workflowAuthorityHash(authority),
+    effectiveLimits,
   };
 }
 

@@ -129,7 +129,7 @@ describe("workflow foundation", () => {
     });
     expect(evaluateWorkflowPolicy(write)).toMatchObject({ riskTier: "T1", approvalRequired: true });
     const external = workflow({
-      steps: [{ id: "send", kind: "http", config: { url: "https://example.com" } }],
+      steps: [{ id: "send", kind: "http", config: { connectionRef: "example" } }],
       capabilities: ["http.request"],
     });
     expect(evaluateWorkflowPolicy(external).riskTier).toBe("T2");
@@ -176,10 +176,11 @@ describe("workflow foundation", () => {
       maximumRiskTier: "T1" as const,
       limits: {
         maximumConcurrentRuns: 2,
-        maximumStepsPerRun: 20,
-        maximumEffectsPerRun: 5,
-        maximumRunSeconds: 600,
-        maximumCausalDepth: 4,
+        maximumRunsPerHour: 60,
+        maximumStepsPerRun: 100,
+        maximumEffectsPerRun: 20,
+        maximumRunSeconds: 3_600,
+        maximumCausalDepth: 8,
       },
     };
     expect(
@@ -198,7 +199,7 @@ describe("workflow foundation", () => {
     expect(
       evaluateWorkflowAuthority(workflow(), authority, {
         sourceSpaceId: "space-1",
-        authorId: "operator",
+        editor: { principalId: "operator", provenance: "anytype-native" },
       }),
     ).toMatchObject({ allowed: true, violations: [] });
     const external = workflow({
@@ -214,23 +215,86 @@ describe("workflow foundation", () => {
     expect(
       evaluateWorkflowAuthority(external, authority, {
         sourceSpaceId: "space-2",
-        authorId: "intruder",
+        editor: { principalId: "intruder", provenance: "anytype-native" },
       }),
     ).toMatchObject({ allowed: false, riskTier: "T2" });
     expect(
       evaluateWorkflowAuthority(external, authority, {
         sourceSpaceId: "space-2",
-        authorId: "intruder",
+        editor: { principalId: "intruder", provenance: "anytype-native" },
       }).violations,
     ).toEqual(
       expect.arrayContaining([
         "Capability is not locally authorized: http.request",
         "Risk tier T2 exceeds local maximum T1",
         "Space is not locally authorized: space-2",
-        "Author is not locally authorized: intruder",
+        "Editor is not locally authorized: intruder",
         "Connection is not locally authorized: billing",
         "Secret is not locally authorized: billing-token",
       ]),
     );
+  });
+
+  it("rejects hard delete and raw external URLs", () => {
+    expect(() =>
+      workflow({
+        steps: [{ id: "remove", kind: "anytype.write", config: { operation: "delete" } }],
+      }),
+    ).toThrow();
+    expect(() =>
+      workflow({
+        steps: [{ id: "send", kind: "http", config: { url: "https://example.com" } }],
+      }),
+    ).toThrow();
+    expect(() =>
+      workflow({
+        steps: [
+          {
+            id: "notify",
+            kind: "notify",
+            config: { connectionRef: "chat", destination: "https://example.com/hook" },
+          },
+        ],
+      }),
+    ).toThrow("connection-local reference");
+  });
+
+  it("requires verified editors and enforces local budget caps", () => {
+    const authority = {
+      allowedAuthorIds: ["operator"],
+      allowedSpaceIds: ["space-1"],
+      allowedCapabilities: ["anytype.query" as const],
+      allowedConnections: [],
+      allowedSecretNames: [],
+      allowedProjects: [],
+      maximumRiskTier: "T0" as const,
+      limits: {
+        maximumConcurrentRuns: 1,
+        maximumRunsPerHour: 10,
+        maximumStepsPerRun: 20,
+        maximumEffectsPerRun: 5,
+        maximumRunSeconds: 600,
+        maximumCausalDepth: 4,
+      },
+    };
+    const noEditor = evaluateWorkflowAuthority(workflow(), authority, {
+      sourceSpaceId: "space-1",
+    });
+    expect(noEditor.violations).toContain("Workflow editor identity is not verified");
+    const bounded = evaluateWorkflowAuthority(workflow(), authority, {
+      sourceSpaceId: "space-1",
+      editor: { principalId: "operator", provenance: "anytype-native" },
+    });
+    expect(bounded.allowed).toBe(false);
+    expect(bounded.violations).toEqual(
+      expect.arrayContaining([
+        "Workflow maximumRunsPerHour 60 exceeds local maximum 10",
+        "Workflow maximumStepsPerRun 100 exceeds local maximum 20",
+      ]),
+    );
+    expect(bounded.effectiveLimits).toMatchObject({
+      maximumRunsPerHour: 10,
+      maximumStepsPerRun: 20,
+    });
   });
 });

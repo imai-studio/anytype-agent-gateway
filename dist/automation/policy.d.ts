@@ -32,6 +32,7 @@ export declare const workflowAuthorityFields: {
     }>>;
     limits: z.ZodDefault<z.ZodObject<{
         maximumConcurrentRuns: z.ZodDefault<z.ZodNumber>;
+        maximumRunsPerHour: z.ZodDefault<z.ZodNumber>;
         maximumStepsPerRun: z.ZodDefault<z.ZodNumber>;
         maximumEffectsPerRun: z.ZodDefault<z.ZodNumber>;
         maximumRunSeconds: z.ZodDefault<z.ZodNumber>;
@@ -63,6 +64,7 @@ export declare const workflowAuthoritySchema: z.ZodObject<{
     }>>;
     limits: z.ZodDefault<z.ZodObject<{
         maximumConcurrentRuns: z.ZodDefault<z.ZodNumber>;
+        maximumRunsPerHour: z.ZodDefault<z.ZodNumber>;
         maximumStepsPerRun: z.ZodDefault<z.ZodNumber>;
         maximumEffectsPerRun: z.ZodDefault<z.ZodNumber>;
         maximumRunSeconds: z.ZodDefault<z.ZodNumber>;
@@ -74,12 +76,24 @@ export interface WorkflowPolicyContext {
     sourceSpaceId?: string;
 }
 export interface WorkflowAuthorityContext extends WorkflowPolicyContext {
-    authorId?: string;
+    editor?: {
+        principalId: string;
+        provenance: "anytype-native" | "authenticated-chat" | "operator-cli";
+    };
+}
+export interface WorkflowEffectiveLimits {
+    maximumConcurrentRuns: number;
+    maximumRunsPerHour: number;
+    maximumStepsPerRun: number;
+    maximumEffectsPerRun: number;
+    maximumRunSeconds: number;
+    maximumCausalDepth: number;
 }
 export interface WorkflowAuthorityEvaluation extends WorkflowPolicyEvaluation {
     allowed: boolean;
     violations: string[];
     authorityHash: string;
+    effectiveLimits: WorkflowEffectiveLimits;
 }
 export declare function evaluateWorkflowPolicy(workflow: WorkflowDefinition, context?: WorkflowPolicyContext): WorkflowPolicyEvaluation;
 export declare function evaluateWorkflowAuthority(workflow: WorkflowDefinition, authority: WorkflowAuthority, context?: WorkflowAuthorityContext): WorkflowAuthorityEvaluation;

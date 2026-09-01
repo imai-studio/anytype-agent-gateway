@@ -9,6 +9,11 @@ promise.
 The repository contains the Phase 2 contracts and additive SQLite foundation. Workflow execution
 is still disabled. The next work should follow this order.
 
+The foundation rejects hard-delete and raw external URL steps, requires named local connections,
+checks verified editor identity, intersects definition budgets with local caps, and stores source
+digests instead of raw definition text. Normalized events use closed enums and bounded payloads.
+These checks prepare the observer and runner; they do not implement either loop.
+
 ### 1. Infrastructure specification
 
 The proposed process and recovery contract is in

@@ -1,5 +1,8 @@
 import type { WorkflowCapability } from "./workflow.js";
 import type { WorkflowRiskTier } from "./policy.js";
+export type { NormalizedEventRecord } from "./event.js";
+
+export type WorkflowEditorProvenance = "anytype-native" | "authenticated-chat" | "operator-cli";
 
 export interface WorkflowVersionRecord {
   workflowId: string;
@@ -11,11 +14,12 @@ export interface WorkflowVersionRecord {
   schemaVersion: number;
   canonicalDefinitionJson: string;
   canonicalApprovalJson: string;
-  sourceText: string;
+  sourceDigest: string;
   riskTier: WorkflowRiskTier;
   requiredCapabilities: WorkflowCapability[];
   sourceModifiedAt: number;
-  authorPrincipalDigest?: string;
+  editorPrincipalDigest?: string;
+  editorProvenance?: WorkflowEditorProvenance;
   createdAt: number;
 }
 
@@ -35,21 +39,4 @@ export interface WorkflowApprovalDecision {
   decidedAt: number;
   expiresAt?: number;
   supersedesDecisionId?: string;
-}
-
-export interface NormalizedEventRecord {
-  eventId: string;
-  dedupeKey: string;
-  kind: string;
-  source: string;
-  sourceEventId?: string;
-  spaceId: string;
-  objectId?: string;
-  observedAt: number;
-  payloadJson: string;
-  diffJson?: string;
-  causationRunId?: string;
-  causalDepth: number;
-  originEffectKey?: string;
-  recordedAt: number;
 }
