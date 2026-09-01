@@ -152,6 +152,8 @@ export interface RuntimeDriver {
         sessionKey: string;
         prompt: string;
         turn?: RuntimeTurn;
+        origin?: "conversation" | "workflow";
+        workspacePath?: string;
         modelId?: string | null;
         defaultModelId?: string;
     }, onEvent: (event: RuntimeEvent) => void): Promise<ActiveRuntime>;
@@ -204,7 +206,7 @@ export interface AnytypePort {
         replyTo?: string;
         marks?: TextMark[];
         attachments?: ChatAttachment[];
-    }): Promise<string>;
+    }, signal?: AbortSignal): Promise<string>;
     editMessage(spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[], attachments?: ChatAttachment[]): Promise<void>;
     deleteMessage(spaceId: string, chatId: string, messageId: string): Promise<void>;
     ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean, participantId?: string): Promise<void>;
@@ -229,7 +231,7 @@ export interface AnytypePort {
         id: string;
         name: string;
     }>>;
-    getObject(spaceId: string, objectId: string): Promise<{
+    getObject(spaceId: string, objectId: string, signal?: AbortSignal): Promise<{
         id: string;
         name?: string;
         markdown?: string;
@@ -244,14 +246,14 @@ export interface AnytypePort {
         types?: string[];
         offset?: number;
         limit?: number;
-    }): Promise<Record<string, unknown>[]>;
+    }, signal?: AbortSignal): Promise<Record<string, unknown>[]>;
     createObject?(spaceId: string, input: {
         type_key: string;
         name?: string;
         body?: string;
         properties?: Record<string, unknown>[];
         icon?: Record<string, unknown>;
-    }): Promise<Record<string, unknown>>;
+    }, signal?: AbortSignal): Promise<Record<string, unknown>>;
     listProperties?(spaceId: string): Promise<Record<string, unknown>[]>;
     listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]>;
     createPropertyTag(spaceId: string, propertyId: string, input: {
@@ -264,9 +266,9 @@ export interface AnytypePort {
         markdown?: string;
         properties?: Record<string, unknown>[];
         icon?: Record<string, unknown>;
-    }): Promise<Record<string, unknown>>;
-    archiveObject?(spaceId: string, objectId: string): Promise<Record<string, unknown>>;
-    addObjectsToList?(spaceId: string, listId: string, objectIds: string[]): Promise<void>;
+    }, signal?: AbortSignal): Promise<Record<string, unknown>>;
+    archiveObject?(spaceId: string, objectId: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
+    addObjectsToList?(spaceId: string, listId: string, objectIds: string[], signal?: AbortSignal): Promise<void>;
     listViews?(spaceId: string, listId: string): Promise<Record<string, unknown>[]>;
     listViewObjects?(spaceId: string, listId: string, viewId: string, page?: {
         offset: number;

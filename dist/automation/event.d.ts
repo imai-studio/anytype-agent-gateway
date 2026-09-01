@@ -17,11 +17,11 @@ export declare const normalizedEventSourceSchema: z.ZodEnum<{
     manual: "manual";
     schedule: "schedule";
     chat: "chat";
+    workflow: "workflow";
     poll: "poll";
     heart: "heart";
     external: "external";
     self: "self";
-    workflow: "workflow";
 }>;
 export declare const normalizedEventSchema: z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodObject<{
     eventId: z.ZodString;
@@ -43,11 +43,11 @@ export declare const normalizedEventSchema: z.ZodPipe<z.ZodTransform<unknown, un
         manual: "manual";
         schedule: "schedule";
         chat: "chat";
+        workflow: "workflow";
         poll: "poll";
         heart: "heart";
         external: "external";
         self: "self";
-        workflow: "workflow";
     }>;
     sourceEventId: z.ZodOptional<z.ZodString>;
     sourceRevision: z.ZodOptional<z.ZodObject<{

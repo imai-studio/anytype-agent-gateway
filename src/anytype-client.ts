@@ -249,6 +249,7 @@ export class AnytypeClient implements AnytypePort {
       marks?: TextMark[];
       attachments?: ChatAttachment[];
     },
+    signal?: AbortSignal,
   ): Promise<string> {
     const body: JsonRecord = { text: input.text, style: "paragraph" };
     if (input.replyTo) body.reply_to_message_id = input.replyTo;
@@ -258,6 +259,7 @@ export class AnytypeClient implements AnytypePort {
       await this.request(this.messagesPath(spaceId, chatId), {
         method: "POST",
         body: JSON.stringify(body),
+        ...(signal ? { signal } : {}),
       })
     ).json()) as { message_id?: string };
     if (!json.message_id) throw new Error("Anytype returned no message_id");
@@ -362,10 +364,15 @@ export class AnytypeClient implements AnytypePort {
     }
   }
 
-  async getObject(spaceId: string, objectId: string): Promise<JsonRecord & { id: string }> {
+  async getObject(
+    spaceId: string,
+    objectId: string,
+    signal?: AbortSignal,
+  ): Promise<JsonRecord & { id: string }> {
     const json = (await (
       await this.request(
         `/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`,
+        signal ? { signal } : {},
       )
     ).json()) as JsonRecord;
     const object = json.object ?? json;
@@ -515,14 +522,16 @@ export class AnytypeClient implements AnytypePort {
   async searchSpace(
     spaceId: string,
     input: { query?: string; types?: string[]; offset?: number; limit?: number },
+    signal?: AbortSignal,
   ): Promise<JsonRecord[]> {
-    return this.searchSpaceRequest(spaceId, input, false);
+    return this.searchSpaceRequest(spaceId, input, false, signal);
   }
 
   private async searchSpaceRequest(
     spaceId: string,
     input: { query?: string; types?: string[]; offset?: number; limit?: number },
     sortByLastModified: boolean,
+    signal?: AbortSignal,
   ): Promise<JsonRecord[]> {
     const query = new URLSearchParams({
       offset: String(input.offset ?? 0),
@@ -531,6 +540,7 @@ export class AnytypeClient implements AnytypePort {
     const json = (await (
       await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?${query}`, {
         method: "POST",
+        ...(signal ? { signal } : {}),
         body: JSON.stringify({
           query: input.query ?? "",
           ...(sortByLastModified
@@ -553,11 +563,13 @@ export class AnytypeClient implements AnytypePort {
       properties?: JsonRecord[];
       icon?: JsonRecord;
     },
+    signal?: AbortSignal,
   ): Promise<JsonRecord> {
     const json = (await (
       await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects`, {
         method: "POST",
         body: JSON.stringify(input),
+        ...(signal ? { signal } : {}),
       })
     ).json()) as JsonRecord;
     return json.object ?? json;
@@ -573,30 +585,44 @@ export class AnytypeClient implements AnytypePort {
       properties?: JsonRecord[];
       icon?: JsonRecord;
     },
+    signal?: AbortSignal,
   ): Promise<JsonRecord> {
     const json = (await (
       await this.request(
         `/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`,
-        { method: "PATCH", body: JSON.stringify(input) },
+        { method: "PATCH", body: JSON.stringify(input), ...(signal ? { signal } : {}) },
       )
     ).json()) as JsonRecord;
     return json.object ?? json;
   }
 
-  async archiveObject(spaceId: string, objectId: string): Promise<JsonRecord> {
+  async archiveObject(
+    spaceId: string,
+    objectId: string,
+    signal?: AbortSignal,
+  ): Promise<JsonRecord> {
     const json = (await (
       await this.request(
         `/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`,
-        { method: "DELETE" },
+        { method: "DELETE", ...(signal ? { signal } : {}) },
       )
     ).json()) as JsonRecord;
     return json.object ?? json;
   }
 
-  async addObjectsToList(spaceId: string, listId: string, objectIds: string[]): Promise<void> {
+  async addObjectsToList(
+    spaceId: string,
+    listId: string,
+    objectIds: string[],
+    signal?: AbortSignal,
+  ): Promise<void> {
     await this.request(
       `/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/objects`,
-      { method: "POST", body: JSON.stringify({ objects: objectIds }) },
+      {
+        method: "POST",
+        body: JSON.stringify({ objects: objectIds }),
+        ...(signal ? { signal } : {}),
+      },
     );
   }
 

@@ -175,7 +175,7 @@ export class AnytypeClient {
         const json = (await (await this.request(`${this.messagesPath(spaceId, chatId)}?${query}`)).json());
         return json.messages ?? [];
     }
-    async sendMessage(spaceId, chatId, input) {
+    async sendMessage(spaceId, chatId, input, signal) {
         const body = { text: input.text, style: "paragraph" };
         if (input.replyTo)
             body.reply_to_message_id = input.replyTo;
@@ -186,6 +186,7 @@ export class AnytypeClient {
         const json = (await (await this.request(this.messagesPath(spaceId, chatId), {
             method: "POST",
             body: JSON.stringify(body),
+            ...(signal ? { signal } : {}),
         })).json());
         if (!json.message_id)
             throw new Error("Anytype returned no message_id");
@@ -270,8 +271,8 @@ export class AnytypeClient {
             reader.releaseLock();
         }
     }
-    async getObject(spaceId, objectId) {
-        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`)).json());
+    async getObject(spaceId, objectId, signal) {
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, signal ? { signal } : {})).json());
         const object = json.object ?? json;
         return { ...object, id: object.id ?? objectId };
     }
@@ -368,16 +369,17 @@ export class AnytypeClient {
             }
         });
     }
-    async searchSpace(spaceId, input) {
-        return this.searchSpaceRequest(spaceId, input, false);
+    async searchSpace(spaceId, input, signal) {
+        return this.searchSpaceRequest(spaceId, input, false, signal);
     }
-    async searchSpaceRequest(spaceId, input, sortByLastModified) {
+    async searchSpaceRequest(spaceId, input, sortByLastModified, signal) {
         const query = new URLSearchParams({
             offset: String(input.offset ?? 0),
             limit: String(input.limit ?? 100),
         });
         const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/search?${query}`, {
             method: "POST",
+            ...(signal ? { signal } : {}),
             body: JSON.stringify({
                 query: input.query ?? "",
                 ...(sortByLastModified
@@ -388,23 +390,28 @@ export class AnytypeClient {
         })).json());
         return Array.isArray(json.data) ? json.data : [];
     }
-    async createObject(spaceId, input) {
+    async createObject(spaceId, input, signal) {
         const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects`, {
             method: "POST",
             body: JSON.stringify(input),
+            ...(signal ? { signal } : {}),
         })).json());
         return json.object ?? json;
     }
-    async updateObject(spaceId, objectId, input) {
-        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "PATCH", body: JSON.stringify(input) })).json());
+    async updateObject(spaceId, objectId, input, signal) {
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "PATCH", body: JSON.stringify(input), ...(signal ? { signal } : {}) })).json());
         return json.object ?? json;
     }
-    async archiveObject(spaceId, objectId) {
-        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "DELETE" })).json());
+    async archiveObject(spaceId, objectId, signal) {
+        const json = (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(objectId)}`, { method: "DELETE", ...(signal ? { signal } : {}) })).json());
         return json.object ?? json;
     }
-    async addObjectsToList(spaceId, listId, objectIds) {
-        await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/objects`, { method: "POST", body: JSON.stringify({ objects: objectIds }) });
+    async addObjectsToList(spaceId, listId, objectIds, signal) {
+        await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/objects`, {
+            method: "POST",
+            body: JSON.stringify({ objects: objectIds }),
+            ...(signal ? { signal } : {}),
+        });
     }
     async listViews(spaceId, listId) {
         return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/views`);

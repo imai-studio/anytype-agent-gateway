@@ -57,13 +57,13 @@ export declare class AnytypeClient implements AnytypePort {
         replyTo?: string;
         marks?: TextMark[];
         attachments?: ChatAttachment[];
-    }): Promise<string>;
+    }, signal?: AbortSignal): Promise<string>;
     editMessage(spaceId: string, chatId: string, messageId: string, text: string, marks?: TextMark[], attachments?: ChatAttachment[]): Promise<void>;
     deleteMessage(spaceId: string, chatId: string, messageId: string): Promise<void>;
     ensureReaction(spaceId: string, chatId: string, messageId: string, emoji: string, present: boolean, participantId?: string | undefined): Promise<void>;
     private ensureReactionNow;
     stream(spaceId: string, chatId: string, signal: AbortSignal): AsyncIterable<AnytypeEvent>;
-    getObject(spaceId: string, objectId: string): Promise<JsonRecord & {
+    getObject(spaceId: string, objectId: string, signal?: AbortSignal): Promise<JsonRecord & {
         id: string;
     }>;
     getWorkflowObject(spaceId: string, objectId: string): Promise<JsonRecord & {
@@ -90,7 +90,7 @@ export declare class AnytypeClient implements AnytypePort {
         types?: string[];
         offset?: number;
         limit?: number;
-    }): Promise<JsonRecord[]>;
+    }, signal?: AbortSignal): Promise<JsonRecord[]>;
     private searchSpaceRequest;
     createObject(spaceId: string, input: {
         type_key: string;
@@ -99,16 +99,16 @@ export declare class AnytypeClient implements AnytypePort {
         template_id?: string;
         properties?: JsonRecord[];
         icon?: JsonRecord;
-    }): Promise<JsonRecord>;
+    }, signal?: AbortSignal): Promise<JsonRecord>;
     updateObject(spaceId: string, objectId: string, input: {
         type_key?: string;
         name?: string;
         markdown?: string;
         properties?: JsonRecord[];
         icon?: JsonRecord;
-    }): Promise<JsonRecord>;
-    archiveObject(spaceId: string, objectId: string): Promise<JsonRecord>;
-    addObjectsToList(spaceId: string, listId: string, objectIds: string[]): Promise<void>;
+    }, signal?: AbortSignal): Promise<JsonRecord>;
+    archiveObject(spaceId: string, objectId: string, signal?: AbortSignal): Promise<JsonRecord>;
+    addObjectsToList(spaceId: string, listId: string, objectIds: string[], signal?: AbortSignal): Promise<void>;
     listViews(spaceId: string, listId: string): Promise<JsonRecord[]>;
     listViewObjects(spaceId: string, listId: string, viewId: string, page?: {
         offset: number;

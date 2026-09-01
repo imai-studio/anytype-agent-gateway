@@ -385,6 +385,7 @@ export declare const configSchema: z.ZodObject<{
         allowedConnections: z.ZodDefault<z.ZodArray<z.ZodString>>;
         allowedSecretNames: z.ZodDefault<z.ZodArray<z.ZodString>>;
         allowedProjects: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        allowedModels: z.ZodDefault<z.ZodArray<z.ZodString>>;
         publishConnections: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodObject<{
             cloudConfigFile: z.ZodString;
             allowedSiteIds: z.ZodArray<z.ZodUUID>;
@@ -393,6 +394,10 @@ export declare const configSchema: z.ZodObject<{
             allowRollback: z.ZodDefault<z.ZodBoolean>;
             allowDisable: z.ZodDefault<z.ZodBoolean>;
             allowUnpublish: z.ZodDefault<z.ZodBoolean>;
+        }, z.core.$strict>>>;
+        notificationConnections: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodObject<{
+            spaceId: z.ZodString;
+            chatId: z.ZodString;
         }, z.core.$strict>>>;
         maximumRiskTier: z.ZodDefault<z.ZodEnum<{
             T0: "T0";

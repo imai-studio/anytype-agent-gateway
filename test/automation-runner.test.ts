@@ -182,6 +182,80 @@ function delivery(
 }
 
 describe("durable workflow runner", () => {
+  it("dead-letters a delivery whose static effect graph exceeds the local effect budget", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig({
+      allowedCapabilities: ["anytype.write", "notify"],
+      allowedConnections: ["team"],
+      maximumRiskTier: "T2",
+    });
+    const queue = new WorkflowQueue(store);
+    const definition = workflow("Too many effects", {
+      steps: [
+        {
+          id: "write",
+          kind: "anytype.write",
+          dependsOn: [],
+          config: {
+            operation: "create",
+            bulk: false,
+            values: { typeKey: "page", properties: [] },
+          },
+        },
+        {
+          id: "notify",
+          kind: "notify",
+          dependsOn: [],
+          config: { connectionRef: "team", message: "done" },
+        },
+      ],
+      capabilities: ["anytype.write", "notify"],
+    });
+    const version = saveVersion(store, definition, "workflow-effect-budget");
+    const event = recordEvent(store, version.workflowId);
+    const authorityHash = workflowAuthorityHash(config);
+    store.recordWorkflowApproval({
+      decisionId: "approval-workflow-effect-budget",
+      workflowId: version.workflowId,
+      approvalHash: version.approvalHash,
+      decision: "approved",
+      mode: "manual",
+      authorityHash,
+      actorPrincipalDigest: version.editorPrincipalDigest!,
+      decidedAt: 300,
+    });
+    const created = queue.createDelivery({
+      deliveryId: "delivery-effect-budget",
+      workflowId: version.workflowId,
+      versionHash: version.versionHash,
+      eventId: event.eventId,
+      eventDedupeKey: event.dedupeKey,
+      approvalHash: version.approvalHash,
+      authorityHash,
+      actorPrincipalDigest: version.editorPrincipalDigest!,
+      actorProvenance: version.editorProvenance!,
+    });
+
+    expect(
+      queue.dispatchDelivery(
+        created.deliveryId,
+        definition,
+        {
+          maximumConcurrentRuns: 4,
+          maximumRunsPerHour: 60,
+          maximumEffectsPerRun: 1,
+        },
+        authorityHash,
+      ),
+    ).toBeUndefined();
+    expect(
+      store.db
+        .prepare("SELECT state FROM workflow_deliveries WHERE delivery_id=?")
+        .get(created.deliveryId),
+    ).toEqual({ state: "dead_letter" });
+    store.close();
+  });
+
   it("contains extension failures without stopping the workflow scheduler", async () => {
     const store = new Store(":memory:");
     const log = vi.fn();
@@ -271,7 +345,7 @@ describe("durable workflow runner", () => {
   it("ignores workflow-definition control-plane events", () => {
     const store = new Store(":memory:");
     const definition = workflow("Object workflow", {
-      triggers: [{ kind: "anytype.event", events: ["updated"], filter: {} }],
+      triggers: [{ kind: "anytype.event", spaceId: "space-1", events: ["updated"], filter: {} }],
     });
     saveVersion(store, definition);
     const runner = new WorkflowRunner(
@@ -302,7 +376,7 @@ describe("durable workflow runner", () => {
   it("does not let event payload spoof trusted control-plane classification", () => {
     const store = new Store(":memory:");
     const definition = workflow("Object workflow", {
-      triggers: [{ kind: "anytype.event", events: ["updated"], filter: {} }],
+      triggers: [{ kind: "anytype.event", spaceId: "space-1", events: ["updated"], filter: {} }],
     });
     saveVersion(store, definition);
     const runner = new WorkflowRunner(
@@ -423,7 +497,7 @@ describe("durable workflow runner", () => {
           id: "write",
           kind: "anytype.write",
           dependsOn: [],
-          config: { operation: "update", bulk: false, values: {} },
+          config: { operation: "update", bulk: false, values: { properties: [] } },
         },
       ],
       capabilities: ["anytype.write"],
@@ -486,7 +560,7 @@ describe("durable workflow runner", () => {
           id: "write",
           kind: "anytype.write",
           dependsOn: [],
-          config: { operation: "update", bulk: false, values: {} },
+          config: { operation: "update", bulk: false, values: { properties: [] } },
         },
       ],
       capabilities: ["anytype.write"],
@@ -1113,7 +1187,7 @@ describe("durable workflow runner", () => {
           id: "write",
           kind: "anytype.write",
           dependsOn: [],
-          config: { operation: "update", bulk: false, values: {} },
+          config: { operation: "update", bulk: false, values: { properties: [] } },
         },
       ],
       capabilities: ["anytype.write"],
@@ -1360,9 +1434,10 @@ describe("durable workflow runner", () => {
             kind: "anytype.write",
             config: {
               values: {
-                prompt: "ordinary object property",
-                message: "ordinary object property",
-                nested: { prompt: "also ordinary data" },
+                properties: [
+                  { key: "prompt", text: "ordinary object property" },
+                  { key: "message", text: "also ordinary data" },
+                ],
               },
             },
           },

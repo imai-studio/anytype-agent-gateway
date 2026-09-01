@@ -126,6 +126,8 @@ export interface RuntimeDriver {
       sessionKey: string;
       prompt: string;
       turn?: RuntimeTurn;
+      origin?: "conversation" | "workflow";
+      workspacePath?: string;
       modelId?: string | null;
       defaultModelId?: string;
     },
@@ -191,6 +193,7 @@ export interface AnytypePort {
       marks?: TextMark[];
       attachments?: ChatAttachment[];
     },
+    signal?: AbortSignal,
   ): Promise<string>;
   editMessage(
     spaceId: string,
@@ -221,6 +224,7 @@ export interface AnytypePort {
   getObject(
     spaceId: string,
     objectId: string,
+    signal?: AbortSignal,
   ): Promise<{ id: string; name?: string; markdown?: string } & Record<string, unknown>>;
   getWorkflowObject(
     spaceId: string,
@@ -229,6 +233,7 @@ export interface AnytypePort {
   searchSpace?(
     spaceId: string,
     input: { query?: string; types?: string[]; offset?: number; limit?: number },
+    signal?: AbortSignal,
   ): Promise<Record<string, unknown>[]>;
   createObject?(
     spaceId: string,
@@ -239,6 +244,7 @@ export interface AnytypePort {
       properties?: Record<string, unknown>[];
       icon?: Record<string, unknown>;
     },
+    signal?: AbortSignal,
   ): Promise<Record<string, unknown>>;
   listProperties?(spaceId: string): Promise<Record<string, unknown>[]>;
   listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]>;
@@ -257,9 +263,19 @@ export interface AnytypePort {
       properties?: Record<string, unknown>[];
       icon?: Record<string, unknown>;
     },
+    signal?: AbortSignal,
   ): Promise<Record<string, unknown>>;
-  archiveObject?(spaceId: string, objectId: string): Promise<Record<string, unknown>>;
-  addObjectsToList?(spaceId: string, listId: string, objectIds: string[]): Promise<void>;
+  archiveObject?(
+    spaceId: string,
+    objectId: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>>;
+  addObjectsToList?(
+    spaceId: string,
+    listId: string,
+    objectIds: string[],
+    signal?: AbortSignal,
+  ): Promise<void>;
   listViews?(spaceId: string, listId: string): Promise<Record<string, unknown>[]>;
   listViewObjects?(
     spaceId: string,

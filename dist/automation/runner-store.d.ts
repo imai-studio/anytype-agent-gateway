@@ -43,6 +43,7 @@ export declare class WorkflowQueue {
         maximumConcurrentRuns: number;
         maximumRunsPerHour: number;
         maximumStepsPerRun?: number;
+        maximumEffectsPerRun?: number;
     }, authorityHash: string, now?: number): WorkflowRunRecord | undefined;
     claimStep(workerId: string, allowedAuthorityHashes: ReadonlySet<string> | undefined, leaseMilliseconds: number, now?: number): WorkflowClaim | undefined;
     startStep(runId: string, stepId: string, fencingToken: string, now?: number): boolean;

@@ -189,6 +189,15 @@ export class WorkflowQueue {
                 this.store.db.exec("COMMIT");
                 return undefined;
             }
+            if (limits.maximumEffectsPerRun !== undefined &&
+                definition.spec.steps.filter((step) => isExternalEffectStep(step.kind)).length >
+                    limits.maximumEffectsPerRun) {
+                this.store.db
+                    .prepare("UPDATE workflow_deliveries SET state='dead_letter' WHERE delivery_id=?")
+                    .run(deliveryId);
+                this.store.db.exec("COMMIT");
+                return undefined;
+            }
             const active = this.store.db
                 .prepare(`SELECT COUNT(*) AS count FROM workflow_runs
            WHERE workflow_id=? AND state IN ('pending','running','waiting')
@@ -892,6 +901,17 @@ export class WorkflowQueue {
                 .prepare(`UPDATE workflow_runs SET state='cancelled',updated_at=?,completed_at=? WHERE run_id=?`)
                 .run(now, now, runId);
     }
+}
+function isExternalEffectStep(kind) {
+    return [
+        "agent",
+        "anytype.write",
+        "anytype.upsert",
+        "anytype.materialize",
+        "http",
+        "notify",
+        "publish.web",
+    ].includes(kind);
 }
 function mapEvent(row) {
     return normalizedEventSchema.parse({

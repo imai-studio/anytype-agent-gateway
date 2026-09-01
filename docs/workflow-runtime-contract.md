@@ -1,8 +1,8 @@
 # Workflow runtime foundation
 
 This document freezes the Phase 2 foundation contract. Knot has a read-only observer for workflow
-definition objects and a durable local runner core. It does not observe workflow target data or
-execute agent, Anytype, HTTP, notification, or other effect steps.
+definition objects, a durable local runner core, and a closed typed executor catalog. It does not
+yet observe workflow target data, expose a raw HTTP executor, or bootstrap authoring types.
 
 The companion [process topology](workflow-runtime-topology.md) defines ownership, leases, crash
 recovery, timers, cancellation, effects, shutdown, retention, and restore behavior for the code that
@@ -38,16 +38,19 @@ The runner stores deliveries, runs, steps, and attempts before it claims work. C
 ID, lease deadline, and random fencing token. A stale worker cannot complete a reclaimed step.
 Retry deadlines, cancellation requests, dead letters, the event cursor, and the fair-claim hint are
 durable. Dispatch and resume re-evaluate current local authority and the exact approval decision.
-The successful executors are an empty transform with no transform or input reference and the
-closed T2 `publish.web` step described below. Every other step fails closed at the executor
-boundary without an external effect. If a definition contains a prompt, notification text, or
+The successful executors are bounded Anytype read/query/write/upsert/materialize, declarative
+identity/select/project transforms, notifications through named local chat connections, one
+capability-narrowed Codex ACP agent invocation, and the closed T2 `publish.web` step described
+below. Unsupported steps, including generic HTTP, fail closed without an external effect. Every
+generic external effect receives a stable `(run, step)` receipt bound to its approved operation.
+Knot replays a completed receipt but dead-letters an interrupted or unknown result instead of
+repeating it. If a definition contains a prompt, notification text, typed Anytype text, or
 publication document text, the runner moves its first claimed step to `source_refetch_required`
 instead of reading that text from SQLite. The gateway's read-only resolver returns the exact
 definition source, native revision, and verified editor from Anytype. Knot then checks the source,
 version, approval, editor, policy, and current authority hashes before it can resume the step.
 
-The general Anytype-authored workflow catalog still has only an empty transform executor. The
-default-off Cloud command bridge is a separate typed input adapter that shares the runner tick,
+The default-off Cloud command bridge is a separate typed input adapter that shares the runner tick,
 durable effect receipts, and projection outbox; it does not make arbitrary workflow step kinds
 executable. See [`cloud-workflows.md`](cloud-workflows.md).
 
@@ -67,15 +70,20 @@ interpret undeclared nested options. Connection, secret, project, target-space, 
 references therefore remain visible to approval and authority policy. Step kinds are limited to the
 initial Phase 2 catalog plus `publish.web`. Step IDs are unique and their dependency graph must be
 valid and acyclic.
-Anytype write steps can create, update, or archive. They cannot hard-delete. HTTP and notification
-steps must name a local connection. HTTP steps may add a relative path, but a definition cannot set
-the scheme, host, port, or an absolute URL.
+Anytype write steps can create, update, or archive one object. Upsert accepts one exact type/name
+match and refuses ambiguity. Materialization adds at most 100 explicit or dependency-derived object
+IDs to one collection and requires the bulk capability when appropriate. They cannot hard-delete.
+Transforms are limited to identity, JSON Pointer selection, and a bounded named projection; they
+cannot contain code. Notifications must name an `automation.notificationConnections` entry. HTTP
+remains schema-fenced but has no installed executor; a definition cannot set a scheme, host, port,
+absolute URL, headers, or body.
 
 Knot hashes the parsed, default-materialized approval projection, never raw YAML. The projection
 includes an explicit policy-derivation version, so changing risk semantics invalidates old approval
 subjects. Canonical JSON
 sorts object keys and preserves semantic array order. Set-like capability, dependency, and pinned
-reference collections are normalized explicitly. Publication title, description, block text,
+reference collections are normalized explicitly. Agent prompts, notification messages, typed
+Anytype property text, and publication title, description, block text,
 code, alt text, and links are recursively replaced with field digests in stored definitions and
 approval projections. The domain-separated `knot.workflow.approval.v1`
 SHA-256 hash includes:
@@ -119,6 +127,13 @@ maximum tier and capability grants remain authoritative even when an old approva
 Before approval or execution, Knot evaluates the complete intersection of definition intent with
 the current verified editor, space, capability, project, connection, secret-name, tier, and budget
 grants. An approval decision cannot expand that intersection.
+
+Immediately before every generic external effect, the executor rechecks the exact approval hash,
+current local authority hash, live claim fence, workflow validity, cancellation state, and active
+version. Agent model and workspace choices must be explicit local grants. Workflow-origin Codex
+sessions deny interactive permissions, omit sibling project directories, and omit the Anytype MCP
+server. OpenClaw workflow-agent invocation fails closed until its adapter can enforce an equivalent
+workflow-only tool and filesystem boundary.
 
 Editor authority comes from an immutable native Anytype identity, an authenticated chat identity,
 or an authenticated operator command. A display name is not an editor identity. If Knot cannot

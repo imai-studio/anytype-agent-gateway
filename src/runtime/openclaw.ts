@@ -163,6 +163,8 @@ export class OpenClawDriver implements RuntimeDriver {
       sessionKey: string;
       prompt: string;
       turn?: RuntimeTurn;
+      origin?: "conversation" | "workflow";
+      workspacePath?: string;
       modelId?: string | null;
       defaultModelId?: string;
     },
@@ -170,7 +172,8 @@ export class OpenClawDriver implements RuntimeDriver {
   ): Promise<ActiveRuntime> {
     const requestedSessionKey = this.resolveSessionKey(input.sessionKey);
     let sessionKey = requestedSessionKey;
-    if (this.config.channelBridge.enabled) {
+    const useChannelBridge = this.config.channelBridge.enabled && input.origin !== "workflow";
+    if (useChannelBridge) {
       if (!input.turn) throw new Error("OpenClaw channel bridge requires Anytype turn context");
     }
     const client = await this.getClient();
@@ -210,7 +213,7 @@ export class OpenClawDriver implements RuntimeDriver {
       const acknowledgedSessionKey = openClawAcknowledgedSessionKey(acknowledgement);
       if (acknowledgedSessionKey) sessionKey = acknowledgedSessionKey;
       currentRunId = runId;
-      if (this.config.channelBridge.enabled) {
+      if (useChannelBridge) {
         this.markOwnedRun(runId);
         try {
           await this.markBridgeOwnedRun(runId);
@@ -270,7 +273,7 @@ export class OpenClawDriver implements RuntimeDriver {
         })
         .finally(() => {
           if (runId) this.eventCallbacks.delete(runId);
-          if (!this.config.channelBridge.enabled) this.endOwnedSessionLaunch(sessionKey);
+          if (!useChannelBridge) this.endOwnedSessionLaunch(sessionKey);
         });
     };
 

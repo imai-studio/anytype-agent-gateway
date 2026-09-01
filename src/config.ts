@@ -554,6 +554,13 @@ const baseConfigSchema = z.object({
           path: [value.authoring ? "authoring" : "dataProducts"],
           message: "automation authoring and data products are not available in this release",
         });
+      for (const [name, target] of Object.entries(value.notificationConnections))
+        if (!value.allowedSpaceIds.includes(target.spaceId))
+          context.addIssue({
+            code: "custom",
+            path: ["notificationConnections", name, "spaceId"],
+            message: "Notification target space must be locally authorized",
+          });
       if (value.polling.maximumIntervalSeconds < value.polling.minimumIntervalSeconds)
         context.addIssue({
           code: "custom",
@@ -579,8 +586,10 @@ const baseConfigSchema = z.object({
       allowedSpaceIds: [],
       allowedCapabilities: [],
       allowedConnections: [],
+      allowedModels: [],
       allowedSecretNames: [],
       allowedProjects: [],
+      notificationConnections: {},
       publishConnections: {},
       maximumRiskTier: "T0",
       heartHints: false,
@@ -726,12 +735,15 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
   if (config.runtime.defaultProject)
     config.runtime.defaultProject = expandHome(config.runtime.defaultProject);
   config.runtime.allowedProjects = config.runtime.allowedProjects.map(expandHome);
+  config.automation.allowedProjects = config.automation.allowedProjects.map(expandHome);
   for (const connection of Object.values(config.automation.publishConnections))
     connection.cloudConfigFile = expandHome(connection.cloudConfigFile);
   const stateDirectory = await canonicalPath(dirname(config.state.path));
-  const projectRoots = [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter(
-    (value): value is string => Boolean(value),
-  );
+  const projectRoots = [
+    config.runtime.defaultProject,
+    ...config.runtime.allowedProjects,
+    ...config.automation.allowedProjects,
+  ].filter((value): value is string => Boolean(value));
   const canonicalProjectRoots = await Promise.all(projectRoots.map(canonicalPath));
   if (canonicalProjectRoots.some((root) => pathContains(root, stateDirectory)))
     throw new Error("state.path must be outside agent-accessible project directories");

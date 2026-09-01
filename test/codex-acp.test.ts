@@ -574,6 +574,48 @@ describe("Codex ACP output and steering", () => {
     });
   });
 
+  it("removes sibling directories and Anytype MCP authority for workflow-origin sessions", async () => {
+    const directory = await temporaryDirectory();
+    const workspace = await temporaryDirectory();
+    const sibling = await temporaryDirectory();
+    const logPath = join(directory, "calls.jsonl");
+    const runtime = new CodexAcpDriver(
+      {
+        kind: "codex",
+        command: process.execPath,
+        args: [fixture],
+        allowedProjects: [workspace, sibling],
+        environment: { FAKE_ACP_LOG: logPath },
+        defaultProject: sibling,
+        timeoutSeconds: 2,
+        permissions: "allow-once",
+      },
+      undefined,
+      {
+        command: "aag",
+        args: ["mcp", "serve"],
+        actorDirectory: join(directory, "private-actors"),
+      },
+    );
+
+    const active = await runtime.start(
+      {
+        sessionKey: "workflow-session",
+        prompt: "perform the approved step",
+        origin: "workflow",
+        workspacePath: workspace,
+      },
+      () => undefined,
+    );
+    await active.result;
+
+    const calls = await log(logPath);
+    const session = calls.find((call) => call.method === "session/new")?.params as
+      { cwd?: string; mcpServers?: unknown[]; additionalDirectories?: string[] } | undefined;
+    expect(session).toMatchObject({ cwd: workspace, mcpServers: [] });
+    expect(session).not.toHaveProperty("additionalDirectories");
+  });
+
   it("fails actor authorization closed after accepting a steer from another sender", async () => {
     const directory = await temporaryDirectory();
     const workspace = await temporaryDirectory();

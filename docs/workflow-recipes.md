@@ -4,16 +4,19 @@ This guide shows how to configure common Knot workflows that are available in th
 Here, a workflow means a supported conversation pattern built from routes, wake rules, runtime
 sessions, and scoped tools.
 
-Knot has the Phase 2 durable runner core, but it does not yet include agent, Anytype, HTTP, or
-notification effect executors. Do not create `Knot Workflow` objects expecting those steps to
-perform work. The shipped queue can exercise an empty transform step for recovery testing. Its
-contracts and remaining implementation work are in
+Knot's Phase 2 runner supports the closed Anytype read/query/write/upsert/materialize, declarative
+transform, named notification, capability-narrowed Codex agent, and `publish.web` steps. Generic HTTP,
+JavaScript, shell, and filesystem steps are not available. Workflow type bootstrap and interactive
+Anytype approval/status controls are also not shipped, so operators must provision compatible
+workflow objects through a controlled setup and use the existing exact approval records. The
+contracts and remaining operator-surface work are in
 [`workflow-runtime-contract.md`](workflow-runtime-contract.md) and
 [`planned-work.md`](planned-work.md).
 
-Definitions may contain prompts and approval messages, but Knot stores only their digests. The
-current gateway has no source resolver. Such a run stops in `source_refetch_required` before any
-executor receives definition text.
+Definitions may contain prompts, notification messages, typed object text, and publication content,
+but Knot stores only their digests. The gateway refetches the exact Anytype source and re-verifies
+its revision, editor, version, approval, policy, and current authority before an executor can use
+that text.
 
 ## Before you start
 
@@ -27,6 +30,43 @@ Complete the [agent setup runbook](agent-setup.md) first. Each recipe assumes th
 
 The YAML blocks in this guide are fragments. Merge only the relevant block into the agent's full
 configuration. Keep the complete configuration outside the repository.
+
+## Grant typed workflow authority
+
+The workflow definition can only narrow these local grants. It cannot add a space, capability,
+connection, project, or model. A notification names a local connection instead of embedding a chat
+ID, and a Codex agent step can select only an explicitly allowed project and model. Workflow-agent
+steps are not available for OpenClaw until its adapter can enforce the same closed tool and
+filesystem boundary; normal OpenClaw chat and scheduled continuation remain available.
+
+```yaml
+automation:
+  enabled: true
+  observation: true
+  execution: true
+  allowedAuthorIds: ["<native-editor-participant-id>"]
+  allowedSpaceIds: ["<workflow-and-target-space-id>"]
+  allowedCapabilities:
+    - anytype.read
+    - anytype.query
+    - anytype.write
+    - anytype.materialize
+    - notify
+    - agent.invoke
+  allowedConnections: ["team-updates"]
+  notificationConnections:
+    team-updates:
+      spaceId: "<authorized-space-id>"
+      chatId: "<authorized-chat-id>"
+  allowedProjects: ["/absolute/agent/workspace"]
+  allowedModels: ["<runtime-model-id>"]
+  maximumRiskTier: T2
+```
+
+Grant `anytype.bulk`, `anytype.archive`, or `anytype.cross-space` only when the definition actually
+needs that behavior. T1 and T2 definitions need an exact approval record; T2 approval must be
+manual. The current release does not provide an interactive workflow approval command, so this
+configuration alone does not make a newly authored definition executable.
 
 Use stable Anytype participant or identity IDs in every allowlist. A display name is never proof of
 identity and must not grant access.

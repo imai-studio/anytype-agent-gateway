@@ -74,7 +74,7 @@ export class NoEffectWorkflowStepExecutor implements WorkflowStepExecutor {
   ): Promise<WorkflowStepExecution> {
     const step = definition.spec.steps.find((candidate) => candidate.id === claim.step.stepId);
     if (!step) return { ok: false, error: "Workflow step no longer exists", retryable: false };
-    if (step.kind === "transform" && !step.config?.transformRef && !step.config?.inputStepId)
+    if (step.kind === "transform" && !step.config)
       return { ok: true, result: { kind: "no-op", stepId: step.id } };
     return {
       ok: false,
