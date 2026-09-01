@@ -65,23 +65,34 @@ The topology document is a design contract. No workflow observer or runner has s
 Phase 2 does not include arbitrary JavaScript steps, two-way mirrors, ACL bypass, hosted
 multi-tenancy, or a second scheduler for Codex and OpenClaw.
 
-## Knot Publish
+## Knot Cloud
 
-Knot Publish is a proposed self-hosted Next.js service. It accepts authenticated document bundles
-from local Knot installations and serves versioned public pages. The complete proposal is in
-[`publish-architecture.md`](publish-architecture.md).
+Knot Cloud is a proposed imai-operated and self-hostable Next.js service. Its reference deployment
+runs on Vercel. Knot Publish accepts authenticated document snapshots from local Knot installations
+and serves removable, versioned public pages. A typed Anytype data API creates durable operations
+that paired local connectors may execute only after applying local policy. The complete proposal is
+in [`publish-architecture.md`](publish-architecture.md).
 
 The suggested delivery order is:
 
-1. Freeze the document schema, signing protocol, idempotency rules, and rollback semantics.
-2. Build a single-instance Next.js service with PostgreSQL and S3-compatible storage.
-3. Add publisher pairing, scoped keys, revocation, and the local Knot outbox client.
-4. Add an MCP publish tool and CLI connection commands.
-5. Add the T2 `publish.web` workflow step after the Phase 2 runner can execute external effects.
-6. Add custom domains, reader authentication, multi-instance caching, quotas, and media workers only
-   when deployments need them.
+1. Freeze the threat model, document schema, signing and protocol negotiation, idempotency,
+   destructive unpublish, typed Anytype operations, relay state machine, provenance, and audit
+   fixtures. Prove the Vercel reference topology without shipping a public API.
+2. Launch invitation-only email accounts, connector pairing, Knot Publish, private object storage,
+   isolated public-content domains, rollback, disable, destructive unpublish, quotas, and the local
+   Knot outbox client.
+3. Add scoped consumer keys and the asynchronous typed Anytype data API through paired connectors.
+   Keep arbitrary prompts, shell, filesystem, model-tool, and network execution out of the protocol.
+4. Add transactional events and channel workflows through the Phase 2 runner rather than a second
+   scheduler.
+5. Add an MCP publish tool and CLI connection commands in the release that implements them.
+6. Add the T2 `publish.web` workflow step after the Phase 2 runner can execute external effects.
+7. Add custom domains, authenticated readers, billing, media workers, and isolated hosted connectors
+   only after their individual security and operational gates pass.
 
-No Knot Publish package, command, server, protocol, or hosted endpoint exists yet.
+The Knot Cloud repository and hosted foundation exist. The local Knot release does not yet include a
+Cloud connector, publish command, Relay client, or remote Anytype data API client. Treat those
+workflows as unavailable until their release notes and setup guides ship.
 
 ## Gateway work not included in the current release
 
