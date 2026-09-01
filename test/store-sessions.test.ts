@@ -25,7 +25,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(14);
+    expect(store.schemaVersion()).toBe(15);
     expect(store.cursor("route")).toBe("order-7");
     expect(
       (
@@ -64,7 +64,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(14);
+    expect(store.schemaVersion()).toBe(15);
     expect(
       (
         store.db.prepare("PRAGMA table_info(conversation_models)").all() as Array<{ name: string }>
@@ -110,7 +110,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(14);
+    expect(store.schemaVersion()).toBe(15);
     expect(store.sessionWorkspace("chat:space:chat")).toBe("/projects/imai");
     expect(store.sessionWorkspaceSource("chat:space:chat")).toBe("explicit");
     expect(store.db.prepare("PRAGMA foreign_key_list(session_workspaces)").all()).not.toHaveLength(
@@ -218,12 +218,20 @@ describe("session persistence", () => {
       );
       CREATE INDEX idx_management_actor_capabilities_route
         ON management_actor_capabilities(route_id,expires_at);
+      CREATE TABLE workflow_deliveries (
+        delivery_id TEXT PRIMARY KEY
+      );
+      CREATE TABLE workflow_steps (
+        run_id TEXT NOT NULL,
+        step_id TEXT NOT NULL,
+        PRIMARY KEY(run_id,step_id)
+      );
       PRAGMA user_version=13;
     `);
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(14);
+    expect(store.schemaVersion()).toBe(15);
     const token = store.issueManagementCapability("chat:space:chat", "owner", "publish");
     expect(store.consumeManagementCapability(token, "chat:space:chat", "publish")).toBe("owner");
     store.close();

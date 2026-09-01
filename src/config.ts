@@ -7,6 +7,7 @@ import { parse as parseToml } from "smol-toml";
 import YAML from "yaml";
 import { z } from "zod";
 import { workflowAuthorityFields } from "./automation/policy.js";
+import { cloudScopeSchema } from "./cloud-contract.js";
 import { resolveHeartBinary, resolveStatePath } from "./compatibility.js";
 
 const wakeSchema = z
@@ -239,7 +240,7 @@ const runtimeSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-export const configSchema = z.object({
+const baseConfigSchema = z.object({
   version: z.literal(1),
   agent: z.object({
     name: z.string().trim().min(1),
@@ -591,9 +592,74 @@ export const configSchema = z.object({
         maximumCausalDepth: 8,
       },
     }),
+  cloudCommands: z
+    .object({
+      enabled: z.boolean().default(false),
+      cloudConfigFile: z.string().optional(),
+      pollIntervalSeconds: z.number().int().min(1).max(300).default(5),
+      leaseSeconds: z.number().int().min(15).max(300).default(60),
+      maximumLocalAttempts: z.number().int().min(1).max(10).default(3),
+      approval: z.enum(["none", "writes", "all"]).default("writes"),
+      allowedCreatorKinds: z
+        .array(
+          z.enum(["human-session", "connector-key", "consumer-api-key", "first-party-service"]),
+        )
+        .default(["human-session"]),
+      allowedSpaceIds: z.array(z.string().min(1)).default([]),
+      allowedActorDigests: z.array(z.string().regex(/^[a-f0-9]{64}$/u)).default([]),
+      allowedScopes: z.array(cloudScopeSchema).default([]),
+      projection: z
+        .object({
+          enabled: z.boolean().default(false),
+          spaceId: z.string().min(1).optional(),
+          chatId: z.string().min(1).optional(),
+        })
+        .superRefine((value, context) => {
+          if (value.enabled && (!value.spaceId || !value.chatId))
+            context.addIssue({
+              code: "custom",
+              message: "cloudCommands.projection requires spaceId and chatId when enabled",
+            });
+        })
+        .default({ enabled: false }),
+    })
+    .strict()
+    .default({
+      enabled: false,
+      pollIntervalSeconds: 5,
+      leaseSeconds: 60,
+      maximumLocalAttempts: 3,
+      approval: "writes",
+      allowedCreatorKinds: ["human-session"],
+      allowedSpaceIds: [],
+      allowedActorDigests: [],
+      allowedScopes: [],
+      projection: { enabled: false },
+    }),
   state: z
     .object({ path: z.string().default("~/.local/state/knot/state.sqlite") })
     .default({ path: "~/.local/state/knot/state.sqlite" }),
+});
+
+export const configSchema = baseConfigSchema.superRefine((value, context) => {
+  if (value.cloudCommands.enabled && (!value.automation.enabled || !value.automation.execution))
+    context.addIssue({
+      code: "custom",
+      path: ["cloudCommands", "enabled"],
+      message: "cloudCommands requires the durable automation runner",
+    });
+  if (value.cloudCommands.enabled && value.cloudCommands.allowedScopes.length === 0)
+    context.addIssue({
+      code: "custom",
+      path: ["cloudCommands", "allowedScopes"],
+      message: "cloudCommands.allowedScopes is required when cloud commands are enabled",
+    });
+  if (value.cloudCommands.enabled && value.cloudCommands.allowedActorDigests.length === 0)
+    context.addIssue({
+      code: "custom",
+      path: ["cloudCommands", "allowedActorDigests"],
+      message: "cloudCommands.allowedActorDigests is required when cloud commands are enabled",
+    });
 });
 
 export type AgentConfig = z.infer<typeof configSchema>;
@@ -649,6 +715,8 @@ export async function loadConfig(path: string): Promise<AgentConfig> {
   config.tools.anytype.allowedFileRoots = config.tools.anytype.allowedFileRoots.map(expandHome);
   if (config.tools.publish.cloudConfigFile)
     config.tools.publish.cloudConfigFile = expandHome(config.tools.publish.cloudConfigFile);
+  if (config.cloudCommands.cloudConfigFile)
+    config.cloudCommands.cloudConfigFile = expandHome(config.cloudCommands.cloudConfigFile);
   if (config.runtime.kind === "codex" && config.runtime.command === "codex-acp") {
     const bundled = resolve(
       dirname(fileURLToPath(import.meta.url)),

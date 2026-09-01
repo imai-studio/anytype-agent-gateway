@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalStoredWorkflowApproval, canonicalStoredWorkflowDefinition, canonicalWorkflowDefinition, redactStoredWorkflowJson, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -21,11 +21,14 @@ export class Store {
     constructor(path, reportMigration = (message) => console.warn(message)) {
         this.reportMigration = reportMigration;
         const existed = path !== ":memory:" && existsSync(path);
-        if (path !== ":memory:")
+        if (path !== ":memory:") {
             mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+            chmodSync(dirname(path), 0o700);
+        }
         this.db = new DatabaseSync(path);
         this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 5000;");
         this.migrate(path, existed);
+        this.secureStateFiles(path);
     }
     get migrationBackupPath() {
         return this._migrationBackupPath;
@@ -70,6 +73,8 @@ export class Store {
                 this.migrateToVersion13();
             if (current < 14)
                 this.migrateToVersion14();
+            if (current < 15)
+                this.migrateToVersion15();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -83,6 +88,15 @@ export class Store {
         if (current > 0 && current < SCHEMA_VERSION) {
             this.db.exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
         }
+        this.secureStateFiles(path);
+    }
+    secureStateFiles(path) {
+        if (path === ":memory:")
+            return;
+        chmodSync(dirname(path), 0o700);
+        for (const candidate of [path, `${path}-wal`, `${path}-shm`])
+            if (existsSync(candidate))
+                chmodSync(candidate, 0o600);
     }
     hasUserTables() {
         return Boolean(this.db
@@ -641,12 +655,26 @@ export class Store {
         ON workflow_deliveries(state,next_dispatch_at,created_at,delivery_id);
     `);
         const eventColumns = this.db.prepare("PRAGMA table_info(normalized_events)").all();
-        if (["kind", "source", "payload_json"].every((name) => eventColumns.some((c) => c.name === name)))
+        const definitionColumns = this.db
+            .prepare("PRAGMA table_info(workflow_definitions)")
+            .all();
+        if (["kind", "source", "space_id", "object_id", "source_modified_at", "source_fingerprint"].every((name) => eventColumns.some((column) => column.name === name)) &&
+            ["space_id", "object_id", "source_modified_at", "observed_source_digest"].every((name) => definitionColumns.some((column) => column.name === name))) {
             this.db.exec(`
+        DROP TRIGGER IF EXISTS normalized_events_no_update;
         UPDATE normalized_events SET source='workflow'
           WHERE source='poll' AND kind IN ('object.created','object.updated','object.archived')
-            AND json_extract(payload_json,'$.controlPlane')='workflow-definition';
+            AND EXISTS(
+              SELECT 1 FROM workflow_definitions d
+              WHERE d.space_id=normalized_events.space_id
+                AND d.object_id=normalized_events.object_id
+                AND d.source_modified_at=normalized_events.source_modified_at
+                AND d.observed_source_digest=normalized_events.source_fingerprint
+            );
+        CREATE TRIGGER normalized_events_no_update BEFORE UPDATE ON normalized_events
+          BEGIN SELECT RAISE(ABORT,'normalized events are append-only'); END;
       `);
+        }
     }
     migrateToVersion14() {
         const capabilityTableExists = Boolean(this.db
@@ -686,6 +714,169 @@ export class Store {
       CREATE INDEX idx_management_actor_capabilities_route
         ON management_actor_capabilities(route_id,expires_at);
     `);
+    }
+    migrateToVersion15() {
+        const legacyUnredactedWorkflowIds = new Set();
+        const versionRedactions = [];
+        const versionTable = this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_versions'")
+            .get();
+        const versionColumns = versionTable
+            ? this.db.prepare("PRAGMA table_info(workflow_versions)").all()
+            : [];
+        if (versionColumns.some((column) => column.name === "workflow_id") &&
+            versionColumns.some((column) => column.name === "canonical_definition_json")) {
+            const versions = this.db
+                .prepare("SELECT rowid,workflow_id,canonical_definition_json FROM workflow_versions")
+                .all();
+            for (const version of versions) {
+                const canonical = canonicalJson(JSON.parse(version.canonical_definition_json));
+                const redacted = redactStoredWorkflowJson(version.canonical_definition_json);
+                if (redacted !== canonical) {
+                    legacyUnredactedWorkflowIds.add(version.workflow_id);
+                    versionRedactions.push({ rowid: version.rowid, value: redacted });
+                }
+            }
+        }
+        const subjectTable = this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_approval_subjects'")
+            .get();
+        const subjectColumns = subjectTable
+            ? this.db.prepare("PRAGMA table_info(workflow_approval_subjects)").all()
+            : [];
+        const subjectRedactions = [];
+        if (subjectColumns.some((column) => column.name === "workflow_id") &&
+            subjectColumns.some((column) => column.name === "canonical_approval_json")) {
+            const subjects = this.db
+                .prepare("SELECT rowid,workflow_id,canonical_approval_json FROM workflow_approval_subjects")
+                .all();
+            for (const subject of subjects) {
+                const canonical = canonicalJson(JSON.parse(subject.canonical_approval_json));
+                const redacted = redactStoredWorkflowJson(subject.canonical_approval_json);
+                if (redacted !== canonical) {
+                    legacyUnredactedWorkflowIds.add(subject.workflow_id);
+                    subjectRedactions.push({ rowid: subject.rowid, value: redacted });
+                }
+            }
+        }
+        if (versionRedactions.length > 0 || subjectRedactions.length > 0) {
+            this.db.exec(`
+        DROP TRIGGER IF EXISTS workflow_versions_no_update;
+        DROP TRIGGER IF EXISTS workflow_approval_subjects_no_update;
+      `);
+            if (versionRedactions.length > 0) {
+                const updateVersion = this.db.prepare("UPDATE workflow_versions SET canonical_definition_json=? WHERE rowid=?");
+                for (const redaction of versionRedactions)
+                    updateVersion.run(redaction.value, redaction.rowid);
+            }
+            if (subjectRedactions.length > 0) {
+                const updateSubject = this.db.prepare("UPDATE workflow_approval_subjects SET canonical_approval_json=? WHERE rowid=?");
+                for (const redaction of subjectRedactions)
+                    updateSubject.run(redaction.value, redaction.rowid);
+            }
+            if (versionColumns.length > 0)
+                this.db.exec(`
+          CREATE TRIGGER workflow_versions_no_update BEFORE UPDATE ON workflow_versions
+            BEGIN SELECT RAISE(ABORT,'workflow versions are append-only'); END;
+        `);
+            if (subjectColumns.length > 0)
+                this.db.exec(`
+          CREATE TRIGGER workflow_approval_subjects_no_update BEFORE UPDATE ON workflow_approval_subjects
+            BEGIN SELECT RAISE(ABORT,'workflow approval subjects are append-only'); END;
+        `);
+        }
+        this.db.exec(`
+      ALTER TABLE workflow_deliveries
+        ADD COLUMN dispatch_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_attempt_count >= 0);
+      ALTER TABLE workflow_deliveries
+        ADD COLUMN approval_pending INTEGER NOT NULL DEFAULT 0 CHECK(approval_pending IN (0,1));
+      ALTER TABLE workflow_steps
+        ADD COLUMN source_refetch_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(source_refetch_attempt_count >= 0);
+
+      CREATE TABLE cloud_command_inbox (
+        command_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        envelope_json TEXT NOT NULL CHECK(json_valid(envelope_json)),
+        envelope_digest TEXT NOT NULL,
+        required_scope TEXT NOT NULL,
+        actor_principal_digest TEXT NOT NULL,
+        actor_digest_version INTEGER NOT NULL CHECK(actor_digest_version > 0),
+        actor_provenance TEXT NOT NULL CHECK(actor_provenance IN (
+          'authenticated-cloud-session','connector-key','consumer-api-key','first-party-service'
+        )),
+        attempt INTEGER NOT NULL CHECK(attempt > 0),
+        lease_token TEXT NOT NULL,
+        lease_token_digest TEXT NOT NULL,
+        lease_expires_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK(state IN (
+          'received','awaiting_approval','queued','running','terminal_pending',
+          'succeeded','rejected','failed','cancelled','dead_letter'
+        )),
+        local_attempts INTEGER NOT NULL DEFAULT 0 CHECK(local_attempts >= 0),
+        effect_key TEXT NOT NULL UNIQUE,
+        result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+        last_error_code TEXT,
+        last_error TEXT,
+        available_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER
+      );
+      CREATE INDEX cloud_command_inbox_ready
+        ON cloud_command_inbox(state,available_at,created_at,command_id);
+      CREATE INDEX cloud_command_inbox_lease
+        ON cloud_command_inbox(lease_expires_at) WHERE state IN ('received','awaiting_approval','queued','running','terminal_pending');
+
+      CREATE TABLE cloud_effect_receipts (
+        effect_key TEXT PRIMARY KEY,
+        command_id TEXT NOT NULL UNIQUE REFERENCES cloud_command_inbox(command_id) ON DELETE RESTRICT,
+        operation_digest TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared','running','succeeded','failed','outcome_unknown')),
+        fencing_token TEXT NOT NULL,
+        result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+        error_code TEXT,
+        error TEXT,
+        started_at INTEGER,
+        completed_at INTEGER,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE cloud_projection_outbox (
+        projection_id TEXT PRIMARY KEY,
+        command_id TEXT NOT NULL REFERENCES cloud_command_inbox(command_id) ON DELETE RESTRICT,
+        origin_effect_key TEXT NOT NULL UNIQUE,
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        state TEXT NOT NULL CHECK(state IN ('pending','in_flight','delivered','retrying','dead_letter')),
+        attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt >= 0),
+        available_at INTEGER NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at INTEGER,
+        target_message_id TEXT,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        delivered_at INTEGER
+      );
+      CREATE INDEX cloud_projection_outbox_ready
+        ON cloud_projection_outbox(state,available_at,created_at,projection_id);
+
+      CREATE TRIGGER cloud_command_inbox_no_delete BEFORE DELETE ON cloud_command_inbox
+        BEGIN SELECT RAISE(ABORT,'cloud command inbox is durable'); END;
+      CREATE TRIGGER cloud_effect_receipts_no_delete BEFORE DELETE ON cloud_effect_receipts
+        BEGIN SELECT RAISE(ABORT,'cloud effect receipts are durable'); END;
+      CREATE TRIGGER cloud_projection_outbox_no_delete BEFORE DELETE ON cloud_projection_outbox
+        BEGIN SELECT RAISE(ABORT,'cloud projection outbox is durable'); END;
+    `);
+        if (legacyUnredactedWorkflowIds.size > 0) {
+            const invalidate = this.db.prepare(`UPDATE workflow_definitions
+         SET state='invalid',active_version_hash=NULL,
+             validation_errors_json='["workflow_integrity_failed"]',updated_at=MAX(updated_at,?)
+         WHERE workflow_id=?`);
+            const invalidatedAt = Date.now();
+            for (const workflowId of legacyUnredactedWorkflowIds)
+                invalidate.run(invalidatedAt, workflowId);
+        }
     }
     isInitialized(routeId) {
         return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));

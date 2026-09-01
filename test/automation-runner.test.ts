@@ -182,6 +182,30 @@ function delivery(
 }
 
 describe("durable workflow runner", () => {
+  it("contains extension failures without stopping the workflow scheduler", async () => {
+    const store = new Store(":memory:");
+    const log = vi.fn();
+    const afterTick = vi.fn();
+    const runner = new WorkflowRunner(store, runnerConfig(), log, undefined, () => 500, undefined, [
+      {
+        beforeTick: async () => {
+          throw new Error("cloud unavailable");
+        },
+        afterTick,
+      },
+    ]);
+
+    await runner.tickOnce();
+
+    expect(runner.queue.cursor()?.initialized).toBe(true);
+    expect(afterTick).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith("workflow_runner_extension_failed", {
+      phase: "before_tick",
+      error: "cloud unavailable",
+    });
+    store.close();
+  });
+
   it("baselines existing events the first time execution is enabled", async () => {
     const store = new Store(":memory:");
     const version = saveVersion(store, workflow());
@@ -417,7 +441,10 @@ describe("durable workflow runner", () => {
 
     expect(runner.matchEventsOnce(500)).toBe(1);
     expect(runner.dispatchOnce(500)).toBe(0);
-    expect(runner.queue.pendingDeliveries(10)).toHaveLength(1);
+    expect(runner.queue.pendingDeliveries(10, 1_500)[0]).toMatchObject({
+      approvalPending: true,
+      dispatchAttemptCount: 0,
+    });
     store.recordWorkflowApproval({
       decisionId: "manual-write-approval",
       workflowId: version.workflowId,
@@ -607,7 +634,7 @@ describe("durable workflow runner", () => {
     expect(runner.queue.steps(run.runId)[0]?.leaseExpiresAt).toBeGreaterThan(5_500);
     finish!({ ok: true, result: null });
     await pending;
-    expect(runner.queue.run(run.runId)?.state).toBe("succeeded");
+    await vi.waitFor(() => expect(runner.queue.run(run.runId)?.state).toBe("succeeded"));
     store.close();
   });
 
@@ -873,6 +900,207 @@ describe("durable workflow runner", () => {
     store.close();
   });
 
+  it("aborts an in-flight executor cooperatively after cancellation", async () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, workflow(), "workflow-live-cancel");
+    let started: (() => void) | undefined;
+    const began = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let aborted = false;
+    const executor: WorkflowStepExecutor = {
+      execute: async (_claim, _definition, signal) =>
+        new Promise((_resolve, reject) => {
+          started!();
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        }),
+    };
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      executor,
+      () => 500,
+    );
+
+    await runner.tickOnce();
+    await began;
+    queue.cancelRun(run.runId, workflowPrincipalDigest("operator"), "operator request", 550);
+    await runner.tickOnce();
+
+    await vi.waitFor(() => expect(queue.run(run.runId)?.state).toBe("cancelled"));
+    expect(aborted).toBe(true);
+    store.close();
+  });
+
+  it("bounds deferred deliveries instead of retrying permanent denial forever", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const definition = workflow();
+    const version = saveVersion(store, definition);
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      undefined,
+      () => 500,
+    );
+    runner.queue.initializeMatcher(250);
+    recordEvent(store, version.workflowId);
+    runner.matchEventsOnce(500);
+    const pending = runner.queue.pendingDeliveries(1, 500)[0]!;
+
+    expect(runner.queue.deferDelivery(pending.deliveryId, 600, 2)).toBe("deferred");
+    expect(runner.queue.pendingDeliveries(1, 600)[0]?.dispatchAttemptCount).toBe(1);
+    expect(runner.queue.deferDelivery(pending.deliveryId, 700, 2)).toBe("dead_letter");
+    expect(
+      store.db
+        .prepare("SELECT state FROM workflow_deliveries WHERE delivery_id=?")
+        .get(pending.deliveryId),
+    ).toEqual({ state: "dead_letter" });
+    store.close();
+  });
+
+  it("does not spend the permanent denial budget on approval or capacity deferrals", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const definition = workflow();
+    const version = saveVersion(store, definition);
+    const queue = new WorkflowQueue(store);
+    const event = recordEvent(store, version.workflowId);
+    const pending = queue.createDelivery(
+      {
+        deliveryId: "delivery-transient-deferrals",
+        workflowId: version.workflowId,
+        versionHash: version.versionHash,
+        eventId: event.eventId,
+        eventDedupeKey: event.dedupeKey,
+        approvalHash: version.approvalHash,
+        authorityHash: workflowAuthorityHash(config),
+        actorPrincipalDigest: version.editorPrincipalDigest!,
+        actorProvenance: version.editorProvenance!,
+      },
+      500,
+    );
+
+    for (let index = 0; index < 100; index += 1) {
+      expect(queue.deferDeliveryForApproval(pending.deliveryId, 600 + index)).toBe(true);
+      expect(queue.deferDeliveryTransient(pending.deliveryId, 700 + index)).toBe(true);
+    }
+
+    expect(queue.pendingDeliveries(1, 1_000)[0]).toMatchObject({
+      state: "pending",
+      approvalPending: false,
+      dispatchAttemptCount: 0,
+    });
+    store.close();
+  });
+
+  it("keeps a concurrency-blocked delivery pending beyond the permanent denial limit", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const definition = workflow("Serial", { concurrency: 1 });
+    const version = saveVersion(store, definition, "workflow-serial");
+    const queue = new WorkflowQueue(store);
+    const authorityHash = approve(store, config, version);
+    const firstEvent = recordEvent(store, version.workflowId);
+    const first = queue.createDelivery(
+      {
+        deliveryId: "delivery-serial-first",
+        workflowId: version.workflowId,
+        versionHash: version.versionHash,
+        eventId: firstEvent.eventId,
+        eventDedupeKey: firstEvent.dedupeKey,
+        approvalHash: version.approvalHash,
+        authorityHash,
+        actorPrincipalDigest: version.editorPrincipalDigest!,
+        actorProvenance: version.editorProvenance!,
+      },
+      300,
+    );
+    expect(
+      queue.dispatchDelivery(
+        first.deliveryId,
+        definition,
+        { maximumConcurrentRuns: 1, maximumRunsPerHour: 60 },
+        authorityHash,
+        300,
+      ),
+    ).toBeDefined();
+    const secondEvent = recordEvent(store, version.workflowId, {
+      eventSuffix: "serial-second",
+      recordedAt: 301,
+    });
+    const second = queue.createDelivery(
+      {
+        deliveryId: "delivery-serial-second",
+        workflowId: version.workflowId,
+        versionHash: version.versionHash,
+        eventId: secondEvent.eventId,
+        eventDedupeKey: secondEvent.dedupeKey,
+        approvalHash: version.approvalHash,
+        authorityHash,
+        actorPrincipalDigest: version.editorPrincipalDigest!,
+        actorProvenance: version.editorProvenance!,
+      },
+      301,
+    );
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => undefined,
+      undefined,
+      () => 500,
+    );
+
+    for (let index = 0; index < 30; index += 1)
+      expect(runner.dispatchOnce(2_000 + index * 2_000)).toBe(0);
+
+    expect(queue.pendingDeliveries(1, 100_000)[0]).toMatchObject({
+      deliveryId: second.deliveryId,
+      state: "pending",
+      dispatchAttemptCount: 0,
+    });
+    store.close();
+  });
+
+  it("attributes automatic disabled-workflow cancellation to the runner principal", async () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, workflow(), "workflow-auto-cancel");
+    store.db
+      .prepare(
+        "UPDATE workflow_definitions SET state='invalid',active_version_hash=NULL WHERE workflow_id=?",
+      )
+      .run(run.workflowId);
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => undefined,
+      undefined,
+      () => 500,
+    );
+
+    await runner.tickOnce();
+
+    expect(queue.run(run.runId)).toMatchObject({
+      state: "cancelled",
+      cancelActorPrincipalDigest: workflowPrincipalDigest("system:workflow-runner"),
+      cancelReason: "Workflow version was superseded or archived",
+    });
+    store.close();
+  });
+
   it("pauses queued work when current local authority narrows", async () => {
     const original = runnerConfig({
       allowedCapabilities: ["anytype.write"],
@@ -1040,6 +1268,48 @@ describe("durable workflow runner", () => {
     store.close();
   });
 
+  it("bounds failed source refetch attempts and dead-letters the run", async () => {
+    const config = runnerConfig({
+      allowedCapabilities: ["agent.invoke"],
+      maximumRiskTier: "T1",
+    });
+    const store = new Store(":memory:");
+    const definition = workflow("Agent", {
+      steps: [
+        {
+          id: "agent",
+          kind: "agent",
+          dependsOn: [],
+          config: { prompt: "private operator prompt" },
+        },
+      ],
+      capabilities: ["agent.invoke"],
+    });
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, definition, "workflow-refetch-bounded");
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      undefined,
+      () => 500,
+    );
+    await runner.tickOnce();
+
+    expect(queue.deferSourceRefetch(run.runId, "agent", "unavailable", 1_000, 2, 600)).toBe(
+      "deferred",
+    );
+    expect(queue.steps(run.runId)[0]?.sourceRefetchAttemptCount).toBe(1);
+    expect(queue.deferSourceRefetch(run.runId, "agent", "still unavailable", 2_000, 2, 700)).toBe(
+      "dead_letter",
+    );
+    expect(queue.run(run.runId)).toMatchObject({
+      state: "dead_letter",
+      error: "still unavailable",
+    });
+    store.close();
+  });
+
   it("does not let source-refetch parked runs consume workflow concurrency", async () => {
     const config = runnerConfig({
       allowedCapabilities: ["agent.invoke"],
@@ -1071,7 +1341,7 @@ describe("durable workflow runner", () => {
     store.close();
   });
 
-  it("accepts non-string prompt keys and prompt-named metadata labels without false tamper", async () => {
+  it("parks nested prompt and message text until the complete source is reverified", async () => {
     const config = runnerConfig({
       allowedCapabilities: ["anytype.write"],
       maximumRiskTier: "T1",
@@ -1117,12 +1387,14 @@ describe("durable workflow runner", () => {
 
     await runner.tickOnce();
 
-    expect(queue.run(run.runId)?.state).toBe("succeeded");
-    const stored = store.workflowVersion(run.workflowId, run.versionHash)!;
-    expect(JSON.parse(stored.storedDefinitionJson).metadata.labels).toEqual({
-      message: "safe",
-      prompt: "classification",
+    expect(queue.run(run.runId)?.state).toBe("waiting");
+    expect(queue.steps(run.runId)[0]).toMatchObject({
+      state: "source_refetch_required",
     });
+    const stored = store.workflowVersion(run.workflowId, run.versionHash)!;
+    expect(stored.storedDefinitionJson).not.toContain("classification");
+    expect(stored.storedDefinitionJson).not.toContain("ordinary object property");
+    expect(stored.storedDefinitionJson).not.toContain("also ordinary data");
     store.close();
   });
 

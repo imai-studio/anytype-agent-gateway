@@ -24,6 +24,11 @@ export interface WorkflowSourceSnapshot {
 export interface WorkflowSourceResolver {
     refetch(version: WorkflowVersionRecord, signal: AbortSignal): Promise<WorkflowSourceSnapshot | undefined>;
 }
+export interface WorkflowRunnerExtension {
+    beforeTick?(): Promise<void>;
+    afterTick?(): Promise<void>;
+    stop?(): Promise<void>;
+}
 export declare class NoEffectWorkflowStepExecutor implements WorkflowStepExecutor {
     execute(claim: WorkflowClaim, definition: WorkflowDefinition, _signal: AbortSignal): Promise<WorkflowStepExecution>;
 }
@@ -34,14 +39,20 @@ export declare class WorkflowRunner {
     private readonly executor;
     private readonly now;
     private readonly sourceResolver?;
+    private readonly extensions;
     readonly queue: WorkflowQueue;
     private readonly workerIds;
+    private readonly inFlight;
     private lastReauthorizedRunId?;
-    constructor(store: Store, config: RunnerConfig, log: (event: string, fields?: Record<string, unknown>) => void, executor?: WorkflowStepExecutor, now?: () => number, sourceResolver?: WorkflowSourceResolver | undefined);
+    constructor(store: Store, config: RunnerConfig, log: (event: string, fields?: Record<string, unknown>) => void, executor?: WorkflowStepExecutor, now?: () => number, sourceResolver?: WorkflowSourceResolver | undefined, extensions?: WorkflowRunnerExtension[]);
     run(signal: AbortSignal): Promise<void>;
     tickOnce(signal?: AbortSignal): Promise<void>;
+    private reconcileInFlight;
     matchEventsOnce(now?: number): number;
     dispatchOnce(now?: number): number;
+    private deferPendingDelivery;
+    private deferApprovalPendingDelivery;
+    private deferTransientDelivery;
     private executeClaim;
     private startLeaseHeartbeat;
     private handleRejectedSettlement;
@@ -50,6 +61,7 @@ export declare class WorkflowRunner {
     private ensureAutomaticApproval;
     private retryFor;
     private resumeSourceRefetchSteps;
+    private deferSourceRefetch;
     private definitionForExecution;
 }
 export {};

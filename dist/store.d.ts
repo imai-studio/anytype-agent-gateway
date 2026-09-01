@@ -10,6 +10,7 @@ export declare class Store {
     get migrationBackupPath(): string | undefined;
     schemaVersion(): number;
     private migrate;
+    private secureStateFiles;
     private hasUserTables;
     private backupBeforeMigration;
     private migrateToVersion1;
@@ -26,6 +27,7 @@ export declare class Store {
     private migrateToVersion12;
     private migrateToVersion13;
     private migrateToVersion14;
+    private migrateToVersion15;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;

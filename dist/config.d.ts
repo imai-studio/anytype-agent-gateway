@@ -1,11 +1,11 @@
 import { z } from "zod";
 declare const wakeSchema: z.ZodObject<{
     humans: z.ZodDefault<z.ZodEnum<{
+        disabled: "disabled";
         mention: "mention";
         "mention-or-reply": "mention-or-reply";
         "every-message": "every-message";
         prefix: "prefix";
-        disabled: "disabled";
     }>>;
     agents: z.ZodDefault<z.ZodEnum<{
         never: "never";
@@ -42,11 +42,11 @@ export declare const configSchema: z.ZodObject<{
         discoveryIntervalSeconds: z.ZodDefault<z.ZodNumber>;
         wake: z.ZodOptional<z.ZodObject<{
             humans: z.ZodDefault<z.ZodEnum<{
+                disabled: "disabled";
                 mention: "mention";
                 "mention-or-reply": "mention-or-reply";
                 "every-message": "every-message";
                 prefix: "prefix";
-                disabled: "disabled";
             }>>;
             agents: z.ZodDefault<z.ZodEnum<{
                 never: "never";
@@ -58,7 +58,7 @@ export declare const configSchema: z.ZodObject<{
         }, z.core.$strip>>;
     }, z.core.$strip>, z.ZodTransform<{
         wake: {
-            humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";
+            humans: "disabled" | "mention" | "mention-or-reply" | "every-message" | "prefix";
             agents: "never" | "every-message" | "direct-mention";
             allowedUsers: string[];
             prefix?: string | undefined;
@@ -75,7 +75,7 @@ export declare const configSchema: z.ZodObject<{
         createMissing: boolean;
         discoveryIntervalSeconds: number;
         wake?: {
-            humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";
+            humans: "disabled" | "mention" | "mention-or-reply" | "every-message" | "prefix";
             agents: "never" | "every-message" | "direct-mention";
             allowedUsers: string[];
             prefix?: string | undefined;
@@ -91,11 +91,11 @@ export declare const configSchema: z.ZodObject<{
             name: z.ZodOptional<z.ZodString>;
             wake: z.ZodObject<{
                 humans: z.ZodDefault<z.ZodEnum<{
+                    disabled: "disabled";
                     mention: "mention";
                     "mention-or-reply": "mention-or-reply";
                     "every-message": "every-message";
                     prefix: "prefix";
-                    disabled: "disabled";
                 }>>;
                 agents: z.ZodDefault<z.ZodEnum<{
                     never: "never";
@@ -114,11 +114,11 @@ export declare const configSchema: z.ZodObject<{
             id: z.ZodString;
             wake: z.ZodObject<{
                 humans: z.ZodDefault<z.ZodEnum<{
+                    disabled: "disabled";
                     mention: "mention";
                     "mention-or-reply": "mention-or-reply";
                     "every-message": "every-message";
                     prefix: "prefix";
-                    disabled: "disabled";
                 }>>;
                 agents: z.ZodDefault<z.ZodEnum<{
                     never: "never";
@@ -135,11 +135,11 @@ export declare const configSchema: z.ZodObject<{
             discoveryIntervalSeconds: z.ZodDefault<z.ZodNumber>;
             wake: z.ZodOptional<z.ZodObject<{
                 humans: z.ZodDefault<z.ZodEnum<{
+                    disabled: "disabled";
                     mention: "mention";
                     "mention-or-reply": "mention-or-reply";
                     "every-message": "every-message";
                     prefix: "prefix";
-                    disabled: "disabled";
                 }>>;
                 agents: z.ZodDefault<z.ZodEnum<{
                     never: "never";
@@ -151,7 +151,7 @@ export declare const configSchema: z.ZodObject<{
             }, z.core.$strip>>;
         }, z.core.$strip>, z.ZodTransform<{
             wake: {
-                humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";
+                humans: "disabled" | "mention" | "mention-or-reply" | "every-message" | "prefix";
                 agents: "never" | "every-message" | "direct-mention";
                 allowedUsers: string[];
                 prefix?: string | undefined;
@@ -168,7 +168,7 @@ export declare const configSchema: z.ZodObject<{
             autoEnroll: boolean;
             discoveryIntervalSeconds: number;
             wake?: {
-                humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";
+                humans: "disabled" | "mention" | "mention-or-reply" | "every-message" | "prefix";
                 agents: "never" | "every-message" | "direct-mention";
                 allowedUsers: string[];
                 prefix?: string | undefined;
@@ -186,11 +186,11 @@ export declare const configSchema: z.ZodObject<{
             createMissing: z.ZodDefault<z.ZodBoolean>;
             wake: z.ZodOptional<z.ZodObject<{
                 humans: z.ZodDefault<z.ZodEnum<{
+                    disabled: "disabled";
                     mention: "mention";
                     "mention-or-reply": "mention-or-reply";
                     "every-message": "every-message";
                     prefix: "prefix";
-                    disabled: "disabled";
                 }>>;
                 agents: z.ZodDefault<z.ZodEnum<{
                     never: "never";
@@ -202,7 +202,7 @@ export declare const configSchema: z.ZodObject<{
             }, z.core.$strip>>;
         }, z.core.$strip>, z.ZodTransform<{
             wake: {
-                humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";
+                humans: "disabled" | "mention" | "mention-or-reply" | "every-message" | "prefix";
                 agents: "never" | "every-message" | "direct-mention";
                 allowedUsers: string[];
                 prefix?: string | undefined;
@@ -223,7 +223,7 @@ export declare const configSchema: z.ZodObject<{
             discoveryIntervalSeconds: number;
             createMissing: boolean;
             wake?: {
-                humans: "mention" | "mention-or-reply" | "every-message" | "prefix" | "disabled";
+                humans: "disabled" | "mention" | "mention-or-reply" | "every-message" | "prefix";
                 agents: "never" | "every-message" | "direct-mention";
                 allowedUsers: string[];
                 prefix?: string | undefined;
@@ -414,6 +414,44 @@ export declare const configSchema: z.ZodObject<{
             workerCount: z.ZodDefault<z.ZodNumber>;
             batchSize: z.ZodDefault<z.ZodNumber>;
         }, z.core.$strict>>;
+    }, z.core.$strict>>;
+    cloudCommands: z.ZodDefault<z.ZodObject<{
+        enabled: z.ZodDefault<z.ZodBoolean>;
+        cloudConfigFile: z.ZodOptional<z.ZodString>;
+        pollIntervalSeconds: z.ZodDefault<z.ZodNumber>;
+        leaseSeconds: z.ZodDefault<z.ZodNumber>;
+        maximumLocalAttempts: z.ZodDefault<z.ZodNumber>;
+        approval: z.ZodDefault<z.ZodEnum<{
+            all: "all";
+            none: "none";
+            writes: "writes";
+        }>>;
+        allowedCreatorKinds: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+            "human-session": "human-session";
+            "connector-key": "connector-key";
+            "consumer-api-key": "consumer-api-key";
+            "first-party-service": "first-party-service";
+        }>>>;
+        allowedSpaceIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        allowedActorDigests: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        allowedScopes: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+            "anytype.objects.read": "anytype.objects.read";
+            "anytype.objects.write": "anytype.objects.write";
+            "anytype.collections.read": "anytype.collections.read";
+            "anytype.collections.write": "anytype.collections.write";
+            "anytype.files.read": "anytype.files.read";
+            "anytype.files.write": "anytype.files.write";
+            "anytype.chats.read": "anytype.chats.read";
+            "anytype.chats.send": "anytype.chats.send";
+            "publications.read": "publications.read";
+            "publications.write": "publications.write";
+            "publications.unpublish": "publications.unpublish";
+        }>>>;
+        projection: z.ZodDefault<z.ZodObject<{
+            enabled: z.ZodDefault<z.ZodBoolean>;
+            spaceId: z.ZodOptional<z.ZodString>;
+            chatId: z.ZodOptional<z.ZodString>;
+        }, z.core.$strip>>;
     }, z.core.$strict>>;
     state: z.ZodDefault<z.ZodObject<{
         path: z.ZodDefault<z.ZodString>;

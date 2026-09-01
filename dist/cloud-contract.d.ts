@@ -58,8 +58,8 @@ export declare const pairingStatusSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
 }, z.core.$strict>, z.ZodObject<{
     protocolVersion: z.ZodLiteral<"1.0">;
     status: z.ZodEnum<{
-        expired: "expired";
         denied: "denied";
+        expired: "expired";
         consumed: "consumed";
     }>;
     pairingId: z.ZodString;
@@ -94,8 +94,8 @@ export declare const publicationBlockSchema: z.ZodDiscriminatedUnion<[z.ZodObjec
         marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
             code: "code";
             bold: "bold";
-            strikethrough: "strikethrough";
             italic: "italic";
+            strikethrough: "strikethrough";
             underline: "underline";
         }>>>;
         href: z.ZodOptional<z.ZodURL>;
@@ -107,8 +107,8 @@ export declare const publicationBlockSchema: z.ZodDiscriminatedUnion<[z.ZodObjec
         marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
             code: "code";
             bold: "bold";
-            strikethrough: "strikethrough";
             italic: "italic";
+            strikethrough: "strikethrough";
             underline: "underline";
         }>>>;
         href: z.ZodOptional<z.ZodURL>;
@@ -120,8 +120,8 @@ export declare const publicationBlockSchema: z.ZodDiscriminatedUnion<[z.ZodObjec
         marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
             code: "code";
             bold: "bold";
-            strikethrough: "strikethrough";
             italic: "italic";
+            strikethrough: "strikethrough";
             underline: "underline";
         }>>>;
         href: z.ZodOptional<z.ZodURL>;
@@ -138,8 +138,8 @@ export declare const publicationBlockSchema: z.ZodDiscriminatedUnion<[z.ZodObjec
         marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
             code: "code";
             bold: "bold";
-            strikethrough: "strikethrough";
             italic: "italic";
+            strikethrough: "strikethrough";
             underline: "underline";
         }>>>;
         href: z.ZodOptional<z.ZodURL>;
@@ -156,8 +156,8 @@ export declare const publicationBlockSchema: z.ZodDiscriminatedUnion<[z.ZodObjec
         marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
             code: "code";
             bold: "bold";
-            strikethrough: "strikethrough";
             italic: "italic";
+            strikethrough: "strikethrough";
             underline: "underline";
         }>>>;
         href: z.ZodOptional<z.ZodURL>;
@@ -169,8 +169,8 @@ export declare const publicationBlockSchema: z.ZodDiscriminatedUnion<[z.ZodObjec
         marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
             code: "code";
             bold: "bold";
-            strikethrough: "strikethrough";
             italic: "italic";
+            strikethrough: "strikethrough";
             underline: "underline";
         }>>>;
         href: z.ZodOptional<z.ZodURL>;
@@ -188,8 +188,8 @@ export declare const publicationDocumentSchema: z.ZodObject<{
             marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                 code: "code";
                 bold: "bold";
-                strikethrough: "strikethrough";
                 italic: "italic";
+                strikethrough: "strikethrough";
                 underline: "underline";
             }>>>;
             href: z.ZodOptional<z.ZodURL>;
@@ -201,8 +201,8 @@ export declare const publicationDocumentSchema: z.ZodObject<{
             marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                 code: "code";
                 bold: "bold";
-                strikethrough: "strikethrough";
                 italic: "italic";
+                strikethrough: "strikethrough";
                 underline: "underline";
             }>>>;
             href: z.ZodOptional<z.ZodURL>;
@@ -214,8 +214,8 @@ export declare const publicationDocumentSchema: z.ZodObject<{
             marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                 code: "code";
                 bold: "bold";
-                strikethrough: "strikethrough";
                 italic: "italic";
+                strikethrough: "strikethrough";
                 underline: "underline";
             }>>>;
             href: z.ZodOptional<z.ZodURL>;
@@ -232,8 +232,8 @@ export declare const publicationDocumentSchema: z.ZodObject<{
             marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                 code: "code";
                 bold: "bold";
-                strikethrough: "strikethrough";
                 italic: "italic";
+                strikethrough: "strikethrough";
                 underline: "underline";
             }>>>;
             href: z.ZodOptional<z.ZodURL>;
@@ -250,8 +250,8 @@ export declare const publicationDocumentSchema: z.ZodObject<{
             marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                 code: "code";
                 bold: "bold";
-                strikethrough: "strikethrough";
                 italic: "italic";
+                strikethrough: "strikethrough";
                 underline: "underline";
             }>>>;
             href: z.ZodOptional<z.ZodURL>;
@@ -263,8 +263,8 @@ export declare const publicationDocumentSchema: z.ZodObject<{
             marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                 code: "code";
                 bold: "bold";
-                strikethrough: "strikethrough";
                 italic: "italic";
+                strikethrough: "strikethrough";
                 underline: "underline";
             }>>>;
             href: z.ZodOptional<z.ZodURL>;
@@ -292,8 +292,8 @@ export declare const publicationMutationSchema: z.ZodObject<{
                 marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                     code: "code";
                     bold: "bold";
-                    strikethrough: "strikethrough";
                     italic: "italic";
+                    strikethrough: "strikethrough";
                     underline: "underline";
                 }>>>;
                 href: z.ZodOptional<z.ZodURL>;
@@ -305,8 +305,8 @@ export declare const publicationMutationSchema: z.ZodObject<{
                 marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                     code: "code";
                     bold: "bold";
-                    strikethrough: "strikethrough";
                     italic: "italic";
+                    strikethrough: "strikethrough";
                     underline: "underline";
                 }>>>;
                 href: z.ZodOptional<z.ZodURL>;
@@ -318,8 +318,8 @@ export declare const publicationMutationSchema: z.ZodObject<{
                 marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                     code: "code";
                     bold: "bold";
-                    strikethrough: "strikethrough";
                     italic: "italic";
+                    strikethrough: "strikethrough";
                     underline: "underline";
                 }>>>;
                 href: z.ZodOptional<z.ZodURL>;
@@ -336,8 +336,8 @@ export declare const publicationMutationSchema: z.ZodObject<{
                 marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                     code: "code";
                     bold: "bold";
-                    strikethrough: "strikethrough";
                     italic: "italic";
+                    strikethrough: "strikethrough";
                     underline: "underline";
                 }>>>;
                 href: z.ZodOptional<z.ZodURL>;
@@ -354,8 +354,8 @@ export declare const publicationMutationSchema: z.ZodObject<{
                 marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                     code: "code";
                     bold: "bold";
-                    strikethrough: "strikethrough";
                     italic: "italic";
+                    strikethrough: "strikethrough";
                     underline: "underline";
                 }>>>;
                 href: z.ZodOptional<z.ZodURL>;
@@ -367,8 +367,8 @@ export declare const publicationMutationSchema: z.ZodObject<{
                 marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                     code: "code";
                     bold: "bold";
-                    strikethrough: "strikethrough";
                     italic: "italic";
+                    strikethrough: "strikethrough";
                     underline: "underline";
                 }>>>;
                 href: z.ZodOptional<z.ZodURL>;
@@ -401,9 +401,9 @@ export declare const connectorPublicationStatusSchema: z.ZodObject<{
     siteId: z.ZodUUID;
     slug: z.ZodString;
     state: z.ZodEnum<{
-        disabled: "disabled";
         ready: "ready";
         draft: "draft";
+        disabled: "disabled";
         unpublished: "unpublished";
     }>;
     currentVersionId: z.ZodOptional<z.ZodUUID>;
@@ -490,6 +490,16 @@ export declare const commandEnvelopeSchema: z.ZodObject<{
         "consumer-api-key": "consumer-api-key";
         "first-party-service": "first-party-service";
     }>;
+    actor: z.ZodObject<{
+        principalDigest: z.ZodString;
+        digestVersion: z.ZodNumber;
+        provenance: z.ZodEnum<{
+            "connector-key": "connector-key";
+            "consumer-api-key": "consumer-api-key";
+            "first-party-service": "first-party-service";
+            "authenticated-cloud-session": "authenticated-cloud-session";
+        }>;
+    }, z.core.$strict>;
     createdAt: z.ZodNumber;
     notBefore: z.ZodNumber;
     expiresAt: z.ZodNumber;
@@ -603,6 +613,16 @@ export declare const commandClaimResponseSchema: z.ZodObject<{
             "consumer-api-key": "consumer-api-key";
             "first-party-service": "first-party-service";
         }>;
+        actor: z.ZodObject<{
+            principalDigest: z.ZodString;
+            digestVersion: z.ZodNumber;
+            provenance: z.ZodEnum<{
+                "connector-key": "connector-key";
+                "consumer-api-key": "consumer-api-key";
+                "first-party-service": "first-party-service";
+                "authenticated-cloud-session": "authenticated-cloud-session";
+            }>;
+        }, z.core.$strict>;
         createdAt: z.ZodNumber;
         notBefore: z.ZodNumber;
         expiresAt: z.ZodNumber;
@@ -875,13 +895,13 @@ export declare const commandResultReceiptSchema: z.ZodObject<{
         duplicate: "duplicate";
     }>;
     state: z.ZodEnum<{
-        failed: "failed";
         pending: "pending";
-        cancelled: "cancelled";
-        succeeded: "succeeded";
-        leased: "leased";
         expired: "expired";
+        leased: "leased";
+        succeeded: "succeeded";
         "rejected-by-local-policy": "rejected-by-local-policy";
+        failed: "failed";
+        cancelled: "cancelled";
         "dead-lettered": "dead-lettered";
     }>;
 }, z.core.$strict>;

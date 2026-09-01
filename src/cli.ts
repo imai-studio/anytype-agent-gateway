@@ -42,6 +42,7 @@ import {
   readPublicationDocument,
   retryPublicationOperation,
 } from "./cloud-publication.js";
+import { cloudCommandAction, cloudCommandList, cloudCommandShow } from "./cloud-command-cli.js";
 
 const program = new Command()
   .name(PRODUCT.current.executable)
@@ -215,7 +216,7 @@ program
         );
       if (config.automation.execution)
         console.log(
-          `ok: durable workflow runner (${config.automation.runner.workerCount} workers, ${config.automation.runner.leaseSeconds}s leases; effect executors disabled)`,
+          `ok: durable workflow runner (${config.automation.runner.workerCount} workers, ${config.automation.runner.leaseSeconds}s leases; cloud commands ${config.cloudCommands.enabled ? "enabled" : "disabled"})`,
         );
     }
     const runtime = makeRuntime(config, undefined, configPath);
@@ -470,6 +471,60 @@ cloudOperation
       ),
     );
   });
+
+const cloudCommands = cloud
+  .command("commands")
+  .description("Inspect and control durable cloud-to-local workflow commands");
+cloudCommands
+  .command("list")
+  .requiredOption("--agent-config <path>", "Knot agent configuration file")
+  .option("--limit <count>", "maximum records", "100")
+  .option("--json", "emit machine-readable records")
+  .action(async (options) => {
+    const limit = Number(options.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500)
+      throw new Error("--limit must be an integer from 1 to 500");
+    await cloudCommandList({
+      agentConfigFile: selectedConfigPath(options.agentConfig),
+      limit,
+      json: Boolean(options.json),
+    });
+  });
+cloudCommands
+  .command("show")
+  .argument("<command-id>")
+  .requiredOption("--agent-config <path>", "Knot agent configuration file")
+  .action(async (commandId, options) =>
+    cloudCommandShow({
+      agentConfigFile: selectedConfigPath(options.agentConfig),
+      commandId,
+    }),
+  );
+for (const action of ["approve", "cancel", "retry"] as const)
+  cloudCommands
+    .command(action)
+    .argument("<command-id>")
+    .requiredOption("--agent-config <path>", "Knot agent configuration file")
+    .action(async (commandId, options) =>
+      cloudCommandAction({
+        agentConfigFile: selectedConfigPath(options.agentConfig),
+        commandId,
+        action,
+      }),
+    );
+cloudCommands
+  .command("reject")
+  .argument("<command-id>")
+  .requiredOption("--agent-config <path>", "Knot agent configuration file")
+  .option("--reason <code>", "stable local rejection reason", "operator-rejected")
+  .action(async (commandId, options) =>
+    cloudCommandAction({
+      agentConfigFile: selectedConfigPath(options.agentConfig),
+      commandId,
+      action: "reject",
+      reasonCode: options.reason,
+    }),
+  );
 cloudOperation
   .command("retry")
   .argument("<operation-id>")

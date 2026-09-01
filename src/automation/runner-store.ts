@@ -16,7 +16,12 @@ const MAX_STORED_STEP_ERROR_CHARACTERS = 4_000;
 
 type WorkflowDeliveryInput = Omit<
   WorkflowDeliveryRecord,
-  "state" | "createdAt" | "nextDispatchAt" | "dispatchedAt"
+  | "state"
+  | "createdAt"
+  | "nextDispatchAt"
+  | "dispatchAttemptCount"
+  | "approvalPending"
+  | "dispatchedAt"
 >;
 
 export interface WorkflowRetryPolicy {
@@ -188,15 +193,60 @@ export class WorkflowQueue {
     ).map(mapDelivery);
   }
 
-  deferDelivery(deliveryId: string, availableAt: number): boolean {
+  deferDelivery(
+    deliveryId: string,
+    availableAt: number,
+    maximumAttempts: number,
+  ): "deferred" | "dead_letter" | undefined {
+    if (!Number.isSafeInteger(maximumAttempts) || maximumAttempts < 1)
+      throw new Error("maximumAttempts must be a positive safe integer");
+    const changed = this.store.db
+      .prepare(
+        `UPDATE workflow_deliveries
+         SET dispatch_attempt_count=dispatch_attempt_count+1,
+             approval_pending=0,
+             next_dispatch_at=?,
+             state=CASE
+               WHEN dispatch_attempt_count+1>=? THEN 'dead_letter'
+               ELSE 'pending'
+             END
+         WHERE delivery_id=? AND state='pending'`,
+      )
+      .run(availableAt, maximumAttempts, deliveryId);
+    if (Number(changed.changes) !== 1) return undefined;
+    return (
+      this.store.db
+        .prepare("SELECT state FROM workflow_deliveries WHERE delivery_id=?")
+        .get(deliveryId) as { state: "pending" | "dead_letter" }
+    ).state === "dead_letter"
+      ? "dead_letter"
+      : "deferred";
+  }
+
+  deferDeliveryForApproval(deliveryId: string, availableAt: number): boolean {
+    return this.deferDeliveryWithoutBudget(deliveryId, availableAt, true);
+  }
+
+  deferDeliveryTransient(deliveryId: string, availableAt: number): boolean {
+    return this.deferDeliveryWithoutBudget(deliveryId, availableAt, false);
+  }
+
+  private deferDeliveryWithoutBudget(
+    deliveryId: string,
+    availableAt: number,
+    approvalPending: boolean,
+  ): boolean {
+    if (!Number.isSafeInteger(availableAt) || availableAt < 0)
+      throw new Error("availableAt must be a non-negative safe integer");
     return (
       Number(
         this.store.db
           .prepare(
-            `UPDATE workflow_deliveries SET next_dispatch_at=?
+            `UPDATE workflow_deliveries
+             SET next_dispatch_at=?,approval_pending=?
              WHERE delivery_id=? AND state='pending'`,
           )
-          .run(availableAt, deliveryId).changes,
+          .run(availableAt, approvalPending ? 1 : 0, deliveryId).changes,
       ) === 1
     );
   }
@@ -497,6 +547,23 @@ export class WorkflowQueue {
     );
   }
 
+  claimMayExecute(runId: string, stepId: string, fencingToken: string, now = Date.now()): boolean {
+    return Boolean(
+      this.store.db
+        .prepare(
+          `SELECT 1 FROM workflow_steps s
+           JOIN workflow_runs r ON r.run_id=s.run_id
+           JOIN workflow_definitions d ON d.workflow_id=r.workflow_id
+           WHERE s.run_id=? AND s.step_id=? AND s.state IN ('leased','running')
+             AND s.fencing_token=? AND s.lease_expires_at>?
+             AND r.state IN ('pending','running','waiting')
+             AND r.cancel_requested_at IS NULL
+             AND d.state='valid' AND d.active_version_hash=r.version_hash`,
+        )
+        .get(runId, stepId, fencingToken, now),
+    );
+  }
+
   completeStep(
     runId: string,
     stepId: string,
@@ -741,18 +808,55 @@ export class WorkflowQueue {
     stepId: string,
     reason: string,
     availableAt: number,
+    maximumAttempts: number,
     now = Date.now(),
-  ): boolean {
-    return (
-      Number(
+  ): "deferred" | "dead_letter" | undefined {
+    if (!Number.isSafeInteger(maximumAttempts) || maximumAttempts < 1)
+      throw new Error("maximumAttempts must be a positive safe integer");
+    reason = boundedStepError(reason);
+    this.store.db.exec("BEGIN IMMEDIATE");
+    try {
+      const step = this.store.db
+        .prepare(
+          `SELECT source_refetch_attempt_count FROM workflow_steps
+           WHERE run_id=? AND step_id=? AND state='source_refetch_required'`,
+        )
+        .get(runId, stepId) as { source_refetch_attempt_count: number } | undefined;
+      if (!step) {
+        this.store.db.exec("COMMIT");
+        return undefined;
+      }
+      const attempt = step.source_refetch_attempt_count + 1;
+      if (attempt >= maximumAttempts) {
         this.store.db
           .prepare(
-            `UPDATE workflow_steps SET error=?,available_at=?,updated_at=?
+            `UPDATE workflow_steps SET state='dead_letter',source_refetch_attempt_count=?,
+             error=?,available_at=?,updated_at=?
              WHERE run_id=? AND step_id=? AND state='source_refetch_required'`,
           )
-          .run(reason, availableAt, now, runId, stepId).changes,
-      ) === 1
-    );
+          .run(attempt, reason, availableAt, now, runId, stepId);
+        this.store.db
+          .prepare(
+            `UPDATE workflow_runs SET state='dead_letter',error=?,updated_at=?,completed_at=?
+             WHERE run_id=? AND state IN ('pending','running','waiting')`,
+          )
+          .run(reason, now, now, runId);
+        this.deadLetterRemainingStepsInTransaction(runId, reason, now);
+        this.store.db.exec("COMMIT");
+        return "dead_letter";
+      }
+      this.store.db
+        .prepare(
+          `UPDATE workflow_steps SET source_refetch_attempt_count=?,error=?,available_at=?,updated_at=?
+           WHERE run_id=? AND step_id=? AND state='source_refetch_required'`,
+        )
+        .run(attempt, reason, availableAt, now, runId, stepId);
+      this.store.db.exec("COMMIT");
+      return "deferred";
+    } catch (cause) {
+      this.store.db.exec("ROLLBACK");
+      throw cause;
+    }
   }
 
   sourceRefetchSteps(now = Date.now(), limit = 100): WorkflowStepRecord[] {
@@ -1295,6 +1399,8 @@ type DeliveryRow = {
   state: WorkflowDeliveryRecord["state"];
   created_at: number;
   next_dispatch_at: number;
+  dispatch_attempt_count: number;
+  approval_pending: number;
   dispatched_at: number | null;
 };
 
@@ -1328,6 +1434,7 @@ type StepRow = {
   timeout_seconds: number;
   run_deadline_at: number;
   attempt_count: number;
+  source_refetch_attempt_count: number;
   available_at: number;
   lease_owner: string | null;
   fencing_token: string | null;
@@ -1402,6 +1509,8 @@ function mapDelivery(row: DeliveryRow): WorkflowDeliveryRecord {
     state: row.state,
     createdAt: row.created_at,
     nextDispatchAt: row.next_dispatch_at,
+    dispatchAttemptCount: row.dispatch_attempt_count,
+    approvalPending: row.approval_pending === 1,
     ...(row.dispatched_at === null ? {} : { dispatchedAt: row.dispatched_at }),
   };
 }
@@ -1441,6 +1550,7 @@ function mapStep(row: StepRow): WorkflowStepRecord {
     timeoutSeconds: row.timeout_seconds,
     runDeadlineAt: row.run_deadline_at,
     attemptCount: row.attempt_count,
+    sourceRefetchAttemptCount: row.source_refetch_attempt_count,
     availableAt: row.available_at,
     ...(row.lease_owner ? { leaseOwner: row.lease_owner } : {}),
     ...(row.fencing_token ? { fencingToken: row.fencing_token } : {}),

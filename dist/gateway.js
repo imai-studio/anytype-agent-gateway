@@ -2,6 +2,9 @@ import { AgentController, messageFingerprint, } from "./controller.js";
 import { DiscussionAnytypePort } from "./discussions.js";
 import { WorkflowObserver } from "./automation/observer.js";
 import { WorkflowRunner } from "./automation/runner.js";
+import { CloudClient } from "./cloud-client.js";
+import { loadCloudConfig, resolveCloudPaths } from "./cloud-config.js";
+import { AnytypeCloudCommandExecutor, CloudWorkflowExtension } from "./cloud-workflow.js";
 import { decideWake, mergeWakeOverride, sameIdentity } from "./wake.js";
 import { principalAuditFields, principalFromMessage, principalFromParticipantId, } from "./principal.js";
 const INTERRUPTED_RUN_RECOVERY_GRACE_MS = 60 * 60 * 1000;
@@ -94,8 +97,23 @@ export class Gateway {
                 this.track(this.discoverDirectMessages(this.config.directMessages));
             if (!this.tasks.size)
                 throw new Error("Configuration produced no chat or discussion routes");
-            if (this.config.automation.enabled && this.config.automation.execution)
-                this.track(new WorkflowRunner(this.store, this.config.automation, this.log).run(this.abort.signal));
+            if (this.config.automation.enabled && this.config.automation.execution) {
+                const extensions = [];
+                if (this.config.cloudCommands.enabled) {
+                    const paths = resolveCloudPaths({
+                        ...(this.config.cloudCommands.cloudConfigFile
+                            ? { configFile: this.config.cloudCommands.cloudConfigFile }
+                            : {}),
+                    });
+                    const cloudConfig = await loadCloudConfig(paths);
+                    if (!cloudConfig?.paired)
+                        throw new Error("cloudCommands requires an approved Knot Cloud pairing");
+                    const cloud = new CloudClient(cloudConfig);
+                    const executor = new AnytypeCloudCommandExecutor(this.anytype, cloud, cloudConfig, this.config.agent.participantId);
+                    extensions.push(new CloudWorkflowExtension(this.store, cloud, executor, this.config.cloudCommands, this.anytype, this.log));
+                }
+                this.trackAuxiliary(new WorkflowRunner(this.store, this.config.automation, this.log, undefined, Date.now, undefined, extensions).run(this.abort.signal), "workflow_runner_stopped");
+            }
             if (this.config.automation.enabled && this.config.automation.observation)
                 this.trackAuxiliary(new WorkflowObserver(this.anytype, this.store, this.config.automation, this.log).run(this.abort.signal), "workflow_observer_stopped");
             await this.terminal;

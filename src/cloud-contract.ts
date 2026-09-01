@@ -441,6 +441,18 @@ export const commandEnvelopeSchema = z
       "consumer-api-key",
       "first-party-service",
     ]),
+    actor: z
+      .object({
+        principalDigest: sha256Schema,
+        digestVersion: z.number().int().positive(),
+        provenance: z.enum([
+          "authenticated-cloud-session",
+          "connector-key",
+          "consumer-api-key",
+          "first-party-service",
+        ]),
+      })
+      .strict(),
     createdAt: unixSecondsSchema,
     notBefore: unixSecondsSchema,
     expiresAt: unixSecondsSchema,
@@ -462,6 +474,10 @@ export const commandEnvelopeSchema = z
     const expected = requiredScope(value.payload.domain, value.payload.operation.type);
     if (value.requiredScope !== expected)
       context.addIssue({ code: "custom", message: `Command requires ${expected}` });
+    const expectedProvenance =
+      value.createdBy === "human-session" ? "authenticated-cloud-session" : value.createdBy;
+    if (value.actor.provenance !== expectedProvenance)
+      context.addIssue({ code: "custom", message: "Command actor provenance is inconsistent" });
   });
 
 export const commandClaimResponseSchema = z

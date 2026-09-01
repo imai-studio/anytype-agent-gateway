@@ -440,14 +440,8 @@ function redactSensitiveWorkflowStrings(value: unknown, path: string[] = []): un
 }
 
 export function isSensitiveWorkflowTextPath(path: readonly string[]): boolean {
-  return (
-    path.length === 5 &&
-    path[0] === "spec" &&
-    path[1] === "steps" &&
-    /^\d+$/.test(path[2]!) &&
-    path[3] === "config" &&
-    (path[4] === "prompt" || path[4] === "message")
-  );
+  const key = path.at(-1);
+  return key === "prompt" || key === "message";
 }
 
 function sensitiveWorkflowFieldDigest(path: string[], value: string): string {

@@ -313,6 +313,7 @@ vulnerabilities through GitHub's private vulnerability reporting flow, not a pub
 | [Workflow runtime topology](docs/workflow-runtime-topology.md) | Phase 2 observer, runner, and proposed effect process contract  |
 | [Knot Cloud proposal](docs/publish-architecture.md)            | Hosted and self-hostable Cloud and Publish design               |
 | [Cloud connector guide](docs/cloud-connector.md)               | Local key setup, pairing, checks, and signed transport          |
+| [Cloud workflow candidate](docs/cloud-workflows.md)            | Default-off command policy, recovery, and operator controls     |
 
 Proposals are marked as proposals. A document in planned work does not make its commands, service,
 or protocol available in the current release.

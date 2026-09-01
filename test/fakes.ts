@@ -159,9 +159,10 @@ export class FakeAnytype implements AnytypePort {
   async updateObject(
     _spaceId: string,
     objectId: string,
-    input: { properties: Array<{ key: string; multi_select: string[] }> },
+    input: { properties?: Record<string, unknown>[] },
   ): Promise<Record<string, unknown>> {
-    const selected = input.properties[0]?.multi_select ?? [];
+    const first = input.properties?.[0] as { multi_select?: string[] } | undefined;
+    const selected = first?.multi_select ?? [];
     const tags = selected.flatMap((id) => {
       const tag = this.propertyTags.find(
         (candidate) => candidate.id === id || candidate.key === id,

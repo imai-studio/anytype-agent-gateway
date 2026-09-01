@@ -42,6 +42,7 @@ export declare class CloudClient {
         maximumProtocolVersion: string;
         serverUnixSeconds: number;
     }>;
+    serverAdjustedNow(): number;
     pollPairing(credentials: PairingCredentials): Promise<{
         protocolVersion: "1.0";
         status: "pending";
@@ -61,7 +62,7 @@ export declare class CloudClient {
         approvedAt: number;
     } | {
         protocolVersion: "1.0";
-        status: "expired" | "denied" | "consumed";
+        status: "denied" | "expired" | "consumed";
         pairingId: string;
     }>;
     claimCommands(input?: {
@@ -74,6 +75,11 @@ export declare class CloudClient {
             connectorId: string;
             requiredScope: "anytype.objects.read" | "anytype.objects.write" | "anytype.collections.read" | "anytype.collections.write" | "anytype.files.read" | "anytype.files.write" | "anytype.chats.read" | "anytype.chats.send" | "publications.read" | "publications.write" | "publications.unpublish";
             createdBy: "human-session" | "connector-key" | "consumer-api-key" | "first-party-service";
+            actor: {
+                principalDigest: string;
+                digestVersion: number;
+                provenance: "connector-key" | "consumer-api-key" | "first-party-service" | "authenticated-cloud-session";
+            };
             createdAt: number;
             notBefore: number;
             expiresAt: number;
@@ -172,14 +178,14 @@ export declare class CloudClient {
         commandId: string;
         attempt: number;
         status: "accepted" | "duplicate";
-        state: "failed" | "pending" | "cancelled" | "succeeded" | "leased" | "expired" | "rejected-by-local-policy" | "dead-lettered";
+        state: "pending" | "expired" | "leased" | "succeeded" | "rejected-by-local-policy" | "failed" | "cancelled" | "dead-lettered";
     }>;
     rejectByLocalPolicy(command: CloudCommandEnvelope, reasonCode: string): Promise<{
         protocolVersion: "1.0";
         commandId: string;
         attempt: number;
         status: "accepted" | "duplicate";
-        state: "failed" | "pending" | "cancelled" | "succeeded" | "leased" | "expired" | "rejected-by-local-policy" | "dead-lettered";
+        state: "pending" | "expired" | "leased" | "succeeded" | "rejected-by-local-policy" | "failed" | "cancelled" | "dead-lettered";
     }>;
     publish(mutation: PublicationMutation): Promise<{
         protocolVersion: "1.0";
@@ -219,7 +225,7 @@ export declare class CloudClient {
         publicationId: string;
         siteId: string;
         slug: string;
-        state: "disabled" | "ready" | "draft" | "unpublished";
+        state: "ready" | "draft" | "disabled" | "unpublished";
         updatedAt: number;
         currentVersionId?: string | undefined;
     }>;

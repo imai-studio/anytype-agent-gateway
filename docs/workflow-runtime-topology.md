@@ -416,6 +416,11 @@ fields. Operators must protect backups like the live state database and delete s
 backups after verifying the migration and rollback window. Backups must never contain API keys or
 connection secret values.
 
+Schema 15 treats every nested `prompt` and `message` string as sensitive. When an older schema
+11–14 projection still contains one, migration redacts that projection and invalidates the owning
+definition without recalculating immutable hashes or preserving executable validity. Re-authoring
+from the Anytype source creates a new redacted version and requires the applicable approval again.
+
 ## Failure policy
 
 The runner fails closed when it cannot prove authority, approval, lease ownership, effect safety,

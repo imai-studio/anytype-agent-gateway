@@ -183,6 +183,11 @@ describe("CloudClient", () => {
             connectorId,
             requiredScope: "anytype.objects.read",
             createdBy: "consumer-api-key",
+            actor: {
+              principalDigest: "a".repeat(64),
+              digestVersion: 1,
+              provenance: "consumer-api-key",
+            },
             createdAt: now - 10,
             notBefore: now - 5,
             expiresAt: now + 300,
@@ -267,6 +272,7 @@ describe("CloudClient", () => {
     });
     await client.claimCommands();
     expect(timestamps).toEqual([String(now), String(now + 90)]);
+    expect(client.serverAdjustedNow()).toBe((now + 90) * 1_000);
   });
 
   it("retries an unparseable transient server response", async () => {
@@ -313,6 +319,11 @@ describe("CloudClient", () => {
         connectorId,
         requiredScope: "anytype.objects.read",
         createdBy: "consumer-api-key",
+        actor: {
+          principalDigest: "a".repeat(64),
+          digestVersion: 1,
+          provenance: "consumer-api-key",
+        },
         createdAt: 1,
         notBefore: 1,
         expiresAt: 100,
@@ -345,6 +356,11 @@ describe("CloudClient", () => {
             connectorId: "another-connector",
             requiredScope: "anytype.objects.read",
             createdBy: "consumer-api-key",
+            actor: {
+              principalDigest: "a".repeat(64),
+              digestVersion: 1,
+              provenance: "consumer-api-key",
+            },
             createdAt: now - 10,
             notBefore: now - 5,
             expiresAt: now + 300,
