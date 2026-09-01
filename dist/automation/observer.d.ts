@@ -1,6 +1,8 @@
 import type { AgentConfig } from "../config.js";
 import { Store } from "../store.js";
 import type { AnytypePort } from "../types.js";
+import type { WorkflowVersionRecord } from "./store-types.js";
+import type { WorkflowSourceResolver, WorkflowSourceSnapshot } from "./runner.js";
 type ObserverConfig = AgentConfig["automation"];
 export type WorkflowObserverScanResult = {
     spaceId: string;
@@ -27,4 +29,13 @@ export declare class WorkflowObserver {
     private archiveMissing;
     private recordEvent;
 }
+/** Refetches redacted workflow source from Anytype before an effect is allowed to run. */
+export declare class AnytypeWorkflowSourceResolver implements WorkflowSourceResolver {
+    private readonly anytype;
+    private readonly definitionTypeKeys;
+    private readonly pageSize;
+    constructor(anytype: AnytypePort, definitionTypeKeys: string[], pageSize?: number);
+    refetch(version: WorkflowVersionRecord, signal: AbortSignal): Promise<WorkflowSourceSnapshot | undefined>;
+}
+export declare function extractWorkflowSource(source: string | undefined): string;
 export {};

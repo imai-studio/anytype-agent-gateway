@@ -380,10 +380,20 @@ export declare const configSchema: z.ZodObject<{
             "anytype.write": "anytype.write";
             "http.request": "http.request";
             notify: "notify";
+            "publish.web": "publish.web";
         }>>>;
         allowedConnections: z.ZodDefault<z.ZodArray<z.ZodString>>;
         allowedSecretNames: z.ZodDefault<z.ZodArray<z.ZodString>>;
         allowedProjects: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        publishConnections: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodObject<{
+            cloudConfigFile: z.ZodString;
+            allowedSiteIds: z.ZodArray<z.ZodUUID>;
+            allowedSlugPrefixes: z.ZodArray<z.ZodString>;
+            allowUpdate: z.ZodDefault<z.ZodBoolean>;
+            allowRollback: z.ZodDefault<z.ZodBoolean>;
+            allowDisable: z.ZodDefault<z.ZodBoolean>;
+            allowUnpublish: z.ZodDefault<z.ZodBoolean>;
+        }, z.core.$strict>>>;
         maximumRiskTier: z.ZodDefault<z.ZodEnum<{
             T0: "T0";
             T1: "T1";

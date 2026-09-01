@@ -168,6 +168,41 @@ describe("CloudPublicationOutbox", () => {
     outbox.close();
   });
 
+  it("recovers a crashed in-flight publication and preserves its idempotency receipt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "knot-publish-crash-"));
+    const path = join(directory, "outbox.sqlite");
+    const request = {
+      kind: "control" as const,
+      request: {
+        protocolVersion: "1.0" as const,
+        connectorId,
+        idempotencyKey: "knot-idempotency-crash-0001",
+        operation: { type: "publication.disable" as const, publicationId },
+      },
+    };
+    const first = new CloudPublicationOutbox(path);
+    const queued = first.enqueue({
+      request,
+      idempotencyKey: request.request.idempotencyKey,
+      requestSha256: "f".repeat(64),
+      now: 1,
+    });
+    expect(first.claim(queued.operationId, "crashed-worker", 1, 1)).toBe(true);
+    first.close();
+
+    const recovered = new CloudPublicationOutbox(path);
+    expect(recovered.operation(queued.operationId)).toMatchObject({ state: "retrying" });
+    const replay = recovered.enqueue({
+      request,
+      idempotencyKey: request.request.idempotencyKey,
+      requestSha256: "f".repeat(64),
+      now: Date.now(),
+    });
+    expect(replay.operationId).toBe(queued.operationId);
+    expect(recovered.claim(queued.operationId, "recovery-worker", Date.now())).toBe(true);
+    recovered.close();
+  });
+
   it("persists each asset boundary independently of publication delivery", () => {
     const outbox = new CloudPublicationOutbox(":memory:");
     const digest = "c".repeat(64);

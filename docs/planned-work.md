@@ -9,9 +9,10 @@ promise.
 The repository contains the Phase 2 contracts, additive SQLite foundation, read-only workflow
 definition observer, and durable local runner core. The runner dispatches normalized events,
 persists runs and dependency-ordered steps, recovers leases, retries with durable deadlines,
-records cancellation, and dead-letters work that cannot continue. Effect execution is not
-available. Definitions with prompt or message text stop in `source_refetch_required` because the
-gateway does not install a read-only source resolver. The remaining work should follow this order.
+records cancellation, and dead-letters work that cannot continue. The gateway installs a read-only
+Anytype source resolver and one closed external executor: T2 `publish.web`, backed by the existing
+Cloud publication outbox and named local publication connections. Other effect execution is not
+available. The remaining work should follow this order.
 
 The foundation rejects hard-delete and raw external URL steps, requires named local connections,
 checks verified editor identity, intersects definition budgets with local caps, and stores source
@@ -42,7 +43,8 @@ core. Effect receipts, projections, target-data observation, and effect workers 
 ### 3. Runner completion
 
 - Add durable timer events and per-step waiting timers.
-- Add effect intent, receipt, and unknown-outcome recovery before any external executor ships.
+- Generalize effect intent, receipt, and unknown-outcome recovery beyond the specialized
+  `publish.web` publication outbox.
 - Extend the current concurrency, hourly-rate, step, and causal-depth checks with cost accounting.
 - Add a complete policy-decision and effect audit view.
 - Add CLI inspection and operator controls for runs, cancellation, retries, and dead letters.
@@ -94,7 +96,8 @@ The suggested delivery order is:
    scheduler.
 5. Extend the released bounded publish CLI and MCP surface only alongside compatible Cloud
    contracts. The local surface has no runtime URL, credential, HTML, or filesystem-path input.
-6. Add the T2 `publish.web` workflow step after the Phase 2 runner can execute external effects.
+6. Extend the implemented T2 `publish.web` step only alongside compatible Cloud contracts and
+   operational evidence.
 7. Add custom domains, authenticated readers, billing, media workers, and isolated hosted connectors
    only after their individual security and operational gates pass.
 

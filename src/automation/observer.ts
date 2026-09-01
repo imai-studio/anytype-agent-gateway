@@ -12,6 +12,7 @@ import type {
   WorkflowVersionInput,
   WorkflowVersionRecord,
 } from "./store-types.js";
+import type { WorkflowSourceResolver, WorkflowSourceSnapshot } from "./runner.js";
 import {
   canonicalJson,
   canonicalWorkflowDefinition,
@@ -570,7 +571,50 @@ export class WorkflowObserver {
   }
 }
 
-function extractWorkflowSource(source: string | undefined): string {
+/** Refetches redacted workflow source from Anytype before an effect is allowed to run. */
+export class AnytypeWorkflowSourceResolver implements WorkflowSourceResolver {
+  constructor(
+    private readonly anytype: AnytypePort,
+    private readonly definitionTypeKeys: string[],
+    private readonly pageSize = 100,
+  ) {}
+
+  async refetch(
+    version: WorkflowVersionRecord,
+    signal: AbortSignal,
+  ): Promise<WorkflowSourceSnapshot | undefined> {
+    const limit = Math.min(100, Math.max(1, this.pageSize));
+    for (let page = 0; page < 100; page += 1) {
+      if (signal.aborted) throw signal.reason;
+      const objects = await this.anytype.searchWorkflowObjects(
+        version.spaceId,
+        this.definitionTypeKeys,
+        page * limit,
+        limit,
+      );
+      const object = objects.find((candidate) => candidate.id === version.objectId);
+      if (object) {
+        if (
+          object.archived ||
+          object.observationError ||
+          !object.editorParticipantId ||
+          object.modifiedAt !== version.sourceModifiedAt
+        )
+          return undefined;
+        return {
+          definitionSource: extractWorkflowSource(object.source),
+          sourceModifiedAt: object.modifiedAt,
+          editorParticipantId: object.editorParticipantId,
+          editorProvenance: "anytype-native",
+        };
+      }
+      if (objects.length < limit) return undefined;
+    }
+    return undefined;
+  }
+}
+
+export function extractWorkflowSource(source: string | undefined): string {
   if (!source) throw new ObserverValidationError("source_missing");
   if (source.length > 1_000_000) throw new ObserverValidationError("source_too_large");
   let cursor = 0;
