@@ -239,6 +239,12 @@ export class DiscussionAnytypePort implements AnytypePort {
   ): Promise<{ id: string; name?: string; markdown?: string }> {
     return this.base.getObject(spaceId, objectId);
   }
+  async getWorkflowObject(
+    spaceId: string,
+    objectId: string,
+  ): Promise<{ id: string; name?: string; markdown?: string }> {
+    return this.base.getWorkflowObject(spaceId, objectId);
+  }
   async listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]> {
     return this.base.listPropertyTags(spaceId, propertyId);
   }

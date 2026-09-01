@@ -82,6 +82,40 @@ describe("failure containment", () => {
     store.close();
   });
 
+  it("rejects route-less configurations even when workflow observation is enabled", async () => {
+    const anytype = new FakeAnytype();
+    const runtime = new FakeRuntime();
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "Knot", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ id: "space-1" }],
+      runtime: { kind: "codex" },
+      automation: {
+        enabled: true,
+        observation: true,
+        execution: false,
+        allowedAuthorIds: ["operator"],
+        allowedSpaceIds: ["space-1"],
+        allowedCapabilities: ["anytype.read"],
+      },
+    });
+    const store = new Store(":memory:");
+    const gateway = new Gateway(
+      anytype,
+      runtime,
+      config,
+      store,
+      {} as HeartDiscussionAdapter,
+      () => undefined,
+    );
+
+    await expect(gateway.start()).rejects.toThrow(
+      "Configuration produced no chat or discussion routes",
+    );
+    store.close();
+  });
+
   it("discovers a new chat, enrolls it for an authorized tag, and catches that message", async () => {
     class DiscoveringAnytype extends FakeAnytype {
       listCalls = 0;

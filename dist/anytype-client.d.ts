@@ -66,6 +66,9 @@ export declare class AnytypeClient implements AnytypePort {
     getObject(spaceId: string, objectId: string): Promise<JsonRecord & {
         id: string;
     }>;
+    getWorkflowObject(spaceId: string, objectId: string): Promise<JsonRecord & {
+        id: string;
+    }>;
     listTypes(spaceId: string): Promise<JsonRecord[]>;
     getType(spaceId: string, typeId: string): Promise<JsonRecord>;
     listProperties(spaceId: string): Promise<JsonRecord[]>;

@@ -37,6 +37,7 @@ export class Gateway {
   private readonly abort = new AbortController();
   private readonly routeIds = new Set<string>();
   private readonly tasks = new Set<Promise<void>>();
+  private readonly auxiliaryTasks = new Set<Promise<void>>();
   private readonly controller: AgentController;
   private readonly discussionAnytype: AnytypePort;
   private readonly terminal: Promise<void>;
@@ -159,6 +160,7 @@ export class Gateway {
       }
       if (this.config.directMessages.enabled)
         this.track(this.discoverDirectMessages(this.config.directMessages));
+      if (!this.tasks.size) throw new Error("Configuration produced no chat or discussion routes");
       if (this.config.automation.enabled && this.config.automation.observation)
         this.trackAuxiliary(
           new WorkflowObserver(this.anytype, this.store, this.config.automation, this.log).run(
@@ -166,13 +168,12 @@ export class Gateway {
           ),
           "workflow_observer_stopped",
         );
-      if (!this.tasks.size) throw new Error("Configuration produced no chat or discussion routes");
       await this.terminal;
     } finally {
       this.abort.abort();
       if (this.pruneTimer) clearInterval(this.pruneTimer);
       this.pruneTimer = undefined;
-      await Promise.allSettled([...this.tasks]);
+      await Promise.allSettled([...this.tasks, ...this.auxiliaryTasks]);
       await this.controller.stop({ drain: this.drainOnStop });
     }
   }
@@ -207,8 +208,8 @@ export class Gateway {
     const guarded = task.catch(() => {
       if (!this.abort.signal.aborted) this.log(failureEvent, { errorCode: "unexpected_failure" });
     });
-    this.tasks.add(guarded);
-    void guarded.finally(() => this.tasks.delete(guarded));
+    this.auxiliaryTasks.add(guarded);
+    void guarded.finally(() => this.auxiliaryTasks.delete(guarded));
   }
 
   private async runRoute(route: Route): Promise<void> {

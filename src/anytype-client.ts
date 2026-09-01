@@ -368,6 +368,17 @@ export class AnytypeClient implements AnytypePort {
     return { ...object, id: object.id ?? objectId };
   }
 
+  async getWorkflowObject(spaceId: string, objectId: string): Promise<JsonRecord & { id: string }> {
+    const boundedSpaceId = boundedIdentifier(spaceId, 512) ?? "invalid-space-id";
+    const boundedObjectId = boundedIdentifier(objectId, 512) ?? "invalid-object-id";
+    const response = await this.request(
+      `/v1/spaces/${encodeURIComponent(boundedSpaceId)}/objects/${encodeURIComponent(boundedObjectId)}`,
+    );
+    const json = await readBoundedJson(response, MAX_OBJECT_RESPONSE_BYTES);
+    const object = json.object ?? json;
+    return { ...object, id: boundedIdentifier(object.id, 512) ?? boundedObjectId };
+  }
+
   async listTypes(spaceId: string): Promise<JsonRecord[]> {
     return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/types`);
   }
@@ -457,19 +468,14 @@ export class AnytypeClient implements AnytypePort {
     offset: number,
     limit: number,
   ): Promise<AnytypeWorkflowObject[]> {
-    const summaries = await this.searchSpaceRequest(
-      spaceId,
-      { types: typeKeys, offset, limit },
-      true,
-    );
+    const boundedSpaceId = boundedIdentifier(spaceId, 512) ?? "invalid-space-id";
+    const summaries = (
+      await this.searchSpaceRequest(boundedSpaceId, { types: typeKeys, offset, limit }, true)
+    ).slice(0, limit);
     return mapConcurrent(summaries, WORKFLOW_OBJECT_READ_CONCURRENCY, async (summary) => {
-      const summaryId = boundedName(summary.id, 512) ?? "invalid-object-id";
+      const summaryId = boundedIdentifier(summary.id, 512) ?? "invalid-object-id";
       try {
-        const response = await this.request(
-          `/v1/spaces/${encodeURIComponent(spaceId)}/objects/${encodeURIComponent(summaryId)}`,
-        );
-        const json = await readBoundedJson(response, MAX_OBJECT_RESPONSE_BYTES);
-        const raw = json.object ?? json;
+        const raw = await this.getWorkflowObject(boundedSpaceId, summaryId);
         const typeKey = objectTypeKey(raw) ?? objectTypeKey(summary);
         if (!typeKey || !typeKeys.includes(typeKey))
           return invalidWorkflowSummary(summaryId, summary, "object_type_unverified");
@@ -479,7 +485,7 @@ export class AnytypeClient implements AnytypePort {
         const source = objectSource(raw);
         const editorParticipantId = objectEditorParticipantId(raw);
         return {
-          id: boundedName(raw.id ?? summary.id, 512) ?? summaryId,
+          id: boundedIdentifier(raw.id ?? summary.id, 512) ?? summaryId,
           name: boundedName(raw.name ?? summary.name ?? raw.id ?? summary.id, 256) ?? "Workflow",
           typeKey,
           ...(source === undefined ? {} : { source }),
@@ -725,6 +731,13 @@ function boundedName(value: unknown, maximum: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
   return normalized ? [...normalized].slice(0, maximum).join("") : undefined;
+}
+
+function boundedIdentifier(value: unknown, maximumCodeUnits: number): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  let bounded = value.slice(0, maximumCodeUnits);
+  if (/[\uD800-\uDBFF]$/u.test(bounded)) bounded = bounded.slice(0, -1);
+  return bounded || undefined;
 }
 
 async function mapConcurrent<T, U>(

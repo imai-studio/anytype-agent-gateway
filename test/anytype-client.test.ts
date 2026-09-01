@@ -102,6 +102,103 @@ describe("Anytype object REST client", () => {
     ]);
   });
 
+  it("caps workflow search hydration at the requested limit", async () => {
+    const hydrated: string[] = [];
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://localhost");
+      response.setHeader("content-type", "application/json");
+      if (request.method === "POST") {
+        response.end(
+          JSON.stringify({
+            data: ["one", "two", "three"].map((id) => ({
+              id,
+              type: { key: "knot-workflow" },
+            })),
+          }),
+        );
+        return;
+      }
+      const id = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
+      hydrated.push(id);
+      response.end(
+        JSON.stringify({
+          object: {
+            id,
+            type: { key: "knot-workflow" },
+            modified_at: 1_700_000_000,
+          },
+        }),
+      );
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "knot-workflow-limit-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "Knot", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    const workflows = await client.searchWorkflowObjects("space", ["knot-workflow"], 0, 1);
+
+    expect(workflows.map((workflow) => workflow.id)).toEqual(["one"]);
+    expect(hydrated).toEqual(["one"]);
+  });
+
+  it("clamps workflow REST identifiers by UTF-16 code units", async () => {
+    const hostileId = "😀".repeat(400);
+    const paths: string[] = [];
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://localhost");
+      paths.push(url.pathname);
+      response.setHeader("content-type", "application/json");
+      if (request.method === "POST") {
+        response.end(JSON.stringify({ data: [{ id: hostileId, type: { key: "knot-workflow" } }] }));
+        return;
+      }
+      response.end(
+        JSON.stringify({
+          object: {
+            id: hostileId,
+            type: { key: "knot-workflow" },
+            modified_at: 1_700_000_000,
+          },
+        }),
+      );
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "knot-workflow-identifiers-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "Knot", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    const [workflow] = await client.searchWorkflowObjects(hostileId, ["knot-workflow"], 0, 1);
+
+    expect(workflow?.id.length).toBeLessThanOrEqual(512);
+    expect(/[\uD800-\uDBFF]$/u.test(workflow?.id ?? "")).toBe(false);
+    expect(decodeURIComponent(paths[0]!.split("/")[3]!).length).toBeLessThanOrEqual(512);
+    expect(decodeURIComponent(paths[1]!.split("/").at(-1)!).length).toBeLessThanOrEqual(512);
+  });
+
   it("does not trust undocumented top-level editor aliases", async () => {
     const server = createServer((request, response) => {
       response.setHeader("content-type", "application/json");

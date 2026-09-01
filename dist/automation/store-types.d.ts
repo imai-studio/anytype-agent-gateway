@@ -29,7 +29,7 @@ export interface WorkflowObserverState {
     lastSuccessAt?: number;
     lastError?: string;
 }
-export interface WorkflowVersionRecord {
+interface WorkflowVersionMetadata {
     workflowId: string;
     spaceId: string;
     objectId: string;
@@ -37,8 +37,6 @@ export interface WorkflowVersionRecord {
     versionHash: string;
     approvalHash: string;
     schemaVersion: number;
-    canonicalDefinitionJson: string;
-    canonicalApprovalJson: string;
     sourceDigest: string;
     riskTier: WorkflowRiskTier;
     requiredCapabilities: WorkflowCapability[];
@@ -46,6 +44,14 @@ export interface WorkflowVersionRecord {
     editorPrincipalDigest?: string;
     editorProvenance?: WorkflowEditorProvenance;
     createdAt: number;
+}
+export interface WorkflowVersionInput extends WorkflowVersionMetadata {
+    canonicalDefinitionJson: string;
+    canonicalApprovalJson: string;
+}
+export interface WorkflowVersionRecord extends WorkflowVersionMetadata {
+    storedDefinitionJson: string;
+    storedApprovalJson: string;
 }
 export type WorkflowApprovalDecisionKind = "approved" | "rejected" | "revoked";
 export type WorkflowApprovalMode = "manual" | "automatic";

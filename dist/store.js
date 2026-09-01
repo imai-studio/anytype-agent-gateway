@@ -1289,8 +1289,8 @@ export class Store {
                 stored.name !== input.name ||
                 stored.approvalHash !== input.approvalHash ||
                 stored.schemaVersion !== input.schemaVersion ||
-                stored.canonicalDefinitionJson !== storedDefinitionJson ||
-                stored.canonicalApprovalJson !== storedApprovalJson ||
+                stored.storedDefinitionJson !== storedDefinitionJson ||
+                stored.storedApprovalJson !== storedApprovalJson ||
                 stored.riskTier !== input.riskTier ||
                 JSON.stringify(stored.requiredCapabilities) !== requiredCapabilitiesJson)
                 throw new Error("Workflow version hash collision or divergent immutable version");
@@ -1558,8 +1558,8 @@ function mapWorkflowVersion(row) {
         versionHash: row.version_hash,
         approvalHash: row.approval_hash,
         schemaVersion: Number(row.schema_version),
-        canonicalDefinitionJson: row.canonical_definition_json,
-        canonicalApprovalJson: row.canonical_approval_json,
+        storedDefinitionJson: row.canonical_definition_json,
+        storedApprovalJson: row.canonical_approval_json,
         sourceDigest: row.source_digest,
         riskTier: row.risk_tier,
         requiredCapabilities: parseJson(row.required_capabilities_json),

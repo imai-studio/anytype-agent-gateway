@@ -68,6 +68,11 @@ export declare class DiscussionAnytypePort implements AnytypePort {
         name?: string;
         markdown?: string;
     }>;
+    getWorkflowObject(spaceId: string, objectId: string): Promise<{
+        id: string;
+        name?: string;
+        markdown?: string;
+    }>;
     listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]>;
     listProperties(spaceId: string): Promise<Record<string, unknown>[]>;
     createPropertyTag(spaceId: string, propertyId: string, input: {

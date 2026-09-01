@@ -31,6 +31,7 @@ describe("workflow foundation", () => {
     expect(canonicalJson({ z: 1, a: { y: true, b: [2, 1] } })).toBe(
       '{"a":{"b":[2,1],"y":true},"z":1}',
     );
+    expect(canonicalJson({ ä: 1, z: 2 })).toBe('{"z":2,"ä":1}');
   });
 
   it("produces stable approval hashes and ignores descriptive metadata", () => {

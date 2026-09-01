@@ -668,6 +668,173 @@ describe("read-only workflow observer", () => {
     store.close();
   });
 
+  it("advances past an object when recording its read failure also fails", async () => {
+    const anytype = new FakeAnytype();
+    anytype.workflowObjects = [
+      workflowObject({ id: "poisoned", source: source("Poisoned") }),
+      workflowObject({ id: "good", source: source("Good") }),
+    ];
+    const store = new Store(":memory:");
+    vi.spyOn(store, "saveWorkflowVersion").mockImplementationOnce(() => {
+      throw new Error("poisoned version");
+    });
+    vi.spyOn(store, "recordWorkflowDefinitionReadFailure").mockImplementationOnce(() => {
+      throw new Error("temporary store failure");
+    });
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+
+    const result = await new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(2),
+      (event, fields) => logs.push({ event, ...(fields ? { fields } : {}) }),
+      () => 200,
+    ).scanSpaceOnce("space-1");
+
+    expect(result).toMatchObject({ failed: false, objects: 2 });
+    expect(store.workflowObserverState("space-1")?.pageOffset).toBe(2);
+    expect(store.workflowDefinition("space-1", "good")?.state).toBe("valid");
+    expect(logs).toContainEqual({
+      event: "workflow_observer_object_failed",
+      fields: expect.objectContaining({ errorCode: "read_failure_persistence_failed" }),
+    });
+    store.close();
+  });
+
+  it("isolates reconciliation persistence failures per object", async () => {
+    const anytype = new FakeAnytype();
+    const store = new Store(":memory:");
+    for (const objectId of ["missing-1", "missing-2"]) {
+      store.recordWorkflowDefinitionStatus({
+        workflowId: `workflow-${objectId}`,
+        spaceId: "space-1",
+        objectId,
+        name: objectId,
+        state: "invalid",
+        sourceModifiedAt: 1,
+        sourceDigest: workflowSourceDigest(objectId),
+        seenAt: 1,
+        validationErrors: ["source_missing"],
+      });
+      anytype.missingObjectIds.add(objectId);
+    }
+    vi.spyOn(store, "recordWorkflowDefinitionStatus").mockImplementationOnce(() => {
+      throw new Error("temporary reconciliation write failure");
+    });
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+
+    const result = await new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(2),
+      (event, fields) => logs.push({ event, ...(fields ? { fields } : {}) }),
+      () => 200,
+    ).scanSpaceOnce("space-1");
+
+    expect(result).toMatchObject({ failed: false, archived: 1 });
+    expect(store.workflowDefinition("space-1", "missing-1")?.state).toBe("invalid");
+    expect(store.workflowDefinition("space-1", "missing-2")?.state).toBe("archived");
+    expect(logs).toContainEqual({
+      event: "workflow_observer_object_failed",
+      fields: expect.objectContaining({ errorCode: "reconciliation_persistence_failed" }),
+    });
+    store.close();
+  });
+
+  it("uses bounded object reads while reconciling missing definitions", async () => {
+    const anytype = new FakeAnytype();
+    const store = new Store(":memory:");
+    store.recordWorkflowDefinitionStatus({
+      workflowId: "workflow-missing",
+      spaceId: "space-1",
+      objectId: "missing",
+      name: "Missing",
+      state: "invalid",
+      sourceModifiedAt: 1,
+      sourceDigest: workflowSourceDigest("missing"),
+      seenAt: 1,
+      validationErrors: ["source_missing"],
+    });
+    const boundedRead = vi
+      .spyOn(anytype, "getWorkflowObject")
+      .mockRejectedValueOnce(new Error("Anytype object response is too large"));
+    const generalRead = vi.spyOn(anytype, "getObject");
+
+    const result = await new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => 200,
+    ).scanSpaceOnce("space-1");
+
+    expect(result).toMatchObject({ failed: false, archived: 0 });
+    expect(boundedRead).toHaveBeenCalledWith("space-1", "missing");
+    expect(generalRead).not.toHaveBeenCalled();
+    store.close();
+  });
+
+  it("clamps hostile astral object and space IDs by UTF-16 code units", async () => {
+    const anytype = new FakeAnytype();
+    const hostileId = "😀".repeat(400);
+    const search = vi
+      .spyOn(anytype, "searchWorkflowObjects")
+      .mockResolvedValue([workflowObject({ id: hostileId })]);
+    const store = new Store(":memory:");
+
+    const result = await new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => 200,
+    ).scanSpaceOnce(hostileId);
+
+    const observedSpaceId = String(search.mock.calls[0]![0]);
+    const stored = store.db
+      .prepare("SELECT space_id,object_id FROM workflow_definitions")
+      .get() as { space_id: string; object_id: string };
+    expect(result.failed).toBe(false);
+    expect(observedSpaceId.length).toBeLessThanOrEqual(512);
+    expect(result.spaceId).toBe(observedSpaceId);
+    expect(stored.space_id.length).toBeLessThanOrEqual(512);
+    expect(stored.object_id.length).toBeLessThanOrEqual(512);
+    expect(/[\uD800-\uDBFF]$/u.test(stored.object_id)).toBe(false);
+    store.close();
+  });
+
+  it("keeps the run loop alive through escaped observer-state errors", async () => {
+    const anytype = new FakeAnytype();
+    const store = new Store(":memory:");
+    vi.spyOn(store, "workflowObserverState").mockImplementationOnce(() => {
+      throw new Error("temporary state read failure");
+    });
+    const abort = new AbortController();
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      (event, fields) => {
+        logs.push({ event, ...(fields ? { fields } : {}) });
+        if (event === "workflow_observer_loop_failed") abort.abort();
+      },
+      () => 200,
+      () => 0,
+    );
+
+    await expect(observer.run(abort.signal)).resolves.toBeUndefined();
+    expect(logs).toContainEqual({
+      event: "workflow_observer_loop_failed",
+      fields: {
+        errorCode: "scan_failed",
+        consecutiveFailures: 1,
+        retryInMilliseconds: 9_000,
+      },
+    });
+    store.close();
+  });
+
   it("requires exact configured participant identity for workflow authority", async () => {
     const anytype = new FakeAnytype();
     anytype.workflowObjects = [workflowObject({ editorParticipantId: "_participant_operator" })];

@@ -220,6 +220,10 @@ export interface AnytypePort {
     spaceId: string,
     objectId: string,
   ): Promise<{ id: string; name?: string; markdown?: string } & Record<string, unknown>>;
+  getWorkflowObject(
+    spaceId: string,
+    objectId: string,
+  ): Promise<{ id: string; name?: string; markdown?: string } & Record<string, unknown>>;
   listProperties?(spaceId: string): Promise<Record<string, unknown>[]>;
   listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]>;
   createPropertyTag(

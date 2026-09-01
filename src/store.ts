@@ -23,6 +23,7 @@ import type {
   WorkflowDefinitionObservation,
   WorkflowDefinitionState,
   WorkflowObserverState,
+  WorkflowVersionInput,
   WorkflowVersionRecord,
   WorkflowValidationErrorCode,
 } from "./automation/store-types.js";
@@ -1766,7 +1767,7 @@ export class Store {
   }
 
   saveWorkflowVersion(
-    input: WorkflowVersionRecord,
+    input: WorkflowVersionInput,
     observationDigest = input.sourceDigest,
   ): WorkflowVersionRecord {
     assertStoredTimestamp(input.sourceModifiedAt, "Workflow source modification time");
@@ -1899,8 +1900,8 @@ export class Store {
         stored.name !== input.name ||
         stored.approvalHash !== input.approvalHash ||
         stored.schemaVersion !== input.schemaVersion ||
-        stored.canonicalDefinitionJson !== storedDefinitionJson ||
-        stored.canonicalApprovalJson !== storedApprovalJson ||
+        stored.storedDefinitionJson !== storedDefinitionJson ||
+        stored.storedApprovalJson !== storedApprovalJson ||
         stored.riskTier !== input.riskTier ||
         JSON.stringify(stored.requiredCapabilities) !== requiredCapabilitiesJson
       )
@@ -1916,7 +1917,7 @@ export class Store {
 
   activateWorkflowVersionObservation(
     input: Pick<
-      WorkflowVersionRecord,
+      WorkflowVersionInput,
       "workflowId" | "versionHash" | "name" | "sourceModifiedAt" | "sourceDigest" | "createdAt"
     >,
     observationDigest = input.sourceDigest,
@@ -2423,8 +2424,8 @@ function mapWorkflowVersion(row: WorkflowVersionRow): WorkflowVersionRecord {
     versionHash: row.version_hash,
     approvalHash: row.approval_hash,
     schemaVersion: Number(row.schema_version),
-    canonicalDefinitionJson: row.canonical_definition_json,
-    canonicalApprovalJson: row.canonical_approval_json,
+    storedDefinitionJson: row.canonical_definition_json,
+    storedApprovalJson: row.canonical_approval_json,
     sourceDigest: row.source_digest,
     riskTier: row.risk_tier,
     requiredCapabilities: parseJson<WorkflowVersionRecord["requiredCapabilities"]>(

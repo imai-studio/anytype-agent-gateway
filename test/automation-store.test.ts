@@ -190,15 +190,21 @@ describe("automation persistence foundation", () => {
   it("stores immutable versions idempotently across equivalent source formatting", () => {
     const store = new Store(":memory:");
     const input = versionRecord();
-    expect(store.saveWorkflowVersion(input)).toEqual(input);
-    expect(store.saveWorkflowVersion(input)).toEqual(input);
+    const { canonicalDefinitionJson, canonicalApprovalJson, ...metadata } = input;
+    const stored = {
+      ...metadata,
+      storedDefinitionJson: canonicalDefinitionJson,
+      storedApprovalJson: canonicalApprovalJson,
+    };
+    expect(store.saveWorkflowVersion(input)).toEqual(stored);
+    expect(store.saveWorkflowVersion(input)).toEqual(stored);
     expect(
       store.saveWorkflowVersion({
         ...input,
         sourceDigest: workflowSourceDigest("# comment-only YAML representation"),
       }),
-    ).toEqual(input);
-    expect(store.workflowVersion(input.workflowId, input.versionHash)).toEqual(input);
+    ).toEqual(stored);
+    expect(store.workflowVersion(input.workflowId, input.versionHash)).toEqual(stored);
     expect(
       store.db
         .prepare(
@@ -372,10 +378,10 @@ describe("automation persistence foundation", () => {
     });
 
     const stored = store.saveWorkflowVersion(versionRecord(definition));
-    expect(stored.canonicalDefinitionJson).not.toContain(secret);
-    expect(stored.canonicalApprovalJson).not.toContain(secret);
-    expect(stored.canonicalDefinitionJson).toContain('"redacted":true');
-    expect(stored.canonicalApprovalJson).toContain('"redacted":true');
+    expect(stored.storedDefinitionJson).not.toContain(secret);
+    expect(stored.storedApprovalJson).not.toContain(secret);
+    expect(stored.storedDefinitionJson).toContain('"redacted":true');
+    expect(stored.storedApprovalJson).toContain('"redacted":true');
     expect(
       JSON.stringify(
         store.db

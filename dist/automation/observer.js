@@ -5,6 +5,7 @@ import { principalFromParticipantId } from "../principal.js";
 import { evaluateWorkflowAuthority, evaluateWorkflowPolicy } from "./policy.js";
 import { canonicalJson, canonicalWorkflowDefinition, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./workflow.js";
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
+const MAX_IDENTIFIER_CODE_UNITS = 512;
 export class WorkflowObserver {
     anytype;
     store;
@@ -22,28 +23,62 @@ export class WorkflowObserver {
         this.random = random;
     }
     async run(signal) {
-        const spaces = [...new Set(this.config.allowedSpaceIds)];
+        const spaces = [
+            ...new Set(this.config.allowedSpaceIds.map((spaceId) => boundedIdentifier(spaceId) ?? "invalid-space-id")),
+        ];
+        let escapedFailures = 0;
         while (!signal.aborted) {
-            const now = this.now();
-            const due = spaces.filter((spaceId) => this.state(spaceId, now).nextScanAt <= now);
-            if (!due.length) {
-                const next = Math.min(...spaces.map((spaceId) => this.state(spaceId, now).nextScanAt));
-                await wait(Math.max(1, next - now), signal);
-                continue;
+            try {
+                const now = this.now();
+                const due = spaces.filter((spaceId) => this.state(spaceId, now).nextScanAt <= now);
+                if (!due.length) {
+                    const next = Math.min(...spaces.map((spaceId) => this.state(spaceId, now).nextScanAt));
+                    await wait(Math.max(1, next - now), signal);
+                    continue;
+                }
+                const selected = due[this.cursor % due.length];
+                this.cursor += 1;
+                const result = await this.scanSpaceOnce(selected);
+                escapedFailures = 0;
+                this.log(result.failed ? "workflow_observer_scan_failed" : "workflow_observer_scan_complete", {
+                    ...result,
+                });
             }
-            const selected = due[this.cursor % due.length];
-            this.cursor += 1;
-            const result = await this.scanSpaceOnce(selected);
-            this.log(result.failed ? "workflow_observer_scan_failed" : "workflow_observer_scan_complete", {
-                ...result,
-            });
+            catch (error) {
+                if (signal.aborted)
+                    return;
+                escapedFailures = Math.min(escapedFailures + 1, 30);
+                const minimum = this.config.polling.minimumIntervalSeconds * 1_000;
+                const maximum = this.config.polling.maximumIntervalSeconds * 1_000;
+                const interval = Math.min(maximum, minimum * 2 ** Math.min(escapedFailures - 1, 20));
+                const retryInMilliseconds = jitter(interval, this.random);
+                this.log("workflow_observer_loop_failed", {
+                    errorCode: observerErrorCode(error),
+                    consecutiveFailures: escapedFailures,
+                    retryInMilliseconds,
+                });
+                try {
+                    await wait(retryInMilliseconds, signal);
+                }
+                catch {
+                    if (signal.aborted)
+                        return;
+                    throw error;
+                }
+            }
         }
     }
     async scanSpaceOnce(spaceId) {
+        spaceId = boundedIdentifier(spaceId) ?? "invalid-space-id";
         const startedAt = this.now();
         const state = this.state(spaceId, startedAt);
         try {
-            const objects = await this.anytype.searchWorkflowObjects(spaceId, this.config.definitionTypeKeys, state.pageOffset, this.config.polling.pageSize);
+            const objects = (await this.anytype.searchWorkflowObjects(spaceId, this.config.definitionTypeKeys, state.pageOffset, this.config.polling.pageSize))
+                .slice(0, this.config.polling.pageSize)
+                .map((object) => ({
+                ...object,
+                id: boundedIdentifier(object.id) ?? "invalid-object-id",
+            }));
             let changes = 0;
             let watermarkModifiedAt = state.watermarkModifiedAt;
             let watermarkFingerprint = state.watermarkFingerprint;
@@ -53,12 +88,22 @@ export class WorkflowObserver {
                     observed = this.observeObject(spaceId, object, startedAt);
                 }
                 catch {
-                    observed = this.observeReadFailure(spaceId, object, startedAt, "object_read_failed");
-                    this.log("workflow_observer_object_failed", {
-                        spaceId,
-                        objectIdDigest: stableId("object-log", object.id),
-                        errorCode: "object_read_failed",
-                    });
+                    try {
+                        observed = this.observeReadFailure(spaceId, object, startedAt, "object_read_failed");
+                        this.log("workflow_observer_object_failed", {
+                            spaceId,
+                            objectIdDigest: stableId("object-log", object.id),
+                            errorCode: "object_read_failed",
+                        });
+                    }
+                    catch {
+                        observed = { changed: false, sourceDigest: workflowSourceDigest("") };
+                        this.log("workflow_observer_object_failed", {
+                            spaceId,
+                            objectIdDigest: stableId("object-log", object.id),
+                            errorCode: "read_failure_persistence_failed",
+                        });
+                    }
                 }
                 changes += observed.changed ? 1 : 0;
                 const modifiedAt = validNativeRevision(object.modifiedAt, startedAt)
@@ -292,43 +337,51 @@ export class WorkflowObserver {
         const batch = candidates.slice(0, limit);
         let changed = 0;
         for (const definition of batch) {
-            let confirmed = false;
             try {
-                const object = await this.anytype.getObject(spaceId, definition.objectId);
-                confirmed = object.archived === true || object.is_archived === true;
+                const objectId = boundedIdentifier(definition.objectId) ?? "invalid-object-id";
+                let confirmed = false;
+                let readSucceeded = false;
+                try {
+                    const object = await this.anytype.getWorkflowObject(spaceId, objectId);
+                    readSucceeded = true;
+                    confirmed = object.archived === true || object.is_archived === true;
+                }
+                catch (error) {
+                    confirmed = error instanceof AnytypeHttpError && [404, 410].includes(error.status);
+                }
                 if (!confirmed) {
-                    this.store.recordWorkflowDefinitionStatus({
-                        ...definition,
-                        seenAt: observedAt,
-                    });
+                    if (readSucceeded)
+                        this.store.recordWorkflowDefinitionStatus({ ...definition, seenAt: observedAt });
                     continue;
                 }
+                const sourceDigest = definition.sourceDigest || workflowSourceDigest("");
+                const inserted = this.recordEvent("object.archived", spaceId, {
+                    id: objectId,
+                    name: definition.name,
+                    typeKey: "missing",
+                    modifiedAt: definition.sourceModifiedAt,
+                    archived: true,
+                }, sourceDigest, observedAt, { workflowId: definition.workflowId, state: "archived", reason: "missing-on-reconcile" });
+                this.store.recordWorkflowDefinitionStatus({
+                    workflowId: definition.workflowId,
+                    spaceId,
+                    objectId,
+                    name: definition.name,
+                    state: "archived",
+                    sourceModifiedAt: definition.sourceModifiedAt,
+                    sourceDigest,
+                    seenAt: definition.lastSeenAt,
+                });
+                if (inserted || definition.state !== "archived")
+                    changed += 1;
             }
-            catch (error) {
-                confirmed = error instanceof AnytypeHttpError && [404, 410].includes(error.status);
+            catch {
+                this.log("workflow_observer_object_failed", {
+                    spaceId,
+                    objectIdDigest: stableId("object-log", boundedIdentifier(definition.objectId) ?? ""),
+                    errorCode: "reconciliation_persistence_failed",
+                });
             }
-            if (!confirmed)
-                continue;
-            const sourceDigest = definition.sourceDigest || workflowSourceDigest("");
-            const inserted = this.recordEvent("object.archived", spaceId, {
-                id: definition.objectId,
-                name: definition.name,
-                typeKey: "missing",
-                modifiedAt: definition.sourceModifiedAt,
-                archived: true,
-            }, sourceDigest, observedAt, { workflowId: definition.workflowId, state: "archived", reason: "missing-on-reconcile" });
-            this.store.recordWorkflowDefinitionStatus({
-                workflowId: definition.workflowId,
-                spaceId,
-                objectId: definition.objectId,
-                name: definition.name,
-                state: "archived",
-                sourceModifiedAt: definition.sourceModifiedAt,
-                sourceDigest,
-                seenAt: definition.lastSeenAt,
-            });
-            if (inserted || definition.state !== "archived")
-                changed += 1;
         }
         return { changed, complete: candidates.length <= limit };
     }
@@ -446,6 +499,14 @@ function validNativeRevision(modifiedAt, observedAt) {
 function boundedLabel(value) {
     const label = [...value.trim()].slice(0, 256).join("");
     return label || "Workflow";
+}
+function boundedIdentifier(value) {
+    if (!value)
+        return undefined;
+    let bounded = value.slice(0, MAX_IDENTIFIER_CODE_UNITS);
+    if (/[\uD800-\uDBFF]$/u.test(bounded))
+        bounded = bounded.slice(0, -1);
+    return bounded || undefined;
 }
 function stableId(domain, ...parts) {
     return `sha256:${createHash("sha256")

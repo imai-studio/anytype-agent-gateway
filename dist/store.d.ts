@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import type { AgentRuntime, ConversationModelState, OutboundItem, OutboundOperation, OutputCycle, OutputCyclePhase, OutputCycleState, ProactiveDelivery, RuntimeCapabilities, SessionBinding, SessionBindingState } from "./session-types.js";
-import type { NormalizedEventRecord, WorkflowApprovalDecision, WorkflowDefinitionObservation, WorkflowDefinitionState, WorkflowObserverState, WorkflowVersionRecord, WorkflowValidationErrorCode } from "./automation/store-types.js";
+import type { NormalizedEventRecord, WorkflowApprovalDecision, WorkflowDefinitionObservation, WorkflowDefinitionState, WorkflowObserverState, WorkflowVersionInput, WorkflowVersionRecord, WorkflowValidationErrorCode } from "./automation/store-types.js";
 export type ManagementCapabilityScope = "wake" | "access" | "model";
 export declare class Store {
     private readonly reportMigration;
@@ -189,8 +189,8 @@ export declare class Store {
     workflowDefinitionsMissingSince(spaceId: string, reconcileStartedAt: number, limit?: number): WorkflowDefinitionObservation[];
     workflowObserverState(spaceId: string): WorkflowObserverState | undefined;
     saveWorkflowObserverState(input: WorkflowObserverState): WorkflowObserverState;
-    saveWorkflowVersion(input: WorkflowVersionRecord, observationDigest?: string): WorkflowVersionRecord;
-    activateWorkflowVersionObservation(input: Pick<WorkflowVersionRecord, "workflowId" | "versionHash" | "name" | "sourceModifiedAt" | "sourceDigest" | "createdAt">, observationDigest?: string): void;
+    saveWorkflowVersion(input: WorkflowVersionInput, observationDigest?: string): WorkflowVersionRecord;
+    activateWorkflowVersionObservation(input: Pick<WorkflowVersionInput, "workflowId" | "versionHash" | "name" | "sourceModifiedAt" | "sourceDigest" | "createdAt">, observationDigest?: string): void;
     workflowVersion(workflowId: string, versionHash: string): WorkflowVersionRecord | undefined;
     recordWorkflowApproval(input: Omit<WorkflowApprovalDecision, "sequence">): WorkflowApprovalDecision;
     currentWorkflowApproval(workflowId: string, approvalHash: string, authorityHash: string, now?: number): WorkflowApprovalDecision | undefined;

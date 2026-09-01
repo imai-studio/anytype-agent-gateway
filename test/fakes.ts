@@ -135,6 +135,12 @@ export class FakeAnytype implements AnytypePort {
       ...this.objects.get(objectId),
     };
   }
+  async getWorkflowObject(
+    spaceId: string,
+    objectId: string,
+  ): Promise<{ id: string; name?: string; markdown?: string } & Record<string, unknown>> {
+    return this.getObject(spaceId, objectId);
+  }
   async listPropertyTags(_spaceId: string, _propertyId: string): Promise<AnytypeTag[]> {
     return this.propertyTags;
   }
