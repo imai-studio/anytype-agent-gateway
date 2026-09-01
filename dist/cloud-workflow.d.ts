@@ -113,7 +113,8 @@ export declare class AnytypeCloudCommandExecutor implements CloudCommandExecutio
     private readonly cloud;
     private readonly cloudConfig;
     private readonly agentParticipantId;
-    constructor(anytype: AnytypePort, cloud: CloudCommandClient, cloudConfig: CloudConfig, agentParticipantId: string);
+    private readonly allowedOriginParticipantIds;
+    constructor(anytype: AnytypePort, cloud: CloudCommandClient, cloudConfig: CloudConfig, agentParticipantId: string, allowedOriginParticipantIds?: readonly string[]);
     execute(command: CloudCommandEnvelope, effectKey: string): Promise<CloudCommandResult>;
 }
 export {};

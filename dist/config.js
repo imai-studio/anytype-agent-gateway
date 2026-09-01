@@ -579,6 +579,13 @@ const baseConfigSchema = z.object({
             .array(z.enum(["human-session", "connector-key", "consumer-api-key", "first-party-service"]))
             .default(["human-session"]),
         allowedSpaceIds: z.array(z.string().min(1)).default([]),
+        allowedOriginParticipantIds: z
+            .array(z
+            .string()
+            .min(1)
+            .max(512)
+            .refine((value) => value !== "*", "wildcard is not allowed"))
+            .default([]),
         allowedActorDigests: z.array(z.string().regex(/^[a-f0-9]{64}$/u)).default([]),
         allowedScopes: z.array(cloudScopeSchema).default([]),
         projection: z
@@ -605,6 +612,7 @@ const baseConfigSchema = z.object({
         approval: "writes",
         allowedCreatorKinds: ["human-session"],
         allowedSpaceIds: [],
+        allowedOriginParticipantIds: [],
         allowedActorDigests: [],
         allowedScopes: [],
         projection: { enabled: false },
@@ -631,6 +639,14 @@ export const configSchema = baseConfigSchema.superRefine((value, context) => {
             code: "custom",
             path: ["cloudCommands", "allowedActorDigests"],
             message: "cloudCommands.allowedActorDigests is required when cloud commands are enabled",
+        });
+    if (value.cloudCommands.enabled &&
+        value.cloudCommands.allowedScopes.includes("anytype.chats.send") &&
+        value.cloudCommands.allowedOriginParticipantIds.length === 0)
+        context.addIssue({
+            code: "custom",
+            path: ["cloudCommands", "allowedOriginParticipantIds"],
+            message: "cloudCommands.allowedOriginParticipantIds is required for chat.send",
         });
 });
 export function inactivityTimeoutSeconds(runtime) {

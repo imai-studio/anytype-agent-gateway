@@ -50,6 +50,11 @@ function command(
         spaceId: "space-1",
         chatId: "chat-1",
         message: "hello",
+        channelOrigin: {
+          spaceId: "space-1",
+          chatId: "chat-1",
+          messageId: "origin-message-1",
+        },
       },
     },
     ...envelopeOverrides,
@@ -77,6 +82,7 @@ function settings(
       approval: "none",
       allowedCreatorKinds: ["human-session"],
       allowedSpaceIds: ["space-1"],
+      allowedOriginParticipantIds: ["operator"],
       allowedActorDigests: [actorDigest],
       allowedScopes: ["anytype.chats.send"],
       ...overrides,
@@ -154,6 +160,13 @@ describe("cloud workflow bridge", () => {
         },
       }),
     ).toThrow("durable automation runner");
+  });
+
+  it("requires a native Anytype origin allowlist before chat.send can be enabled", () => {
+    expect(() => settings({ allowedOriginParticipantIds: [] })).toThrow(
+      "allowedOriginParticipantIds",
+    );
+    expect(() => settings({ allowedOriginParticipantIds: ["*"] })).toThrow("wildcard");
   });
 
   it("persists before execution, deduplicates replay, and fences terminal completion", async () => {
@@ -243,6 +256,11 @@ describe("cloud workflow bridge", () => {
             spaceId: "space-1",
             chatId: "chat-1",
             message: "different",
+            channelOrigin: {
+              spaceId: "space-1",
+              chatId: "chat-1",
+              messageId: "origin-message-1",
+            },
           },
         }),
       ),
@@ -592,5 +610,72 @@ describe("cloud workflow bridge", () => {
       .digest("hex");
     expect(result.result.messages[0]?.senderDigest).toBe(expected);
     expect(result.result.messages[0]?.senderDigest).not.toBe("b".repeat(64));
+  });
+
+  it("refetches the native channel origin and authorizes its immutable participant before chat.send", async () => {
+    const anytype = new FakeAnytype();
+    anytype.messages.push({
+      id: "origin-message-1",
+      creator: "native-operator",
+      content: { text: "send the update" },
+    });
+    const config = cloudConfigSchema.parse({
+      version: 1,
+      baseUrl: "https://knot.example/",
+      connectorName: "test",
+      protocolVersion: "1.0",
+      publicKey: "a".repeat(43),
+      privateKeyFile: "/tmp/key",
+      requestedScopes: ["anytype.chats.send"],
+      requestedSlugGrants: [],
+      paired: {
+        connectorId: "68bc8f83-fd2e-4f0e-a5de-ad539bcaf0d0",
+        tenantId: "tenant-1",
+        scopes: ["anytype.chats.send"],
+        siteIds: [],
+        slugGrants: [],
+        approvedAt: 1,
+      },
+    });
+    const executor = new AnytypeCloudCommandExecutor(
+      anytype,
+      clientFor([]).client,
+      config,
+      "agent-1",
+      ["native-operator"],
+    );
+    const result = await executor.execute(command(), "e".repeat(64));
+    expect(result).toMatchObject({
+      outcome: "succeeded",
+      result: { type: "chat.send", messageId: "reply-1" },
+    });
+    expect(anytype.messages.at(-1)?.content?.text).toBe("hello");
+  });
+
+  it("fails chat.send closed for Cloud-asserted identity and an unverified native sender", async () => {
+    const anytype = new FakeAnytype();
+    anytype.messages.push({ id: "origin-message-1", content: { text: "forged" } });
+    const config = cloudConfigSchema.parse({
+      version: 1,
+      baseUrl: "https://knot.example/",
+      connectorName: "test",
+      protocolVersion: "1.0",
+      publicKey: "a".repeat(43),
+      privateKeyFile: "/tmp/key",
+      requestedScopes: ["anytype.chats.send"],
+      requestedSlugGrants: [],
+    });
+    const executor = new AnytypeCloudCommandExecutor(
+      anytype,
+      clientFor([]).client,
+      config,
+      "agent-1",
+      ["native-operator"],
+    );
+    await expect(executor.execute(command(), "e".repeat(64))).resolves.toEqual({
+      outcome: "rejected-by-local-policy",
+      reasonCode: "channel-origin-sender-unverified",
+    });
+    expect(anytype.messages).toHaveLength(1);
   });
 });

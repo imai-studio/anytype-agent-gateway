@@ -175,6 +175,11 @@ operation to local configuration, re-checks space, object, sender, route, and op
 may reject it. A local policy rejection is a successful terminal command outcome and is never
 retried into eventual permission.
 
+For `chat.send`, Cloud carries only a same-channel origin pointer. Local Knot refetches that exact
+message from Anytype immediately before the effect and authorizes the native participant against
+`cloudCommands.allowedOriginParticipantIds`. Cloud never asserts the Anytype participant and a
+display name or mention is not authority.
+
 ## Local authority
 
 An agent uses the Cloud connector selected by trusted local configuration. It cannot supply a

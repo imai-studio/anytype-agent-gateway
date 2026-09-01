@@ -89,6 +89,16 @@ export declare class CloudClient {
             payload: {
                 domain: "anytype";
                 operation: {
+                    type: "chat.send";
+                    spaceId: string;
+                    chatId: string;
+                    message: string;
+                    channelOrigin: {
+                        spaceId: string;
+                        chatId: string;
+                        messageId: string;
+                    };
+                } | {
                     type: "object.read";
                     spaceId: string;
                     objectId: string;
@@ -144,11 +154,6 @@ export declare class CloudClient {
                     spaceId: string;
                     chatId: string;
                     limit: number;
-                } | {
-                    type: "chat.send";
-                    spaceId: string;
-                    chatId: string;
-                    message: string;
                 };
             } | {
                 domain: "publication";

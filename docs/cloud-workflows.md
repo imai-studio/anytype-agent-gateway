@@ -31,6 +31,10 @@ cloudCommands:
     - replace_with_an_authenticated_cloud_principal_sha256_digest
   allowedSpaceIds:
     - replace_with_an_allowed_space_id
+  # Required before granting anytype.chats.send. These are immutable native
+  # Anytype participant IDs, never display names or Cloud-provided claims.
+  allowedOriginParticipantIds:
+    - replace_with_an_authorized_native_participant_id
   allowedScopes:
     - anytype.objects.read
     - anytype.chats.send
@@ -80,6 +84,23 @@ repeat automatically.
 requests. A command received before `notBefore` remains durably queued at that timestamp; it is not
 reported as a policy rejection. Clock-skew responses update that shared offset before the next
 dispatch decision.
+
+## Transactional channel actions
+
+`chat.send` has an additional local authority fence. Its typed Cloud command contains a
+`channelOrigin` lookup pointer with a space, chat, and message ID. It contains no trusted participant
+identity. The origin must be in the same destination channel.
+
+Immediately before sending, Knot calls Anytype for that exact message, derives the immutable native
+participant from the response, and compares it to `allowedOriginParticipantIds`. A missing message,
+mismatched ID, missing native participant, or participant not in the local list produces a terminal
+local-policy rejection. A Cloud-supplied display name, mention, participant ID, or actor digest
+cannot substitute for this check.
+
+The action still enters through the existing signed Cloud command claim protocol and the durable P6
+runner. It does not start a second poller or scheduler. The command's immutable digest, manual
+approval when configured, effect receipt, lease fence, result outbox, and crash quarantine remain
+the same as other Cloud workflow effects.
 
 Optional Anytype audit projection uses its own durable outbox:
 

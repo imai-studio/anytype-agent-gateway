@@ -187,6 +187,7 @@ export class Gateway {
             cloud,
             cloudConfig,
             this.config.agent.participantId,
+            this.config.cloudCommands.allowedOriginParticipantIds,
           );
           extensions.push(
             new CloudWorkflowExtension(
