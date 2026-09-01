@@ -937,7 +937,10 @@ function materializeStoredDefinition(
       if (isRedactedText(nested)) {
         const pointer = nestedPath.join("/");
         sensitiveText.set(pointer, nested.digest);
-        result[key] = `[${key} unavailable until source refetch]`;
+        result[key] =
+          key === "href"
+            ? "https://redacted.invalid/"
+            : `[${key} unavailable until source refetch]`;
       } else result[key] = materializeStoredDefinition(nested, nestedPath, sensitiveText);
     } else result[key] = materializeStoredDefinition(nested, nestedPath, sensitiveText);
   }

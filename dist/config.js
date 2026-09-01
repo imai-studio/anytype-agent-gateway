@@ -555,6 +555,7 @@ const baseConfigSchema = z.object({
         allowedConnections: [],
         allowedSecretNames: [],
         allowedProjects: [],
+        publishConnections: {},
         maximumRiskTier: "T0",
         heartHints: false,
         limits: {
@@ -668,6 +669,8 @@ export async function loadConfig(path) {
     if (config.runtime.defaultProject)
         config.runtime.defaultProject = expandHome(config.runtime.defaultProject);
     config.runtime.allowedProjects = config.runtime.allowedProjects.map(expandHome);
+    for (const connection of Object.values(config.automation.publishConnections))
+        connection.cloudConfigFile = expandHome(connection.cloudConfigFile);
     const stateDirectory = await canonicalPath(dirname(config.state.path));
     const projectRoots = [config.runtime.defaultProject, ...config.runtime.allowedProjects].filter((value) => Boolean(value));
     const canonicalProjectRoots = await Promise.all(projectRoots.map(canonicalPath));

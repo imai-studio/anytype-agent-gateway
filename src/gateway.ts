@@ -7,8 +7,13 @@ import {
 import { DiscussionAnytypePort, HeartDiscussionAdapter } from "./discussions.js";
 import { Store } from "./store.js";
 import type { AnytypePort, ChatMessage, ConversationRef, RuntimeDriver } from "./types.js";
-import { WorkflowObserver } from "./automation/observer.js";
-import { WorkflowRunner, type WorkflowRunnerExtension } from "./automation/runner.js";
+import { AnytypeWorkflowSourceResolver, WorkflowObserver } from "./automation/observer.js";
+import {
+  NoEffectWorkflowStepExecutor,
+  WorkflowRunner,
+  type WorkflowRunnerExtension,
+} from "./automation/runner.js";
+import { PublishWebWorkflowStepExecutor } from "./automation/publish-web.js";
 import { CloudClient } from "./cloud-client.js";
 import { loadCloudConfig, resolveCloudPaths } from "./cloud-config.js";
 import { AnytypeCloudCommandExecutor, CloudWorkflowExtension } from "./cloud-workflow.js";
@@ -199,9 +204,16 @@ export class Gateway {
             this.store,
             this.config.automation,
             this.log,
-            undefined,
+            new PublishWebWorkflowStepExecutor(
+              this.config.automation,
+              new NoEffectWorkflowStepExecutor(),
+            ),
             Date.now,
-            undefined,
+            new AnytypeWorkflowSourceResolver(
+              this.anytype,
+              this.config.automation.definitionTypeKeys,
+              this.config.automation.polling.pageSize,
+            ),
             extensions,
           ).run(this.abort.signal),
           "workflow_runner_stopped",

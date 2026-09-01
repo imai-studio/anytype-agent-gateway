@@ -465,7 +465,43 @@ export class WorkflowObserver {
         return true;
     }
 }
-function extractWorkflowSource(source) {
+/** Refetches redacted workflow source from Anytype before an effect is allowed to run. */
+export class AnytypeWorkflowSourceResolver {
+    anytype;
+    definitionTypeKeys;
+    pageSize;
+    constructor(anytype, definitionTypeKeys, pageSize = 100) {
+        this.anytype = anytype;
+        this.definitionTypeKeys = definitionTypeKeys;
+        this.pageSize = pageSize;
+    }
+    async refetch(version, signal) {
+        const limit = Math.min(100, Math.max(1, this.pageSize));
+        for (let page = 0; page < 100; page += 1) {
+            if (signal.aborted)
+                throw signal.reason;
+            const objects = await this.anytype.searchWorkflowObjects(version.spaceId, this.definitionTypeKeys, page * limit, limit);
+            const object = objects.find((candidate) => candidate.id === version.objectId);
+            if (object) {
+                if (object.archived ||
+                    object.observationError ||
+                    !object.editorParticipantId ||
+                    object.modifiedAt !== version.sourceModifiedAt)
+                    return undefined;
+                return {
+                    definitionSource: extractWorkflowSource(object.source),
+                    sourceModifiedAt: object.modifiedAt,
+                    editorParticipantId: object.editorParticipantId,
+                    editorProvenance: "anytype-native",
+                };
+            }
+            if (objects.length < limit)
+                return undefined;
+        }
+        return undefined;
+    }
+}
+export function extractWorkflowSource(source) {
     if (!source)
         throw new ObserverValidationError("source_missing");
     if (source.length > 1_000_000)

@@ -14,6 +14,7 @@ const stepCapabilities = {
     http: ["http.request"],
     approval: [],
     notify: ["notify"],
+    "publish.web": ["publish.web"],
 };
 const t2Capabilities = new Set([
     "anytype.archive",
@@ -21,6 +22,7 @@ const t2Capabilities = new Set([
     "anytype.cross-space",
     "http.request",
     "notify",
+    "publish.web",
 ]);
 const t1Capabilities = new Set([
     "agent.invoke",
@@ -41,6 +43,22 @@ export const workflowAuthorityFields = {
     allowedConnections: z.array(z.string().min(1)).default([]),
     allowedSecretNames: z.array(z.string().min(1)).default([]),
     allowedProjects: z.array(z.string().min(1)).default([]),
+    publishConnections: z
+        .record(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u), z
+        .object({
+        cloudConfigFile: z.string().trim().min(1),
+        allowedSiteIds: z.array(z.uuid()).min(1).max(100),
+        allowedSlugPrefixes: z
+            .array(z.string().regex(/^[a-z0-9](?:[a-z0-9/_-]*[a-z0-9/])?$/u))
+            .min(1)
+            .max(100),
+        allowUpdate: z.boolean().default(false),
+        allowRollback: z.boolean().default(false),
+        allowDisable: z.boolean().default(false),
+        allowUnpublish: z.boolean().default(false),
+    })
+        .strict())
+        .default({}),
     maximumRiskTier: z.enum(["T0", "T1", "T2"]).default("T0"),
     limits: z
         .object({
@@ -138,7 +156,7 @@ export function evaluateWorkflowAuthority(workflow, authority, context = {}) {
         if (step.kind === "agent" && "project" in config && config.project)
             if (!authority.allowedProjects.includes(config.project))
                 violations.push(`Project is not locally authorized: ${config.project}`);
-        if (step.kind !== "http" && step.kind !== "notify")
+        if (step.kind !== "http" && step.kind !== "notify" && step.kind !== "publish.web")
             continue;
         if ("connectionRef" in config &&
             config.connectionRef &&
@@ -182,6 +200,7 @@ export function workflowAuthorityHash(authority) {
         allowedProjects: [...new Set(authority.allowedProjects)].sort(),
         allowedSecretNames: [...new Set(authority.allowedSecretNames)].sort(),
         allowedSpaceIds: [...new Set(authority.allowedSpaceIds)].sort(),
+        publishConnections: authority.publishConnections ?? {},
         limits: authority.limits,
         maximumRiskTier: authority.maximumRiskTier,
     };

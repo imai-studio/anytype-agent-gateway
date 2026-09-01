@@ -135,3 +135,55 @@ tools:
 ID created by the CLI. It does not accept a server URL, API key, raw HTML, upload URL, or filesystem
 path. Knot binds the call to the verified native Anytype sender and uses the same outbox and policy
 checks as the CLI.
+
+## Use a named connection from a workflow
+
+Workflow publishing is separate from the interactive MCP grant. Configure a named, operator-owned
+connection in the automation authority and grant both the connection and the T2 capability:
+
+```yaml
+automation:
+  enabled: true
+  observation: true
+  execution: true
+  maximumRiskTier: T2
+  allowedCapabilities: [publish.web]
+  allowedConnections: [website]
+  publishConnections:
+    website:
+      cloudConfigFile: ~/.config/knot/cloud.json
+      allowedSiteIds:
+        - 00000000-0000-4000-8000-000000000001
+      allowedSlugPrefixes: [notes/]
+      allowUpdate: true
+      allowRollback: false
+      allowDisable: false
+      allowUnpublish: false
+```
+
+The workflow step names `website`; it never receives the Cloud URL or key:
+
+```yaml
+- id: publish-release
+  kind: publish.web
+  config:
+    action: create
+    connectionRef: website
+    siteId: 00000000-0000-4000-8000-000000000001
+    publicationId: 00000000-0000-4000-8000-000000000002
+    slug: notes/release
+    document:
+      schemaVersion: "1.0"
+      title: Release notes
+      blocks:
+        - type: paragraph
+          content:
+            - text: The release is ready.
+              marks: []
+```
+
+Declare `publish.web` in the workflow's `spec.capabilities`. It is T2, so an exact explicit manual
+approval is mandatory. Changing document text, destination, lifecycle operation, connection, or
+local named-connection policy invalidates the applicable approval. Publication text is not retained
+in the workflow database; execution refetches and re-verifies the Anytype definition before the
+existing Cloud publication outbox commits the effect.

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { publicationDocumentSchema, publicationMutationSchema } from "../cloud-contract.js";
 export const jsonValueSchema = z.lazy(() => z.union([
     z.string(),
     z.number().finite(),
@@ -19,6 +20,7 @@ export const workflowCapabilitySchema = z.enum([
     "anytype.write",
     "http.request",
     "notify",
+    "publish.web",
 ]);
 export const WORKFLOW_POLICY_VERSION = 2;
 export const workflowStepKindSchema = z.enum([
@@ -32,6 +34,7 @@ export const workflowStepKindSchema = z.enum([
     "http",
     "approval",
     "notify",
+    "publish.web",
 ]);
 const retrySchema = z
     .object({
@@ -119,6 +122,59 @@ function workflowStep(kind, config) {
     })
         .strict();
 }
+function requiredWorkflowStep(kind, config) {
+    return z
+        .object({
+        id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
+        kind: z.literal(kind),
+        dependsOn: z.array(z.string()).max(1_000).default([]),
+        config,
+        retry: retrySchema.optional(),
+        timeoutSeconds: z.number().int().min(1).max(86_400).optional(),
+    })
+        .strict();
+}
+const publicationIdSchema = z.uuid();
+export const publishWebConfigSchema = z.discriminatedUnion("action", [
+    z
+        .object({
+        action: z.enum(["create", "update"]),
+        connectionRef: z.string().trim().min(1).max(160),
+        siteId: publicationIdSchema,
+        publicationId: publicationIdSchema,
+        slug: publicationMutationSchema.shape.slug,
+        document: publicationDocumentSchema,
+        assetManifestId: publicationIdSchema.optional(),
+    })
+        .strict(),
+    z
+        .object({
+        action: z.literal("rollback"),
+        connectionRef: z.string().trim().min(1).max(160),
+        publicationId: publicationIdSchema,
+        versionId: publicationIdSchema,
+    })
+        .strict(),
+    z
+        .object({
+        action: z.literal("disable"),
+        connectionRef: z.string().trim().min(1).max(160),
+        publicationId: publicationIdSchema,
+    })
+        .strict(),
+    z
+        .object({
+        action: z.literal("unpublish"),
+        connectionRef: z.string().trim().min(1).max(160),
+        publicationId: publicationIdSchema,
+        confirmation: publicationIdSchema,
+    })
+        .strict()
+        .refine((value) => value.confirmation === value.publicationId, {
+        path: ["confirmation"],
+        message: "Destructive unpublish confirmation must equal publicationId",
+    }),
+]);
 const workflowStepSchema = z.discriminatedUnion("kind", [
     workflowStep("agent", z
         .object({
@@ -166,6 +222,7 @@ const workflowStepSchema = z.discriminatedUnion("kind", [
         message: z.string().max(100_000).optional(),
     })
         .strict()),
+    requiredWorkflowStep("publish.web", publishWebConfigSchema),
 ]);
 const workflowDefinitionObjectSchema = z
     .object({
@@ -388,7 +445,18 @@ function redactSensitiveWorkflowStrings(value, path = []) {
 }
 export function isSensitiveWorkflowTextPath(path) {
     const key = path.at(-1);
-    return key === "prompt" || key === "message";
+    if (key === "prompt" || key === "message")
+        return true;
+    if (path.length >= 6 &&
+        path[0] === "spec" &&
+        path[1] === "steps" &&
+        /^\d+$/.test(path[2]) &&
+        path[3] === "config" &&
+        path[4] === "document") {
+        const leaf = path.at(-1);
+        return ["title", "description", "text", "href", "code", "alt"].includes(leaf ?? "");
+    }
+    return false;
 }
 function sensitiveWorkflowFieldDigest(path, value) {
     const digest = createHash("sha256")

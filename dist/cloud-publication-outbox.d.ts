@@ -5,8 +5,8 @@ declare const operationStateSchema: z.ZodEnum<{
     succeeded: "succeeded";
     failed: "failed";
     queued: "queued";
-    retrying: "retrying";
     "in-flight": "in-flight";
+    retrying: "retrying";
 }>;
 export declare const publicationAssetSchema: z.ZodObject<{
     digest: z.ZodString;

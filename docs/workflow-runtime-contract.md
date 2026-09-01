@@ -38,13 +38,13 @@ The runner stores deliveries, runs, steps, and attempts before it claims work. C
 ID, lease deadline, and random fencing token. A stale worker cannot complete a reclaimed step.
 Retry deadlines, cancellation requests, dead letters, the event cursor, and the fair-claim hint are
 durable. Dispatch and resume re-evaluate current local authority and the exact approval decision.
-The only shipped successful executor is an empty transform with no transform or input reference.
-Every other step fails closed at the executor boundary without an external effect.
-If a definition contains a prompt or message, the runner moves its first claimed step to
-`source_refetch_required` instead of reading text from SQLite. The optional resolver contract is
-read-only. It must return the exact definition source, native revision, and verified editor. Knot
-then checks the source, version, approval, editor, policy, and current authority hashes before it
-can resume the step. The current gateway does not install a resolver or effect executor.
+The successful executors are an empty transform with no transform or input reference and the
+closed T2 `publish.web` step described below. Every other step fails closed at the executor
+boundary without an external effect. If a definition contains a prompt, notification text, or
+publication document text, the runner moves its first claimed step to `source_refetch_required`
+instead of reading that text from SQLite. The gateway's read-only resolver returns the exact
+definition source, native revision, and verified editor from Anytype. Knot then checks the source,
+version, approval, editor, policy, and current authority hashes before it can resume the step.
 
 The general Anytype-authored workflow catalog still has only an empty transform executor. The
 default-off Cloud command bridge is a separate typed input adapter that shares the runner tick,
@@ -65,7 +65,8 @@ Definitions use `knot.imai.studio/v1alpha1` and `KnotWorkflow`. The parser rejec
 the workflow-owned envelope. Every step kind has a strict configuration schema; executors may not
 interpret undeclared nested options. Connection, secret, project, target-space, bulk, and archive
 references therefore remain visible to approval and authority policy. Step kinds are limited to the
-initial Phase 2 catalog. Step IDs are unique and their dependency graph must be valid and acyclic.
+initial Phase 2 catalog plus `publish.web`. Step IDs are unique and their dependency graph must be
+valid and acyclic.
 Anytype write steps can create, update, or archive. They cannot hard-delete. HTTP and notification
 steps must name a local connection. HTTP steps may add a relative path, but a definition cannot set
 the scheme, host, port, or an absolute URL.
@@ -74,7 +75,9 @@ Knot hashes the parsed, default-materialized approval projection, never raw YAML
 includes an explicit policy-derivation version, so changing risk semantics invalidates old approval
 subjects. Canonical JSON
 sorts object keys and preserves semantic array order. Set-like capability, dependency, and pinned
-reference collections are normalized explicitly. The domain-separated `knot.workflow.approval.v1`
+reference collections are normalized explicitly. Publication title, description, block text,
+code, alt text, and links are recursively replaced with field digests in stored definitions and
+approval projections. The domain-separated `knot.workflow.approval.v1`
 SHA-256 hash includes:
 
 - every trigger and its configuration;
@@ -87,9 +90,9 @@ Display name, description, labels, and enabled state do not affect the approval 
 behavior-bearing value or referenced content does. Secret reference names may be hashed; secret
 values must never enter the definition, hash material, database, or logs. Knot stores a
 domain-separated digest of the source text, not the source text itself. In stored definition and
-approval records, it replaces author-supplied `prompt` and `message` strings with separately
-domain-separated digests. A future executor must refetch and verify the source or use an encrypted
-content store before it can run those steps.
+approval records, it replaces author-supplied `prompt`, `message`, and publication text strings
+with separately domain-separated digests. The installed resolver must refetch and verify the source
+before it can run those steps.
 
 ## Capability and risk policy
 
@@ -98,7 +101,18 @@ the step requires is invalid. Declaring additional capabilities can only increas
 
 - **T0:** single-space read/query and pure transforms.
 - **T1:** bounded agent invocation and Anytype writes, upserts, or materialization.
-- **T2:** HTTP, notifications, other external effects, cross-space work, bulk operations, or archive.
+- **T2:** HTTP, notifications, `publish.web`, other external effects, cross-space work, bulk
+  operations, or archive.
+
+`publish.web` accepts only create, update, rollback, disable, and confirmed unpublish operations.
+Create and update carry the bounded versioned publication document and may reference only an
+opaque, pre-approved local asset-manifest UUID. The workflow cannot set a URL, key, header, raw
+HTML, filesystem path, or arbitrary request path. Its `connectionRef` selects an operator-owned
+`automation.publishConnections` entry. Immediately before the effect, Knot checks the exact
+approval hash and current authority hash again, then the Cloud publication client checks the
+connection's site, slug, lifecycle, pairing, and server grants. The existing private publication
+outbox supplies the durable request, deterministic idempotency key, effect receipt, asset
+checkpoints, and expired-lease recovery; there is no second scheduler.
 
 T1 and T2 require an exact approved hash. T2 always requires an explicit manual approval. Local
 maximum tier and capability grants remain authoritative even when an old approval exists.
