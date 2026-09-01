@@ -74,6 +74,11 @@ describe("automation persistence foundation", () => {
       "workflow_approval_decisions",
       "normalized_events",
       "workflow_observer_spaces",
+      "workflow_runner_state",
+      "workflow_deliveries",
+      "workflow_runs",
+      "workflow_steps",
+      "workflow_attempts",
     ])
       expect(
         store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table),

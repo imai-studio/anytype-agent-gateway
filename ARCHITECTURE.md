@@ -40,8 +40,15 @@ workflow object type keys in explicitly allowed spaces. It fetches each full obj
 native modification timestamp and explicit native editor participant ID, validates the fenced YAML
 definition against local authority, and stores a source digest plus immutable normalized event. A
 durable per-space page cursor and reconciliation boundary survive restarts. The loop never invokes a
-runtime, writes Anytype, or performs external effects. Workflow execution is rejected because the
-runner has not shipped.
+runtime, writes Anytype, or performs external effects.
+
+When `automation.execution` is also enabled, a durable local runner matches normalized events to
+enabled workflow versions. SQLite owns deliveries, runs, dependency-ordered steps, attempts, retry
+deadlines, cancellation requests, claim leases, and fencing tokens. Every dispatch and resume
+rechecks the immutable editor provenance, current local authority, and exact approval hash. The
+shipped executor boundary can complete only an empty transform step. Agent, Anytype, HTTP,
+notification, and other effect executors remain unavailable, so the runner dead-letters those steps
+without contacting an external system.
 
 Every route has a stable key:
 
@@ -154,13 +161,16 @@ The SQLite database uses WAL mode and contains:
 - `workflow_definitions`, `workflow_approval_subjects`, and `workflow_versions`: discovered workflow
   identity plus immutable full and behavior-bearing versions.
 - `workflow_approval_decisions`: an append-only, authority-bound approval ledger.
-- `normalized_events`: immutable, deduplicated Phase 2 observation facts. Runner delivery state uses
-  separate tables in the runner phase.
+- `normalized_events`: immutable, deduplicated Phase 2 observation facts.
 - `workflow_observer_spaces`: durable definition-search pages, reconciliation boundaries, revision
   watermarks, adaptive intervals, and failure state.
+- `workflow_deliveries`, `workflow_runs`, `workflow_steps`, and `workflow_attempts`: durable local
+  dispatch, dependency, retry, cancellation, lease, fence, and dead-letter state.
+- `workflow_runner_state`: the normalized-event matcher cursor and fair-claim hint.
 
-The workflow tables remain inert while automation gates are disabled. Read-only definition
-observation uses them when `automation.observation` is enabled. Before an on-disk schema
+The workflow tables remain inert while automation gates are disabled. Definition observation uses
+them when `automation.observation` is enabled. The runner uses its queue tables only when
+`automation.execution` is also enabled. Before an on-disk schema
 upgrade, Knot creates a consistent mode-`0600` SQLite snapshot beside the database using `VACUUM
 INTO`; it never copies only the main file of a live WAL database.
 

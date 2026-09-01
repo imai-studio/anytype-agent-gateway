@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalStoredWorkflowApproval, canonicalStoredWorkflowDefinition, canonicalWorkflowDefinition, redactStoredWorkflowJson, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -64,6 +64,8 @@ export class Store {
                 this.migrateToVersion10();
             if (current < 11)
                 this.migrateToVersion11();
+            if (current < 12)
+                this.migrateToVersion12();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -74,7 +76,7 @@ export class Store {
         }
         if (this._migrationBackupPath)
             this.reportMigration(`Knot upgraded the state database from schema ${current} to ${SCHEMA_VERSION}. Backup: ${this._migrationBackupPath}`);
-        if (current > 0 && current < 11) {
+        if (current > 0 && current < 12) {
             this.db.exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
         }
     }
@@ -510,6 +512,121 @@ export class Store {
         CREATE TRIGGER workflow_approval_subjects_no_update BEFORE UPDATE ON workflow_approval_subjects
           BEGIN SELECT RAISE(ABORT,'workflow approval subjects are append-only'); END;
       `);
+    }
+    migrateToVersion12() {
+        this.db.exec(`
+      CREATE TABLE workflow_runner_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        matcher_initialized INTEGER NOT NULL DEFAULT 0 CHECK(matcher_initialized IN (0,1)),
+        matcher_recorded_at INTEGER NOT NULL DEFAULT 0 CHECK(matcher_recorded_at >= 0),
+        matcher_event_id TEXT NOT NULL DEFAULT '',
+        last_claimed_workflow_id TEXT,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO workflow_runner_state(singleton,updated_at) VALUES(1,0);
+
+      CREATE TABLE workflow_deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        version_hash TEXT NOT NULL,
+        event_id TEXT NOT NULL REFERENCES normalized_events(event_id) ON DELETE RESTRICT,
+        event_dedupe_key TEXT NOT NULL,
+        approval_hash TEXT NOT NULL,
+        authority_hash TEXT NOT NULL,
+        actor_principal_digest TEXT NOT NULL,
+        actor_provenance TEXT NOT NULL
+          CHECK(actor_provenance IN ('anytype-native','authenticated-chat','operator-cli')),
+        state TEXT NOT NULL CHECK(state IN ('pending','dispatched','cancelled','dead_letter')),
+        created_at INTEGER NOT NULL,
+        dispatched_at INTEGER,
+        UNIQUE(workflow_id,version_hash,event_dedupe_key),
+        FOREIGN KEY(workflow_id,version_hash)
+          REFERENCES workflow_versions(workflow_id,version_hash) ON DELETE RESTRICT
+      );
+      CREATE INDEX idx_workflow_deliveries_state
+        ON workflow_deliveries(state,created_at,delivery_id);
+
+      CREATE TABLE workflow_runs (
+        run_id TEXT PRIMARY KEY,
+        delivery_id TEXT NOT NULL UNIQUE REFERENCES workflow_deliveries(delivery_id) ON DELETE RESTRICT,
+        workflow_id TEXT NOT NULL,
+        version_hash TEXT NOT NULL,
+        approval_hash TEXT NOT NULL,
+        authority_hash TEXT NOT NULL,
+        actor_principal_digest TEXT NOT NULL,
+        actor_provenance TEXT NOT NULL
+          CHECK(actor_provenance IN ('anytype-native','authenticated-chat','operator-cli')),
+        state TEXT NOT NULL
+          CHECK(state IN ('pending','running','waiting','succeeded','failed','cancelled','dead_letter')),
+        cancel_requested_at INTEGER,
+        cancel_actor_principal_digest TEXT,
+        cancel_reason TEXT,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        FOREIGN KEY(workflow_id,version_hash)
+          REFERENCES workflow_versions(workflow_id,version_hash) ON DELETE RESTRICT
+      );
+      CREATE INDEX idx_workflow_runs_state ON workflow_runs(state,updated_at,run_id);
+
+      CREATE TABLE workflow_steps (
+        run_id TEXT NOT NULL REFERENCES workflow_runs(run_id) ON DELETE RESTRICT,
+        workflow_id TEXT NOT NULL,
+        step_id TEXT NOT NULL,
+        position INTEGER NOT NULL CHECK(position >= 0),
+        kind TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN (
+          'blocked','ready','leased','running','succeeded','waiting_retry','waiting_timer',
+          'waiting_approval','failed','cancelled','dead_letter'
+        )),
+        dependencies_json TEXT NOT NULL CHECK(json_valid(dependencies_json)),
+        timeout_seconds INTEGER NOT NULL CHECK(timeout_seconds > 0),
+        run_deadline_at INTEGER NOT NULL CHECK(run_deadline_at >= 0),
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+        available_at INTEGER NOT NULL,
+        lease_owner TEXT,
+        fencing_token TEXT,
+        lease_started_at INTEGER,
+        lease_expires_at INTEGER,
+        lease_hard_expires_at INTEGER,
+        authority_hash TEXT NOT NULL,
+        result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+        error TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(run_id,step_id)
+      );
+      CREATE INDEX idx_workflow_steps_ready
+        ON workflow_steps(state,available_at,updated_at,run_id,position);
+      CREATE INDEX idx_workflow_steps_lease
+        ON workflow_steps(lease_expires_at) WHERE state IN ('leased','running');
+
+      CREATE TABLE workflow_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        step_id TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL CHECK(attempt_number > 0),
+        worker_id TEXT NOT NULL,
+        fencing_token TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('running','succeeded','retry','failed','dead_letter')),
+        started_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        error TEXT,
+        UNIQUE(run_id,step_id,attempt_number),
+        FOREIGN KEY(run_id,step_id) REFERENCES workflow_steps(run_id,step_id) ON DELETE RESTRICT
+      );
+      CREATE INDEX idx_workflow_attempts_step
+        ON workflow_attempts(run_id,step_id,attempt_number);
+
+      CREATE TRIGGER workflow_deliveries_no_delete BEFORE DELETE ON workflow_deliveries
+        BEGIN SELECT RAISE(ABORT,'workflow deliveries are durable'); END;
+      CREATE TRIGGER workflow_runs_no_delete BEFORE DELETE ON workflow_runs
+        BEGIN SELECT RAISE(ABORT,'workflow runs are durable'); END;
+      CREATE TRIGGER workflow_steps_no_delete BEFORE DELETE ON workflow_steps
+        BEGIN SELECT RAISE(ABORT,'workflow steps are durable'); END;
+      CREATE TRIGGER workflow_attempts_no_delete BEFORE DELETE ON workflow_attempts
+        BEGIN SELECT RAISE(ABORT,'workflow attempts are durable'); END;
+    `);
     }
     isInitialized(routeId) {
         return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));
@@ -1384,18 +1501,21 @@ export class Store {
         }
     }
     currentWorkflowApproval(workflowId, approvalHash, authorityHash, now = Date.now()) {
-        const row = this.db
-            .prepare(`SELECT * FROM workflow_approval_decisions
-         WHERE workflow_id=? AND approval_hash=?
-         ORDER BY decision_sequence DESC LIMIT 1`)
-            .get(workflowId, approvalHash);
-        const decision = row ? mapWorkflowApprovalDecision(row) : undefined;
+        const decision = this.latestWorkflowApproval(workflowId, approvalHash);
         if (!decision ||
             decision.decision !== "approved" ||
             decision.authorityHash !== authorityHash ||
             (decision.expiresAt !== undefined && decision.expiresAt <= now))
             return undefined;
         return decision;
+    }
+    latestWorkflowApproval(workflowId, approvalHash) {
+        const row = this.db
+            .prepare(`SELECT * FROM workflow_approval_decisions
+         WHERE workflow_id=? AND approval_hash=?
+         ORDER BY decision_sequence DESC LIMIT 1`)
+            .get(workflowId, approvalHash);
+        return row ? mapWorkflowApprovalDecision(row) : undefined;
     }
     recordNormalizedEvent(input) {
         const event = normalizedEventSchema.parse(input);

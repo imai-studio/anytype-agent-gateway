@@ -397,6 +397,12 @@ export declare const configSchema: z.ZodObject<{
             maximumIntervalSeconds: z.ZodDefault<z.ZodNumber>;
             pageSize: z.ZodDefault<z.ZodNumber>;
         }, z.core.$strict>>;
+        runner: z.ZodDefault<z.ZodObject<{
+            pollIntervalMilliseconds: z.ZodDefault<z.ZodNumber>;
+            leaseSeconds: z.ZodDefault<z.ZodNumber>;
+            workerCount: z.ZodDefault<z.ZodNumber>;
+            batchSize: z.ZodDefault<z.ZodNumber>;
+        }, z.core.$strict>>;
     }, z.core.$strict>>;
     state: z.ZodDefault<z.ZodObject<{
         path: z.ZodDefault<z.ZodString>;

@@ -18,6 +18,7 @@ import {
   workflowApprovalHash,
   workflowApprovalMaterial,
   workflowDefinitionSchema,
+  workflowPrincipalDigest,
   workflowSourceDigest,
   workflowVersionHash,
 } from "./workflow.js";
@@ -345,7 +346,7 @@ export class WorkflowObserver {
           sourceModifiedAt: object.modifiedAt,
           ...(principal
             ? {
-                editorPrincipalDigest: principalDigest(principal.participantId),
+                editorPrincipalDigest: workflowPrincipalDigest(principal.participantId),
                 editorProvenance: principal.provenance,
               }
             : {}),
@@ -555,13 +556,13 @@ export class WorkflowObserver {
       ...(principal
         ? {
             editor: {
-              principalDigest: principalDigest(principal.participantId),
+              principalDigest: workflowPrincipalDigest(principal.participantId),
               provenance: principal.provenance,
             },
           }
         : {}),
       observedAt,
-      payload,
+      payload: { controlPlane: "workflow-definition", ...payload },
       causalDepth: 0,
       recordedAt: observedAt,
     });
@@ -673,10 +674,6 @@ function stableId(domain: string, ...parts: string[]): string {
     .update(`knot.workflow.${domain}.v1\0`)
     .update(parts.join("\0"))
     .digest("hex")}`;
-}
-
-function principalDigest(participantId: string): string {
-  return stableId("principal", participantId);
 }
 
 function compareRevision(

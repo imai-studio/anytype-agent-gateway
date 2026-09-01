@@ -1,7 +1,8 @@
 # Workflow runtime process topology
 
-Status: process contract for Phase 2. The read-only workflow definition observer is implemented.
-Target-object observation and the workflow runner remain proposed.
+Status: process contract for Phase 2. The workflow definition observer and durable runner core are
+implemented. Target-object observation, effect executors, receipts, and status projection remain
+proposed.
 
 This document fixes the process and recovery rules for the workflow runtime. Later implementation
 PRs may add tables and modules, but they must keep these rules unless a new architecture decision
@@ -9,14 +10,14 @@ changes them.
 
 ## Scope
 
-The Phase 2 runtime runs inside the existing Knot service. The current release adds the definition
-observer. The full design has two long-lived supervisors:
+The Phase 2 runtime runs inside the existing Knot service. The current release has two long-lived
+supervisors:
 
 - the observer turns Anytype changes, chat messages, schedules, and manual requests into normalized
   events;
 - the runner matches events to approved workflow versions and advances durable step attempts.
 
-The observer and future runner do not replace the current chat gateway. The gateway keeps its route,
+The observer and runner do not replace the current chat gateway. The gateway keeps its route,
 session, steering, and response projection behavior. Workflow agent steps call the existing runtime
 drivers through a separate execution path and persist their results before later steps begin.
 
@@ -99,9 +100,9 @@ Knot starts the workflow runtime in this order:
 9. Attach chat SSE and optional Heart hints after the reconciliation scheduler is ready.
 10. Report the service as ready.
 
-The following order describes the complete runtime. The current release skips runner and projection
-startup, then starts only read-only definition polling when `automation.observation` is enabled.
-It rejects `automation.execution`.
+The current release performs the queue recovery and runner startup steps when
+`automation.execution` is enabled. It skips the effect worker and Anytype projection worker because
+neither has shipped.
 
 The runner will start before new observations so recovered work does not wait behind a burst of fresh
 events. Observation still uses a baseline on first activation, so enabling a workflow does not turn

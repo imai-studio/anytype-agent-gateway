@@ -403,3 +403,10 @@ export function workflowSourceDigest(source) {
         .digest("hex");
     return `sha256:${digest}`;
 }
+export function workflowPrincipalDigest(participantId) {
+    const digest = createHash("sha256")
+        .update("knot.workflow.principal.v1\0")
+        .update(participantId)
+        .digest("hex");
+    return `sha256:${digest}`;
+}

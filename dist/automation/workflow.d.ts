@@ -285,3 +285,4 @@ export declare function canonicalStoredWorkflowApproval(workflow: WorkflowDefini
 export declare function redactStoredWorkflowJson(value: string): string;
 export declare function workflowVersionHash(workflow: WorkflowDefinition): string;
 export declare function workflowSourceDigest(source: string): string;
+export declare function workflowPrincipalDigest(participantId: string): string;

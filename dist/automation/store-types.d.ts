@@ -1,4 +1,4 @@
-import type { WorkflowCapability } from "./workflow.js";
+import type { JsonValue, WorkflowCapability } from "./workflow.js";
 import type { WorkflowRiskTier } from "./policy.js";
 export type { NormalizedEventRecord } from "./event.js";
 export type WorkflowEditorProvenance = "anytype-native" | "authenticated-chat" | "operator-cli";
@@ -68,4 +68,80 @@ export interface WorkflowApprovalDecision {
     decidedAt: number;
     expiresAt?: number;
     supersedesDecisionId?: string;
+}
+export type WorkflowDeliveryState = "pending" | "dispatched" | "cancelled" | "dead_letter";
+export type WorkflowRunState = "pending" | "running" | "waiting" | "succeeded" | "failed" | "cancelled" | "dead_letter";
+export type WorkflowStepState = "blocked" | "ready" | "leased" | "running" | "succeeded" | "waiting_retry" | "waiting_timer" | "waiting_approval" | "failed" | "cancelled" | "dead_letter";
+export type WorkflowAttemptState = "running" | "succeeded" | "retry" | "failed" | "dead_letter";
+export interface WorkflowDeliveryRecord {
+    deliveryId: string;
+    workflowId: string;
+    versionHash: string;
+    eventId: string;
+    eventDedupeKey: string;
+    approvalHash: string;
+    authorityHash: string;
+    actorPrincipalDigest: string;
+    actorProvenance: WorkflowEditorProvenance;
+    state: WorkflowDeliveryState;
+    createdAt: number;
+    dispatchedAt?: number;
+}
+export interface WorkflowRunRecord {
+    runId: string;
+    deliveryId: string;
+    workflowId: string;
+    versionHash: string;
+    approvalHash: string;
+    authorityHash: string;
+    actorPrincipalDigest: string;
+    actorProvenance: WorkflowEditorProvenance;
+    state: WorkflowRunState;
+    cancelRequestedAt?: number;
+    cancelActorPrincipalDigest?: string;
+    cancelReason?: string;
+    error?: string;
+    createdAt: number;
+    updatedAt: number;
+    completedAt?: number;
+}
+export interface WorkflowStepRecord {
+    runId: string;
+    workflowId: string;
+    stepId: string;
+    position: number;
+    kind: string;
+    state: WorkflowStepState;
+    dependencies: string[];
+    timeoutSeconds: number;
+    runDeadlineAt: number;
+    attemptCount: number;
+    availableAt: number;
+    leaseOwner?: string;
+    fencingToken?: string;
+    leaseStartedAt?: number;
+    leaseExpiresAt?: number;
+    leaseHardExpiresAt?: number;
+    authorityHash: string;
+    result?: JsonValue;
+    error?: string;
+    updatedAt: number;
+}
+export interface WorkflowAttemptRecord {
+    attemptId: string;
+    runId: string;
+    stepId: string;
+    attemptNumber: number;
+    workerId: string;
+    fencingToken: string;
+    state: WorkflowAttemptState;
+    startedAt: number;
+    completedAt?: number;
+    error?: string;
+}
+export interface WorkflowRunnerCursor {
+    initialized: boolean;
+    recordedAt: number;
+    eventId: string;
+    lastClaimedWorkflowId?: string;
 }
