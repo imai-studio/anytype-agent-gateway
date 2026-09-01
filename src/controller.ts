@@ -44,6 +44,7 @@ export type ManagementActorCapabilities = {
   wake?: string;
   access?: string;
   model?: string;
+  publish?: string;
 };
 
 export class AgentController {
@@ -1064,6 +1065,12 @@ export class AgentController {
         routeId,
         actor.participantId,
         "model",
+      );
+    if (this.config.tools.publish.enabled)
+      capabilities.publish = this.store.issueManagementCapability(
+        routeId,
+        actor.participantId,
+        "publish",
       );
     return this.managementCommand(routeId, capabilities);
   }

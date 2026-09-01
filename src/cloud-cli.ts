@@ -41,6 +41,7 @@ export async function cloudLogin(
     connectorName?: string;
     scopes?: string[];
     slugGrants?: string[];
+    assetRoots?: string[];
   },
   context: CloudCommandContext = {},
 ): Promise<CloudConfig> {
@@ -56,6 +57,7 @@ export async function cloudLogin(
     connectorName: input.connectorName?.trim() || hostname(),
     requestedScopes: scopes,
     requestedSlugGrants: uniqueStrings(input.slugGrants ?? []),
+    ...(input.assetRoots ? { allowedAssetRoots: uniqueStrings(input.assetRoots) } : {}),
   });
   const meta = await (context.client?.(config) ?? new CloudClient(config)).protocolStatus();
   assertProtocolCompatible(meta.minimumProtocolVersion, meta.maximumProtocolVersion);
@@ -247,7 +249,8 @@ export async function cloudDoctor(
     output("warning: connector pairing is not complete");
   }
   output("ok: no inbound network listener is used by the Cloud client");
-  output("note: publication commands remain unavailable until their cloud routes are released");
+  if (config.paired?.scopes.includes("publications.write"))
+    output("ok: the typed publication client and durable local outbox are enabled");
 }
 
 export async function cloudRevoke(

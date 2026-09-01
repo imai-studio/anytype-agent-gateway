@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import type { AgentRuntime, ConversationModelState, OutboundItem, OutboundOperation, OutputCycle, OutputCyclePhase, OutputCycleState, ProactiveDelivery, RuntimeCapabilities, SessionBinding, SessionBindingState } from "./session-types.js";
-import type { NormalizedEventRecord, WorkflowApprovalDecision, WorkflowDefinitionObservation, WorkflowDefinitionState, WorkflowObserverState, WorkflowVersionInput, WorkflowVersionRecord, WorkflowValidationErrorCode } from "./automation/store-types.js";
-export type ManagementCapabilityScope = "wake" | "access" | "model";
+import type { NormalizedEventRecord, WorkflowApprovalDecision, WorkflowDefinitionObservation, WorkflowDefinitionState, WorkflowObserverState, WorkflowVersionRecord } from "./automation/store-types.js";
+export type ManagementCapabilityScope = "wake" | "access" | "model" | "publish";
 export declare class Store {
     private readonly reportMigration;
     readonly db: DatabaseSync;
@@ -23,8 +23,6 @@ export declare class Store {
     private migrateToVersion9;
     private migrateToVersion10;
     private migrateToVersion11;
-    private migrateToVersion12;
-    private migrateToVersion13;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;
@@ -177,23 +175,12 @@ export declare class Store {
         sourceModifiedAt: number;
         sourceDigest: string;
         seenAt: number;
-        validationErrors?: WorkflowValidationErrorCode[];
+        validationErrors?: string[];
     }): WorkflowDefinitionObservation;
-    recordWorkflowDefinitionReadFailure(input: {
-        workflowId: string;
-        spaceId: string;
-        objectId: string;
-        name: string;
-        sourceDigest: string;
-        sourceModifiedAt: number;
-        seenAt: number;
-        errorCode: WorkflowValidationErrorCode;
-    }): WorkflowDefinitionObservation;
-    workflowDefinitionsMissingSince(spaceId: string, reconcileStartedAt: number, limit?: number): WorkflowDefinitionObservation[];
+    workflowDefinitionsMissingSince(spaceId: string, reconcileStartedAt: number): WorkflowDefinitionObservation[];
     workflowObserverState(spaceId: string): WorkflowObserverState | undefined;
     saveWorkflowObserverState(input: WorkflowObserverState): WorkflowObserverState;
-    saveWorkflowVersion(input: WorkflowVersionInput, observationDigest?: string): WorkflowVersionRecord;
-    activateWorkflowVersionObservation(input: Pick<WorkflowVersionInput, "workflowId" | "versionHash" | "name" | "sourceModifiedAt" | "sourceDigest" | "createdAt">, observationDigest?: string): void;
+    saveWorkflowVersion(input: WorkflowVersionRecord): WorkflowVersionRecord;
     workflowVersion(workflowId: string, versionHash: string): WorkflowVersionRecord | undefined;
     recordWorkflowApproval(input: Omit<WorkflowApprovalDecision, "sequence">): WorkflowApprovalDecision;
     currentWorkflowApproval(workflowId: string, approvalHash: string, authorityHash: string, now?: number): WorkflowApprovalDecision | undefined;

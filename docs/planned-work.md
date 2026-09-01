@@ -92,7 +92,8 @@ The suggested delivery order is:
    Keep arbitrary prompts, shell, filesystem, model-tool, and network execution out of the protocol.
 4. Add transactional events and channel workflows through the Phase 2 runner rather than a second
    scheduler.
-5. Add an MCP publish tool and CLI connection commands in the release that implements them.
+5. Extend the released bounded publish CLI and MCP surface only alongside compatible Cloud
+   contracts. The local surface has no runtime URL, credential, HTML, or filesystem-path input.
 6. Add the T2 `publish.web` workflow step after the Phase 2 runner can execute external effects.
 7. Add custom domains, authenticated readers, billing, media workers, and isolated hosted connectors
    only after their individual security and operational gates pass.
@@ -101,8 +102,9 @@ The Knot Cloud repository and hosted foundation exist. The local connector branc
 private Ed25519 key setup, human-initiated pairing polling, protocol diagnostics, and signed command
 claim, lease, result, and rejection calls. It does not execute cloud commands. Production pairing
 and command routes are still under review, so the end-to-end workflow remains unavailable there.
-Publish commands, a publication outbox, Relay execution, and the remote Anytype data API client are
-still planned. Treat them as unavailable until their release notes and setup guides ship.
+Relay execution and the remote Anytype data API client are still planned. The local publication
+commands, asset checkpoints, outbox, and constrained MCP tool are implemented, but they work only
+against a Cloud deployment whose release notes include the matching publication routes.
 
 ## Gateway work not included in the current release
 

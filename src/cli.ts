@@ -35,6 +35,13 @@ import {
   cloudRevoke,
   cloudStatus,
 } from "./cloud-cli.js";
+import {
+  publicationAction,
+  publicationOperationStatus,
+  preparePublicationAssetManifest,
+  readPublicationDocument,
+  retryPublicationOperation,
+} from "./cloud-publication.js";
 
 const program = new Command()
   .name(PRODUCT.current.executable)
@@ -384,6 +391,7 @@ cloud
   .option("--name <name>", "connector name shown during pairing")
   .option("--scope <scope...>", "requested connector scopes", DEFAULT_CLOUD_SCOPES)
   .option("--slug-grant <slug...>", "requested publication slug grants", [])
+  .option("--asset-root <path...>", "local roots allowed for publication asset manifests")
   .option("--config <path>", "cloud configuration file")
   .action(async (options) => {
     await cloudLogin({
@@ -391,6 +399,7 @@ cloud
       ...(options.name ? { connectorName: options.name } : {}),
       scopes: options.scope,
       slugGrants: options.slugGrant,
+      ...(options.assetRoot ? { assetRoots: options.assetRoot } : {}),
       ...(options.config ? { configFile: options.config } : {}),
     });
   });
@@ -441,6 +450,180 @@ cloud
       ...(options.config ? { configFile: options.config } : {}),
     }),
   );
+
+const cloudOperation = cloud
+  .command("operation")
+  .description("Inspect or retry a durable local Cloud publication operation");
+cloudOperation
+  .command("status")
+  .argument("<operation-id>")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (operationId, options) => {
+    console.log(
+      JSON.stringify(
+        await publicationOperationStatus({
+          operationId,
+          ...(options.config ? { configFile: options.config } : {}),
+        }),
+        null,
+        2,
+      ),
+    );
+  });
+cloudOperation
+  .command("retry")
+  .argument("<operation-id>")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (operationId, options) => {
+    console.log(
+      JSON.stringify(
+        await retryPublicationOperation({
+          operationId,
+          ...(options.config ? { configFile: options.config } : {}),
+        }),
+        null,
+        2,
+      ),
+    );
+  });
+
+const publish = program
+  .command("publish")
+  .description("Publish typed documents through the paired Knot Cloud connector");
+publish
+  .command("push")
+  .argument("<document>", "typed publication JSON file, or - for stdin")
+  .requiredOption("--site <uuid>", "approved Cloud site ID")
+  .requiredOption("--publication <uuid>", "stable publication ID")
+  .requiredOption("--slug <slug>", "approved publication slug")
+  .option("--operation <mode>", "create or update", "create")
+  .option("--asset-manifest <path>", "typed local asset manifest to approve before publishing")
+  .option("--asset-manifest-id <uuid>", "previously approved local asset manifest")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (documentPath, options) => {
+    if (!["create", "update"].includes(options.operation))
+      throw new Error("--operation must be create or update");
+    if (options.assetManifest && options.assetManifestId)
+      throw new Error("Use either --asset-manifest or --asset-manifest-id, not both");
+    const configFile = options.config ? { configFile: options.config } : {};
+    const prepared = options.assetManifest
+      ? await preparePublicationAssetManifest({
+          manifestPath: options.assetManifest,
+          ...configFile,
+        })
+      : undefined;
+    console.log(
+      JSON.stringify(
+        await publicationAction({
+          action: "push",
+          siteId: options.site,
+          publicationId: options.publication,
+          slug: options.slug,
+          operation: options.operation,
+          document: await readPublicationDocument(documentPath),
+          ...(prepared?.manifestId
+            ? { assetManifestId: prepared.manifestId }
+            : options.assetManifestId
+              ? { assetManifestId: options.assetManifestId }
+              : {}),
+          ...configFile,
+        }),
+        null,
+        2,
+      ),
+    );
+  });
+const publishAssets = publish
+  .command("assets")
+  .description("Prepare bounded local assets for a later CLI or aag_publish request");
+publishAssets
+  .command("prepare")
+  .argument("<manifest>", "JSON manifest containing approved local asset paths")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (manifestPath, options) => {
+    console.log(
+      JSON.stringify(
+        await preparePublicationAssetManifest({
+          manifestPath,
+          ...(options.config ? { configFile: options.config } : {}),
+        }),
+        null,
+        2,
+      ),
+    );
+  });
+publish
+  .command("status")
+  .argument("<publication-id>")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (publicationId, options) => {
+    console.log(
+      JSON.stringify(
+        await publicationAction({
+          action: "status",
+          publicationId,
+          ...(options.config ? { configFile: options.config } : {}),
+        }),
+        null,
+        2,
+      ),
+    );
+  });
+publish
+  .command("rollback")
+  .argument("<publication-id>")
+  .requiredOption("--version <uuid>", "version to make current")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (publicationId, options) => {
+    console.log(
+      JSON.stringify(
+        await publicationAction({
+          action: "rollback",
+          publicationId,
+          versionId: options.version,
+          ...(options.config ? { configFile: options.config } : {}),
+        }),
+        null,
+        2,
+      ),
+    );
+  });
+publish
+  .command("disable")
+  .argument("<publication-id>")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (publicationId, options) => {
+    console.log(
+      JSON.stringify(
+        await publicationAction({
+          action: "disable",
+          publicationId,
+          ...(options.config ? { configFile: options.config } : {}),
+        }),
+        null,
+        2,
+      ),
+    );
+  });
+publish
+  .command("unpublish")
+  .argument("<publication-id>")
+  .requiredOption("--confirm <uuid>", "repeat the publication ID to confirm destructive removal")
+  .option("--config <path>", "cloud configuration file")
+  .action(async (publicationId, options) => {
+    console.log(
+      JSON.stringify(
+        await publicationAction({
+          action: "unpublish",
+          publicationId,
+          confirmation: options.confirm,
+          ...(options.config ? { configFile: options.config } : {}),
+        }),
+        null,
+        2,
+      ),
+    );
+  });
 
 const identity = program
   .command("identity")
@@ -539,7 +722,7 @@ function makeRuntime(
     return new OpenClawDriver(config.runtime, undefined, config.models.enabled);
   const executable = resolve(process.argv[1]!);
   const mcpServer =
-    config.tools.anytype.enabled && configPath
+    (config.tools.anytype.enabled || config.tools.publish.enabled) && configPath
       ? {
           command: resolve(process.execPath),
           args: [executable, "mcp", "--config", configPath],
@@ -570,6 +753,10 @@ function managementCommand(
   if (config.models.enabled && config.management.allowModelChanges && capabilities?.model)
     commands.push(
       `Model tool: aag_set_model with route_id=${JSON.stringify(routeId)}, model_id=<exact-model-or-default>, and actor_capability=${JSON.stringify(capabilities.model)}`,
+    );
+  if (config.tools.publish.enabled)
+    commands.push(
+      `Publish tool: aag_publish with one configured typed action${capabilities?.publish ? ` and actor_capability=${JSON.stringify(capabilities.publish)}` : ""}`,
     );
   return commands.join("\n");
 }

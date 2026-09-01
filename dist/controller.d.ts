@@ -5,6 +5,7 @@ export type ManagementActorCapabilities = {
     wake?: string;
     access?: string;
     model?: string;
+    publish?: string;
 };
 export declare class AgentController {
     private readonly anytype;

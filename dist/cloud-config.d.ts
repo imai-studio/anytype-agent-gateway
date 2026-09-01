@@ -21,6 +21,12 @@ export declare const cloudConfigSchema: z.ZodObject<{
         "publications.unpublish": "publications.unpublish";
     }>>;
     requestedSlugGrants: z.ZodArray<z.ZodString>;
+    publication: z.ZodDefault<z.ZodObject<{
+        allowedAssetRoots: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        maximumAssets: z.ZodDefault<z.ZodNumber>;
+        maximumAssetBytes: z.ZodDefault<z.ZodNumber>;
+        maximumTotalAssetBytes: z.ZodDefault<z.ZodNumber>;
+    }, z.core.$strict>>;
     paired: z.ZodOptional<z.ZodObject<{
         connectorId: z.ZodString;
         tenantId: z.ZodString;
@@ -47,6 +53,7 @@ export interface CloudPaths {
     configFile: string;
     privateKeyFile: string;
     pairingFile: string;
+    publicationOutboxFile: string;
 }
 export declare function resolveCloudPaths(options?: {
     configFile?: string;
@@ -60,6 +67,7 @@ export declare function initializeCloudConfig(input: {
     connectorName: string;
     requestedScopes: CloudConfig["requestedScopes"];
     requestedSlugGrants?: string[];
+    allowedAssetRoots?: string[];
 }): Promise<CloudConfig>;
 export declare function loadCloudConfig(paths: CloudPaths, required?: boolean): Promise<CloudConfig | undefined>;
 export declare function saveCloudConfig(paths: CloudPaths, config: CloudConfig): Promise<void>;

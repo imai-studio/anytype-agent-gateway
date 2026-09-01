@@ -10,6 +10,135 @@ const connectorId = "00000000-0000-4000-8000-000000000011";
 const commandId = "00000000-0000-4000-8000-000000000021";
 
 describe("CloudClient", () => {
+  it("uses only the frozen signed publication routes and validates their replies", async () => {
+    const config = await pairedConfig({
+      scopes: ["publications.read", "publications.write", "publications.unpublish"],
+      siteIds: ["00000000-0000-4000-8000-000000000031"],
+      slugGrants: ["notes/*"],
+    });
+    const paths: string[] = [];
+    const fetchMock = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = new URL(String(input));
+      paths.push(url.pathname);
+      expect(new Headers(init?.headers).get("Knot-Signature")).toBeTruthy();
+      if (url.pathname.endsWith("/status"))
+        return Response.json({
+          protocolVersion: "1.0",
+          publicationId: "00000000-0000-4000-8000-000000000032",
+          siteId: "00000000-0000-4000-8000-000000000031",
+          slug: "notes/hello",
+          state: "ready",
+          currentVersionId: "00000000-0000-4000-8000-000000000033",
+          updatedAt: 1,
+        });
+      if (url.pathname.endsWith("/control"))
+        return Response.json({
+          type: "publication.disable",
+          publicationId: "00000000-0000-4000-8000-000000000032",
+          disabledAt: 1,
+        });
+      return Response.json(
+        {
+          protocolVersion: "1.0",
+          publicationId: "00000000-0000-4000-8000-000000000032",
+          versionId: "00000000-0000-4000-8000-000000000033",
+          state: "ready",
+        },
+        { status: 201 },
+      );
+    });
+    const client = new CloudClient(config, {
+      fetch: fetchMock as unknown as typeof fetch,
+      maximumAttempts: 1,
+    });
+    await client.publish({
+      connectorId,
+      siteId: "00000000-0000-4000-8000-000000000031",
+      publicationId: "00000000-0000-4000-8000-000000000032",
+      slug: "notes/hello",
+      operation: "create",
+      document: { schemaVersion: "1.0", title: "Hello", blocks: [] },
+      contentSha256: "a".repeat(64),
+      assetDigests: [],
+      idempotencyKey: "knot-idempotency-0001",
+    });
+    await client.publicationStatus("00000000-0000-4000-8000-000000000032");
+    await client.controlPublication({
+      protocolVersion: "1.0",
+      connectorId,
+      idempotencyKey: "knot-idempotency-0002",
+      operation: {
+        type: "publication.disable",
+        publicationId: "00000000-0000-4000-8000-000000000032",
+      },
+    });
+    expect(paths).toEqual([
+      `/api/v1/connectors/${connectorId}/publications`,
+      `/api/v1/connectors/${connectorId}/publications/00000000-0000-4000-8000-000000000032/status`,
+      `/api/v1/connectors/${connectorId}/publications/00000000-0000-4000-8000-000000000032/control`,
+    ]);
+  });
+
+  it("uses the presigned asset request, upload, and commit contract without forwarding credentials", async () => {
+    const config = await pairedConfig({ scopes: ["publications.write"] });
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push(`${init?.method}:${url.toString()}`);
+      if (url.hostname === "uploads.example") {
+        expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+        expect(Buffer.from(init?.body as Uint8Array).toString()).toBe("asset");
+        return new Response(null, { status: 200 });
+      }
+      if (url.pathname.endsWith("/assets/request"))
+        return Response.json(
+          {
+            protocolVersion: "1.0",
+            assetId: "00000000-0000-4000-8000-000000000071",
+            uploadId: "00000000-0000-4000-8000-000000000072",
+            method: "PUT",
+            uploadUrl: "https://uploads.example/object",
+            requiredHeaders: { "content-type": "image/png" },
+            expiresAt: 1_788_220_900,
+          },
+          { status: 201 },
+        );
+      return Response.json({
+        status: "verified",
+        assetId: "00000000-0000-4000-8000-000000000071",
+        sha256: "a".repeat(64),
+        byteSize: 5,
+        verifiedAt: 1_788_220_810,
+      });
+    });
+    const client = new CloudClient(config, {
+      fetch: fetchMock as unknown as typeof fetch,
+      maximumAttempts: 1,
+    });
+    const upload = await client.requestAssetUpload({
+      protocolVersion: "1.0",
+      connectorId,
+      siteId: "00000000-0000-4000-8000-000000000031",
+      sha256: "a".repeat(64),
+      byteSize: 5,
+      contentType: "image/png",
+      fileName: "asset.png",
+      idempotencyKey: "knot-asset-request-0001",
+    });
+    await client.uploadAsset(upload, Buffer.from("asset"));
+    await client.commitAssetUpload({
+      assetId: upload.assetId,
+      uploadId: upload.uploadId,
+      expectedSha256: "a".repeat(64),
+      expectedByteSize: 5,
+      idempotencyKey: "knot-asset-commit-0001",
+    });
+    expect(calls).toEqual([
+      `POST:https://knot.example/api/v1/connectors/${connectorId}/assets/request`,
+      "PUT:https://uploads.example/object",
+      `POST:https://knot.example/api/v1/connectors/${connectorId}/assets/commit`,
+    ]);
+  });
   it("signs each command claim with the local Ed25519 identity", async () => {
     const config = await pairedConfig();
     const now = 1_788_220_800;
@@ -245,7 +374,9 @@ describe("CloudClient", () => {
   });
 });
 
-async function pairedConfig(): Promise<CloudConfig> {
+async function pairedConfig(
+  pairedOverrides: Partial<NonNullable<CloudConfig["paired"]>> = {},
+): Promise<CloudConfig> {
   const home = await mkdtemp(join(tmpdir(), "knot-cloud-client-"));
   const paths = resolveCloudPaths({ home });
   const config = await initializeCloudConfig({
@@ -263,6 +394,7 @@ async function pairedConfig(): Promise<CloudConfig> {
       siteIds: [],
       slugGrants: [],
       approvedAt: 1,
+      ...pairedOverrides,
     },
   };
 }

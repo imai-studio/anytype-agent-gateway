@@ -1,8 +1,9 @@
 # Knot Cloud architecture
 
 Status: active design. The Knot Cloud foundation lives in `imai-studio/knot-cloud` and runs at
-`knot.imai.tech`. Connector pairing, publishing, the remote Anytype data API, Relay, and the local
-Cloud client remain planned unless the Knot Cloud release notes say otherwise.
+`knot.imai.tech`. Production availability follows the Knot Cloud release notes. This repository
+implements the local Cloud connector and bounded publication client; Relay execution and the remote
+Anytype data API client remain planned.
 
 The product decisions are:
 
@@ -109,10 +110,11 @@ server. The HTTP protocol, not repository layout, remains the compatibility boun
 
 ## Pairing and credentials
 
-The operator connects a local installation with:
+The operator prepares and pairs a local installation with:
 
 ```bash
-knot publish connect https://publish.example.com
+knot cloud login --url https://publish.example.com --scope publications.read publications.write
+knot cloud pair --credentials-file /private/path/pairing.json
 ```
 
 The proposed pairing flow is:
@@ -175,26 +177,26 @@ retried into eventual permission.
 
 ## Local authority
 
-An agent refers to a connection by name. It cannot supply a server URL or credential at run time.
+An agent uses the Cloud connector selected by trusted local configuration. It cannot supply a
+server URL or credential at run time.
 
 ```yaml
-connections:
+tools:
   publish:
-    personal-site:
-      baseUrl: https://publish.example.com
-      siteId: personal
-      keyFile: /private/path/publish.key
-      operations: [create, update, unpublish]
-      allowedSlugs:
-        - projects/*
-        - notes/*
+    enabled: true
+    cloudConfigFile: ~/.config/knot/cloud.json
+    allowedUsers: [_participant_authorized_operator]
+    allowedSiteIds: [00000000-0000-4000-8000-000000000001]
+    allowedSlugPrefixes: [projects/, notes/]
+    allowUpdate: true
+    allowUnpublish: false
 ```
 
 Before sending a request, Knot checks:
 
 - the immutable Anytype sender identity;
 - the route's sender and wake policy;
-- the named connection, site, operation, and slug prefix;
+- the configured connector, site, operation, and slug prefix;
 - local file roots, file types, item count, and byte limits;
 - the document schema and total request size.
 
@@ -322,14 +324,15 @@ inspect local and protocol state. Remote connector revocation remains a dashboar
 requires an authenticated owner or admin. The local client also implements signed command claim,
 lease extension, result, and rejection calls, but it does not execute a command.
 
-Publication commands remain proposed until the publication routes and local durable outbox ship:
+The local publication client provides:
 
 ```text
-knot publish connect <url>
-knot publish connections
-knot publish status <connection>
-knot publish push <file> --connection <name> --slug <slug>
-knot publish revoke <connection>
+knot publish push <document> --site <uuid> --publication <uuid> --slug <slug>
+knot publish status <publication-id>
+knot publish rollback <publication-id> --version <version-id>
+knot publish disable <publication-id>
+knot publish unpublish <publication-id> --confirm <publication-id>
+knot cloud operation status <operation-id>
 ```
 
 Phase 2 workflows use the same client through a `publish.web` step. Publishing is an external

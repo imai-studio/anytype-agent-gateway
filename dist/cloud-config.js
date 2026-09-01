@@ -35,6 +35,30 @@ export const cloudConfigSchema = z
     privateKeyFile: z.string().min(1),
     requestedScopes: z.array(cloudScopeSchema).min(1),
     requestedSlugGrants: z.array(z.string().min(1).max(200)),
+    publication: z
+        .object({
+        allowedAssetRoots: z.array(z.string().min(1)).default([]),
+        maximumAssets: z.number().int().min(0).max(100).default(20),
+        maximumAssetBytes: z
+            .number()
+            .int()
+            .min(1)
+            .max(100 * 1024 * 1024)
+            .default(25 * 1024 * 1024),
+        maximumTotalAssetBytes: z
+            .number()
+            .int()
+            .min(1)
+            .max(500 * 1024 * 1024)
+            .default(100 * 1024 * 1024),
+    })
+        .strict()
+        .default({
+        allowedAssetRoots: [],
+        maximumAssets: 20,
+        maximumAssetBytes: 25 * 1024 * 1024,
+        maximumTotalAssetBytes: 100 * 1024 * 1024,
+    }),
     paired: pairedConnectorSchema.optional(),
 })
     .strict();
@@ -48,6 +72,7 @@ export function resolveCloudPaths(options = {}) {
         configFile,
         privateKeyFile: join(directory, `${stem}-connector-ed25519.pem`),
         pairingFile: join(directory, `${stem}-pairing.json`),
+        publicationOutboxFile: join(directory, `${stem}-publication-outbox.sqlite`),
     };
 }
 export function normalizeCloudBaseUrl(value) {
@@ -63,13 +88,29 @@ export async function initializeCloudConfig(input) {
     if (existing) {
         if (normalizeCloudBaseUrl(input.baseUrl) !== existing.baseUrl)
             throw new Error("This cloud config already belongs to a different server");
-        if (existing.paired)
-            return existing;
+        if (existing.paired) {
+            if (!input.allowedAssetRoots)
+                return existing;
+            const updated = cloudConfigSchema.parse({
+                ...existing,
+                publication: {
+                    ...existing.publication,
+                    allowedAssetRoots: input.allowedAssetRoots.map((path) => resolve(expandHome(path, homedir()))),
+                },
+            });
+            await saveCloudConfig(input.paths, updated);
+            return updated;
+        }
         const updated = cloudConfigSchema.parse({
             ...existing,
             connectorName: input.connectorName,
             requestedScopes: input.requestedScopes,
             requestedSlugGrants: input.requestedSlugGrants ?? [],
+            publication: {
+                ...existing.publication,
+                allowedAssetRoots: input.allowedAssetRoots?.map((path) => resolve(expandHome(path, homedir()))) ??
+                    existing.publication.allowedAssetRoots,
+            },
         });
         await saveCloudConfig(input.paths, updated);
         return updated;
@@ -89,6 +130,9 @@ export async function initializeCloudConfig(input) {
         privateKeyFile: resolve(input.paths.privateKeyFile),
         requestedScopes: input.requestedScopes,
         requestedSlugGrants: input.requestedSlugGrants ?? [],
+        publication: {
+            allowedAssetRoots: (input.allowedAssetRoots ?? []).map((path) => resolve(expandHome(path, homedir()))),
+        },
     });
     await saveCloudConfig(input.paths, config);
     return config;
@@ -106,7 +150,14 @@ export async function loadCloudConfig(paths, required = true) {
             : resolve(dirname(paths.configFile), parsed.privateKeyFile);
         if (resolve(keyFile) !== resolve(paths.privateKeyFile))
             throw new Error("Cloud private key must stay beside the selected cloud config");
-        return { ...parsed, privateKeyFile: keyFile };
+        return {
+            ...parsed,
+            privateKeyFile: keyFile,
+            publication: {
+                ...parsed.publication,
+                allowedAssetRoots: parsed.publication.allowedAssetRoots.map((path) => resolve(expandHome(path, homedir()))),
+            },
+        };
     }
     catch (error) {
         if (!required && isMissingFile(error))

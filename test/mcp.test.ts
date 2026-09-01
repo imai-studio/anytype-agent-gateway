@@ -60,6 +60,132 @@ function client() {
 }
 
 describe("AAG Anytype MCP policy", () => {
+  it("exposes one typed publication tool without runtime URLs, keys, HTML, or file paths", () => {
+    const configured = config({
+      tools: {
+        publish: {
+          enabled: true,
+          allowedUsers: ["owner"],
+          allowedSiteIds: ["00000000-0000-4000-8000-000000000011"],
+          allowedSlugPrefixes: ["notes/"],
+        },
+      },
+    });
+    const tool = toolDefinitions(configured).find((entry) => entry.name === "aag_publish");
+    expect(tool).toBeDefined();
+    expect(tool?.inputSchema).toHaveProperty("properties.actor_capability");
+    const fields = Object.keys((tool?.inputSchema.properties ?? {}) as Record<string, unknown>);
+    expect(fields).not.toContain("url");
+    expect(fields).not.toContain("api_key");
+    expect(fields).not.toContain("html");
+    expect(fields).not.toContain("path");
+    expect(JSON.stringify(tool?.inputSchema)).not.toContain('"href"');
+  });
+
+  it("requires verified native sender authority before a publication can reach Cloud", async () => {
+    const configured = config({
+      tools: {
+        publish: {
+          enabled: true,
+          allowedUsers: ["owner"],
+          allowedSiteIds: ["00000000-0000-4000-8000-000000000011"],
+          allowedSlugPrefixes: ["notes/"],
+        },
+      },
+    });
+    await expect(
+      callTool(
+        client(),
+        configured,
+        "/config.yaml",
+        "chat:space-1:chat",
+        "space-1",
+        "aag_publish",
+        {
+          action: "status",
+          publication_id: "00000000-0000-4000-8000-000000000022",
+        },
+        "intruder",
+      ),
+    ).rejects.toThrow("current Anytype sender is not allowed to publish");
+  });
+
+  it("rejects runtime-provided links in the constrained publication tool", async () => {
+    const configured = config({
+      tools: {
+        publish: {
+          enabled: true,
+          allowedUsers: ["owner"],
+          allowedSiteIds: ["00000000-0000-4000-8000-000000000011"],
+          allowedSlugPrefixes: ["notes/"],
+        },
+      },
+    });
+    await expect(
+      callTool(
+        client(),
+        configured,
+        "/config.yaml",
+        "chat:space-1:chat",
+        "space-1",
+        "aag_publish",
+        {
+          action: "push",
+          publication_id: "00000000-0000-4000-8000-000000000022",
+          site_id: "00000000-0000-4000-8000-000000000011",
+          slug: "notes/link",
+          operation: "create",
+          document: {
+            schemaVersion: "1.0",
+            title: "Link",
+            blocks: [
+              {
+                type: "paragraph",
+                content: [{ text: "Link", href: "https://example.com" }],
+              },
+            ],
+          },
+        },
+        "owner",
+      ),
+    ).rejects.toThrow("does not accept runtime-provided URLs");
+  });
+
+  it("exposes only digest-addressed media in the constrained publication tool", () => {
+    const configured = config({
+      tools: {
+        publish: {
+          enabled: true,
+          allowedUsers: ["owner"],
+          allowedSiteIds: ["00000000-0000-4000-8000-000000000011"],
+          allowedSlugPrefixes: ["notes/"],
+        },
+      },
+    });
+    const tool = toolDefinitions(configured).find((entry) => entry.name === "aag_publish");
+    expect(tool).toBeDefined();
+    const serialized = JSON.stringify(tool!.inputSchema);
+    expect(serialized).toContain("assetDigest");
+    expect(serialized).toContain("image");
+    expect(serialized).toContain("file");
+    expect(serialized).not.toContain('"requiredHeaders"');
+  });
+
+  it("rejects wildcard or incomplete publication policy at configuration time", () => {
+    expect(() =>
+      config({
+        tools: {
+          publish: {
+            enabled: true,
+            allowedUsers: ["*"],
+            allowedSiteIds: [],
+            allowedSlugPrefixes: [],
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
   it("exposes separate Codex task creation only when explicitly enabled", () => {
     expect(toolDefinitions(config()).map((tool) => tool.name)).not.toContain(
       "aag_create_codex_task",
