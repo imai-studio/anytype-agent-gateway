@@ -13,7 +13,7 @@ export type WorkflowStepExecution = {
     retryable: boolean;
 };
 export interface WorkflowStepExecutor {
-    execute(claim: WorkflowClaim, definition: WorkflowDefinition): Promise<WorkflowStepExecution>;
+    execute(claim: WorkflowClaim, definition: WorkflowDefinition, signal: AbortSignal): Promise<WorkflowStepExecution>;
 }
 export interface WorkflowSourceSnapshot {
     definitionSource: string;
@@ -22,10 +22,10 @@ export interface WorkflowSourceSnapshot {
     editorProvenance: "anytype-native" | "authenticated-chat" | "operator-cli";
 }
 export interface WorkflowSourceResolver {
-    refetch(version: WorkflowVersionRecord): Promise<WorkflowSourceSnapshot | undefined>;
+    refetch(version: WorkflowVersionRecord, signal: AbortSignal): Promise<WorkflowSourceSnapshot | undefined>;
 }
 export declare class NoEffectWorkflowStepExecutor implements WorkflowStepExecutor {
-    execute(claim: WorkflowClaim, definition: WorkflowDefinition): Promise<WorkflowStepExecution>;
+    execute(claim: WorkflowClaim, definition: WorkflowDefinition, _signal: AbortSignal): Promise<WorkflowStepExecution>;
 }
 export declare class WorkflowRunner {
     private readonly store;
@@ -36,9 +36,10 @@ export declare class WorkflowRunner {
     private readonly sourceResolver?;
     readonly queue: WorkflowQueue;
     private readonly workerIds;
+    private lastReauthorizedRunId?;
     constructor(store: Store, config: RunnerConfig, log: (event: string, fields?: Record<string, unknown>) => void, executor?: WorkflowStepExecutor, now?: () => number, sourceResolver?: WorkflowSourceResolver | undefined);
     run(signal: AbortSignal): Promise<void>;
-    tickOnce(): Promise<void>;
+    tickOnce(signal?: AbortSignal): Promise<void>;
     matchEventsOnce(now?: number): number;
     dispatchOnce(now?: number): number;
     private executeClaim;

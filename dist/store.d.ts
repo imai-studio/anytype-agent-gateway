@@ -24,6 +24,7 @@ export declare class Store {
     private migrateToVersion10;
     private migrateToVersion11;
     private migrateToVersion12;
+    private migrateToVersion13;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;

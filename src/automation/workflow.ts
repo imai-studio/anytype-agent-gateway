@@ -429,11 +429,7 @@ function redactSensitiveWorkflowStrings(value: unknown, path: string[] = []): un
   const result: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
     const nestedPath = [...path, key];
-    if (
-      path[0] !== "metadata" &&
-      (key === "prompt" || key === "message") &&
-      typeof nested === "string"
-    ) {
+    if (isSensitiveWorkflowTextPath(nestedPath) && typeof nested === "string") {
       result[key] = {
         redacted: true,
         digest: sensitiveWorkflowFieldDigest(nestedPath, nested),
@@ -441,6 +437,17 @@ function redactSensitiveWorkflowStrings(value: unknown, path: string[] = []): un
     } else result[key] = redactSensitiveWorkflowStrings(nested, nestedPath);
   }
   return result;
+}
+
+export function isSensitiveWorkflowTextPath(path: readonly string[]): boolean {
+  return (
+    path.length === 5 &&
+    path[0] === "spec" &&
+    path[1] === "steps" &&
+    /^\d+$/.test(path[2]!) &&
+    path[3] === "config" &&
+    (path[4] === "prompt" || path[4] === "message")
+  );
 }
 
 function sensitiveWorkflowFieldDigest(path: string[], value: string): string {

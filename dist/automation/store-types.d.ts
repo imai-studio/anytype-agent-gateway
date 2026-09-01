@@ -85,6 +85,7 @@ export interface WorkflowDeliveryRecord {
     actorProvenance: WorkflowEditorProvenance;
     state: WorkflowDeliveryState;
     createdAt: number;
+    nextDispatchAt: number;
     dispatchedAt?: number;
 }
 export interface WorkflowRunRecord {

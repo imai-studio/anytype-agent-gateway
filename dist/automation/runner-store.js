@@ -89,9 +89,9 @@ export class WorkflowQueue {
         this.store.db
             .prepare(`INSERT OR IGNORE INTO workflow_deliveries(
           delivery_id,workflow_id,version_hash,event_id,event_dedupe_key,approval_hash,
-          authority_hash,actor_principal_digest,actor_provenance,state,created_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,'pending',?)`)
-            .run(input.deliveryId, input.workflowId, input.versionHash, input.eventId, input.eventDedupeKey, input.approvalHash, input.authorityHash, input.actorPrincipalDigest, input.actorProvenance, now);
+          authority_hash,actor_principal_digest,actor_provenance,state,created_at,next_dispatch_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?)`)
+            .run(input.deliveryId, input.workflowId, input.versionHash, input.eventId, input.eventDedupeKey, input.approvalHash, input.authorityHash, input.actorPrincipalDigest, input.actorProvenance, now, now);
         const delivery = this.deliveryForEvent(input.workflowId, input.versionHash, input.eventDedupeKey);
         if (!delivery)
             throw new Error("Workflow delivery was not persisted");
@@ -102,11 +102,17 @@ export class WorkflowQueue {
             throw new Error("Workflow delivery key collision or divergent immutable delivery");
         return delivery;
     }
-    pendingDeliveries(limit) {
+    pendingDeliveries(limit, now = Date.now()) {
         return this.store.db
-            .prepare(`SELECT * FROM workflow_deliveries WHERE state='pending'
-           ORDER BY created_at,delivery_id LIMIT ?`)
-            .all(limit).map(mapDelivery);
+            .prepare(`SELECT * FROM workflow_deliveries WHERE state='pending' AND next_dispatch_at<=?
+           ORDER BY next_dispatch_at,created_at,delivery_id LIMIT ?`)
+            .all(now, limit).map(mapDelivery);
+    }
+    deferDelivery(deliveryId, availableAt) {
+        return (Number(this.store.db
+            .prepare(`UPDATE workflow_deliveries SET next_dispatch_at=?
+             WHERE delivery_id=? AND state='pending'`)
+            .run(availableAt, deliveryId).changes) === 1);
     }
     isActiveVersion(workflowId, versionHash) {
         return Boolean(this.store.db
@@ -214,7 +220,9 @@ export class WorkflowQueue {
            ORDER BY CASE WHEN s.workflow_id=? THEN 1 ELSE 0 END,
              s.available_at,s.updated_at,s.run_id,s.position LIMIT 100`)
                 .all(now, now, last ?? "");
-            const selected = rows.find((row) => allowedAuthorityHashes.has(row.authority_hash));
+            const selected = allowedAuthorityHashes
+                ? rows.find((row) => allowedAuthorityHashes.has(row.authority_hash))
+                : rows[0];
             if (!selected) {
                 this.store.db.exec("COMMIT");
                 return undefined;
@@ -471,25 +479,46 @@ export class WorkflowQueue {
            ORDER BY available_at,updated_at,run_id,position LIMIT ?`)
             .all(now, limit).map(mapStep);
     }
-    recoverExpiredLeases(retryFor, now = Date.now()) {
+    recoverExpiredLeases(retryFor, now = Date.now(), limit = 100) {
         const expired = this.store.db
             .prepare(`SELECT * FROM workflow_steps WHERE state IN ('leased','running') AND lease_expires_at<=?
-         ORDER BY lease_expires_at,run_id,position`)
-            .all(now);
+         ORDER BY lease_expires_at,run_id,position LIMIT ?`)
+            .all(now, limit);
         let recovered = 0;
         for (const row of expired) {
-            const policy = retryFor(row.run_id, row.step_id);
+            let policy;
+            try {
+                policy = retryFor(row.run_id, row.step_id);
+            }
+            catch {
+                if (this.deadLetterRun(row.run_id, "Workflow retry policy is unavailable during lease recovery", now))
+                    recovered += 1;
+                continue;
+            }
             if (this.failExpiredLease(row.run_id, row.step_id, row.fencing_token, "Worker lease expired before completion", policy, now))
                 recovered += 1;
         }
         return recovered;
     }
-    expireRunDeadlines(now = Date.now()) {
+    recoverTimedOutClaim(runId, stepId, fencingToken, retry, now = Date.now()) {
+        const step = this.store.db
+            .prepare("SELECT * FROM workflow_steps WHERE run_id=? AND step_id=?")
+            .get(runId, stepId);
+        if (!step ||
+            !["leased", "running"].includes(step.state) ||
+            step.fencing_token !== fencingToken ||
+            (step.lease_hard_expires_at ?? Number.MAX_SAFE_INTEGER) > now ||
+            step.run_deadline_at <= now)
+            return false;
+        return this.failExpiredLease(runId, stepId, fencingToken, "Workflow step timed out before completion", retry, now);
+    }
+    expireRunDeadlines(now = Date.now(), limit = 100) {
         const rows = this.store.db
             .prepare(`SELECT DISTINCT r.run_id FROM workflow_runs r
          JOIN workflow_steps s ON s.run_id=r.run_id
-         WHERE r.state IN ('pending','running','waiting') AND s.run_deadline_at<=?`)
-            .all(now);
+         WHERE r.state IN ('pending','running','waiting') AND s.run_deadline_at<=?
+         ORDER BY s.run_deadline_at,r.run_id LIMIT ?`)
+            .all(now, limit);
         let expired = 0;
         for (const row of rows)
             if (this.deadLetterRun(row.run_id, "Workflow maximum run time expired", now))
@@ -627,6 +656,12 @@ export class WorkflowQueue {
             .prepare(`SELECT * FROM workflow_runs WHERE state IN ('pending','running','waiting')
            ORDER BY created_at,run_id`)
             .all().map(mapRun);
+    }
+    activeRunsAfter(afterRunId, limit) {
+        return this.store.db
+            .prepare(`SELECT * FROM workflow_runs WHERE state IN ('pending','running','waiting')
+           ORDER BY CASE WHEN run_id>? THEN 0 ELSE 1 END,run_id LIMIT ?`)
+            .all(afterRunId ?? "", limit).map(mapRun);
     }
     steps(runId) {
         return this.store.db
@@ -827,6 +862,7 @@ function mapDelivery(row) {
         actorProvenance: row.actor_provenance,
         state: row.state,
         createdAt: row.created_at,
+        nextDispatchAt: row.next_dispatch_at,
         ...(row.dispatched_at === null ? {} : { dispatchedAt: row.dispatched_at }),
     };
 }

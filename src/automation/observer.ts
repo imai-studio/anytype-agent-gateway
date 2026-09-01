@@ -548,7 +548,7 @@ export class WorkflowObserver {
       eventId: stableId("event", identity),
       dedupeKey,
       kind,
-      source: "poll",
+      source: "workflow",
       sourceEventId: `${object.id}:${object.modifiedAt}:${sourceDigest}`,
       sourceRevision: { modifiedAt: object.modifiedAt, fingerprint: sourceDigest },
       spaceId,
@@ -562,7 +562,7 @@ export class WorkflowObserver {
           }
         : {}),
       observedAt,
-      payload: { controlPlane: "workflow-definition", ...payload },
+      payload,
       causalDepth: 0,
       recordedAt: observedAt,
     });

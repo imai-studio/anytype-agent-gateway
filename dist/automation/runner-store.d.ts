@@ -2,7 +2,7 @@ import type { Store } from "../store.js";
 import { type NormalizedEventRecord } from "./event.js";
 import type { WorkflowAttemptRecord, WorkflowDeliveryRecord, WorkflowRunRecord, WorkflowRunnerCursor, WorkflowStepRecord, WorkflowVersionRecord } from "./store-types.js";
 import { type JsonValue, type WorkflowDefinition } from "./workflow.js";
-type WorkflowDeliveryInput = Omit<WorkflowDeliveryRecord, "state" | "createdAt" | "dispatchedAt">;
+type WorkflowDeliveryInput = Omit<WorkflowDeliveryRecord, "state" | "createdAt" | "nextDispatchAt" | "dispatchedAt">;
 export interface WorkflowRetryPolicy {
     attempts: number;
     initialDelaySeconds: number;
@@ -31,7 +31,8 @@ export declare class WorkflowQueue {
     createDelivery(input: WorkflowDeliveryInput, now?: number): WorkflowDeliveryRecord;
     createDeliveriesAndAdvanceCursor(event: NormalizedEventRecord, inputs: readonly WorkflowDeliveryInput[], now?: number): WorkflowDeliveryRecord[];
     private insertDelivery;
-    pendingDeliveries(limit: number): WorkflowDeliveryRecord[];
+    pendingDeliveries(limit: number, now?: number): WorkflowDeliveryRecord[];
+    deferDelivery(deliveryId: string, availableAt: number): boolean;
     isActiveVersion(workflowId: string, versionHash: string): boolean;
     cancelDelivery(deliveryId: string): boolean;
     deadLetterDelivery(deliveryId: string): boolean;
@@ -40,7 +41,7 @@ export declare class WorkflowQueue {
         maximumRunsPerHour: number;
         maximumStepsPerRun?: number;
     }, authorityHash: string, now?: number): WorkflowRunRecord | undefined;
-    claimStep(workerId: string, allowedAuthorityHashes: ReadonlySet<string>, leaseMilliseconds: number, now?: number): WorkflowClaim | undefined;
+    claimStep(workerId: string, allowedAuthorityHashes: ReadonlySet<string> | undefined, leaseMilliseconds: number, now?: number): WorkflowClaim | undefined;
     startStep(runId: string, stepId: string, fencingToken: string, now?: number): boolean;
     heartbeat(runId: string, stepId: string, fencingToken: string, leaseMilliseconds: number, now?: number): boolean;
     claimIsCurrent(runId: string, stepId: string, fencingToken: string, now?: number): boolean;
@@ -50,8 +51,9 @@ export declare class WorkflowQueue {
     resumeSourceRefetchStep(runId: string, stepId: string, now?: number): boolean;
     deferSourceRefetch(runId: string, stepId: string, reason: string, availableAt: number, now?: number): boolean;
     sourceRefetchSteps(now?: number, limit?: number): WorkflowStepRecord[];
-    recoverExpiredLeases(retryFor: (runId: string, stepId: string) => WorkflowRetryPolicy, now?: number): number;
-    expireRunDeadlines(now?: number): number;
+    recoverExpiredLeases(retryFor: (runId: string, stepId: string) => WorkflowRetryPolicy, now?: number, limit?: number): number;
+    recoverTimedOutClaim(runId: string, stepId: string, fencingToken: string, retry: WorkflowRetryPolicy, now?: number): boolean;
+    expireRunDeadlines(now?: number, limit?: number): number;
     cancelRun(runId: string, actorPrincipalDigest: string, reason: string, now?: number): boolean;
     pauseRunForApproval(runId: string, reason: string, now?: number): boolean;
     resumeRunWithAuthority(runId: string, authorityHash: string, now?: number): boolean;
@@ -59,6 +61,7 @@ export declare class WorkflowQueue {
     run(runId: string): WorkflowRunRecord | undefined;
     runForDelivery(deliveryId: string): WorkflowRunRecord | undefined;
     activeRuns(): WorkflowRunRecord[];
+    activeRunsAfter(afterRunId: string | undefined, limit: number): WorkflowRunRecord[];
     steps(runId: string): WorkflowStepRecord[];
     attempts(runId: string, stepId: string): WorkflowAttemptRecord[];
     counts(): WorkflowRunnerCounts;

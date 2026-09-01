@@ -19,6 +19,7 @@ import {
   workflowPrincipalDigest,
   workflowSourceDigest,
   workflowVersionHash,
+  type JsonValue,
   type WorkflowDefinition,
 } from "../src/automation/workflow.js";
 import { configSchema, type AgentConfig } from "../src/config.js";
@@ -261,16 +262,52 @@ describe("durable workflow runner", () => {
       eventId: "event-control",
       dedupeKey: "dedupe-control",
       kind: "object.updated",
+      source: "workflow",
+      spaceId: "space-1",
+      observedAt: 300,
+      recordedAt: 300,
+      causalDepth: 0,
+      payload: {},
+    });
+
+    expect(runner.matchEventsOnce()).toBe(0);
+    expect(runner.queue.counts().deliveries).toBe(0);
+    store.close();
+  });
+
+  it("does not let event payload spoof trusted control-plane classification", () => {
+    const store = new Store(":memory:");
+    const definition = workflow("Object workflow", {
+      triggers: [{ kind: "anytype.event", events: ["updated"], filter: {} }],
+    });
+    saveVersion(store, definition);
+    const runner = new WorkflowRunner(
+      store,
+      runnerConfig(),
+      () => {},
+      undefined,
+      () => 500,
+    );
+    runner.queue.initializeMatcher(250);
+    store.recordNormalizedEvent({
+      eventId: "event-spoofed-control",
+      dedupeKey: "dedupe-spoofed-control",
+      kind: "object.updated",
       source: "poll",
       spaceId: "space-1",
+      objectId: "ordinary-object",
+      editor: {
+        principalDigest: workflowPrincipalDigest("operator"),
+        provenance: "anytype-native",
+      },
       observedAt: 300,
       recordedAt: 300,
       causalDepth: 0,
       payload: { controlPlane: "workflow-definition" },
     });
 
-    expect(runner.matchEventsOnce()).toBe(0);
-    expect(runner.queue.counts().deliveries).toBe(0);
+    expect(runner.matchEventsOnce()).toBe(1);
+    expect(runner.queue.counts().deliveries).toBe(1);
     store.close();
   });
 
@@ -391,8 +428,73 @@ describe("durable workflow runner", () => {
       actorPrincipalDigest: workflowPrincipalDigest("operator"),
       decidedAt: 501,
     });
-    expect(runner.dispatchOnce(502)).toBe(1);
+    expect(runner.dispatchOnce(1_500)).toBe(1);
     expect(runner.queue.counts().runs).toBe(1);
+    store.close();
+  });
+
+  it("defers unapproved deliveries so later approved work is not starved", () => {
+    const config = runnerConfig({
+      allowedCapabilities: ["anytype.write"],
+      maximumRiskTier: "T1",
+      runner: {
+        pollIntervalMilliseconds: 50,
+        leaseSeconds: 5,
+        workerCount: 1,
+        batchSize: 2,
+      },
+    });
+    const store = new Store(":memory:");
+    const queue = new WorkflowQueue(store);
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      undefined,
+      () => 500,
+    );
+    const definition = workflow("Write", {
+      steps: [
+        {
+          id: "write",
+          kind: "anytype.write",
+          dependsOn: [],
+          config: { operation: "update", bulk: false, values: {} },
+        },
+      ],
+      capabilities: ["anytype.write"],
+    });
+    for (const [index, workflowId] of ["blocked-a", "blocked-b", "approved"].entries()) {
+      const version = saveVersion(store, definition, workflowId);
+      const event = recordEvent(store, workflowId);
+      const authorityHash = workflowAuthorityHash(config);
+      if (workflowId === "approved") approve(store, config, version);
+      queue.createDelivery(
+        {
+          deliveryId: `delivery-${workflowId}`,
+          workflowId,
+          versionHash: version.versionHash,
+          eventId: event.eventId,
+          eventDedupeKey: event.dedupeKey,
+          approvalHash: version.approvalHash,
+          authorityHash,
+          actorPrincipalDigest: version.editorPrincipalDigest!,
+          actorProvenance: version.editorProvenance!,
+        },
+        100 + index,
+      );
+    }
+
+    expect(runner.dispatchOnce(500)).toBe(0);
+    expect(runner.dispatchOnce(501)).toBe(1);
+    expect(queue.counts().runs).toBe(1);
+    expect(queue.pendingDeliveries(10, 501).map((item) => item.workflowId)).toEqual([]);
+    expect(
+      queue
+        .pendingDeliveries(10, 1_500)
+        .map((item) => item.workflowId)
+        .sort(),
+    ).toEqual(["blocked-a", "blocked-b"]);
     store.close();
   });
 
@@ -443,6 +545,22 @@ describe("durable workflow runner", () => {
     store.close();
   });
 
+  it("bounds each expired-lease recovery scan", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const queue = new WorkflowQueue(store);
+    const first = delivery(queue, store, config, workflow("First"), "workflow-recovery-a");
+    const second = delivery(queue, store, config, workflow("Second"), "workflow-recovery-b");
+    queue.claimStep("worker-a", new Set([first.authorityHash, second.authorityHash]), 1_000, 500);
+    queue.claimStep("worker-b", new Set([first.authorityHash, second.authorityHash]), 1_000, 500);
+
+    expect(queue.recoverExpiredLeases(() => workflow().spec.retry, 1_500, 1)).toBe(1);
+    expect(queue.counts().activeLeases).toBe(1);
+    expect(queue.recoverExpiredLeases(() => workflow().spec.retry, 1_500, 1)).toBe(1);
+    expect(queue.counts().activeLeases).toBe(0);
+    store.close();
+  });
+
   it("bounds heartbeat extensions by the step timeout", () => {
     const store = new Store(":memory:");
     const config = runnerConfig();
@@ -490,6 +608,172 @@ describe("durable workflow runner", () => {
     finish!({ ok: true, result: null });
     await pending;
     expect(runner.queue.run(run.runId)?.state).toBe("succeeded");
+    store.close();
+  });
+
+  it("aborts an executor at the lease hard deadline and durably retries the timeout", async () => {
+    vi.useFakeTimers({ now: 500 });
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const definition = workflow("Timeout", {
+      steps: [{ id: "noop", kind: "transform", dependsOn: [], timeoutSeconds: 1 }],
+    });
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, definition, "workflow-executor-timeout");
+    let aborted = false;
+    const executor: WorkflowStepExecutor = {
+      execute: async (_claim, _definition, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        }),
+    };
+    const runner = new WorkflowRunner(store, config, () => {}, executor);
+
+    const pending = runner.tickOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await pending;
+
+    expect(aborted).toBe(true);
+    expect(queue.run(run.runId)?.state).toBe("waiting");
+    expect(queue.steps(run.runId)[0]).toMatchObject({
+      state: "waiting_retry",
+      error: "Workflow step timed out before completion",
+    });
+    expect(queue.attempts(run.runId, "noop")[0]?.state).toBe("retry");
+    store.close();
+  });
+
+  it("bounds source refetch by the claim deadline", async () => {
+    vi.useFakeTimers({ now: 500 });
+    const config = runnerConfig({
+      allowedCapabilities: ["agent.invoke"],
+      maximumRiskTier: "T1",
+    });
+    const store = new Store(":memory:");
+    const definition = workflow("Agent timeout", {
+      steps: [
+        {
+          id: "agent",
+          kind: "agent",
+          dependsOn: [],
+          timeoutSeconds: 1,
+          config: { prompt: "private" },
+        },
+      ],
+      capabilities: ["agent.invoke"],
+    });
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, definition, "workflow-refetch-timeout");
+    let aborted = false;
+    const resolver: WorkflowSourceResolver = {
+      refetch: async (_version, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        }),
+    };
+    const runner = new WorkflowRunner(store, config, () => {}, undefined, undefined, resolver);
+
+    const pending = runner.tickOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await pending;
+
+    expect(aborted).toBe(true);
+    expect(queue.run(run.runId)?.state).toBe("waiting");
+    expect(queue.steps(run.runId)[0]?.state).toBe("waiting_retry");
+    store.close();
+  });
+
+  it("aborts active execution promptly on runner shutdown without inventing a result", async () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, workflow(), "workflow-shutdown");
+    let started: (() => void) | undefined;
+    const began = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const executor: WorkflowStepExecutor = {
+      execute: async (_claim, _definition, signal) =>
+        new Promise((_resolve, reject) => {
+          started!();
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    };
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      executor,
+      () => 500,
+    );
+    const shutdown = new AbortController();
+
+    const pending = runner.tickOnce(shutdown.signal);
+    await began;
+    shutdown.abort(new Error("shutdown"));
+    await pending;
+
+    expect(queue.run(run.runId)?.state).toBe("running");
+    expect(queue.steps(run.runId)[0]?.state).toBe("running");
+    store.close();
+  });
+
+  it("uses configured worker slots concurrently", async () => {
+    const config = runnerConfig({
+      runner: {
+        pollIntervalMilliseconds: 50,
+        leaseSeconds: 5,
+        workerCount: 2,
+        batchSize: 100,
+      },
+    });
+    const store = new Store(":memory:");
+    const queue = new WorkflowQueue(store);
+    const first = delivery(queue, store, config, workflow("First"), "workflow-concurrent-a");
+    const second = delivery(queue, store, config, workflow("Second"), "workflow-concurrent-b");
+    let active = 0;
+    let maximumActive = 0;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const executor: WorkflowStepExecutor = {
+      async execute() {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        if (active === 2) release!();
+        await gate;
+        active -= 1;
+        return { ok: true, result: null };
+      },
+    };
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      executor,
+      () => 500,
+    );
+
+    await runner.tickOnce();
+
+    expect(maximumActive).toBe(2);
+    expect(queue.run(first.runId)?.state).toBe("succeeded");
+    expect(queue.run(second.runId)?.state).toBe("succeeded");
     store.close();
   });
 
@@ -804,7 +1088,13 @@ describe("durable workflow runner", () => {
           {
             id: "write",
             kind: "anytype.write",
-            config: { values: { prompt: false, message: { nested: 1 } } },
+            config: {
+              values: {
+                prompt: "ordinary object property",
+                message: "ordinary object property",
+                nested: { prompt: "also ordinary data" },
+              },
+            },
           },
         ],
         capabilities: ["anytype.write"],
@@ -997,6 +1287,42 @@ describe("durable workflow runner", () => {
       state: "dead_letter",
       error:
         "workflow_version_integrity_failed: stored definition, approval, or policy did not match its immutable hashes",
+    });
+    store.close();
+  });
+
+  it("reports stored schema rejection separately from immutable hash tamper", async () => {
+    const config = runnerConfig();
+    const store = new Store(":memory:");
+    const definition = workflow();
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, definition, "workflow-schema-rejected");
+    const version = store.workflowVersion(run.workflowId, run.versionHash)!;
+    const invalid = JSON.parse(version.canonicalDefinitionJson) as {
+      spec: { steps: Array<Record<string, unknown>> };
+    };
+    invalid.spec.steps[0]!.unsupported = true;
+    store.db.exec("DROP TRIGGER workflow_versions_no_update");
+    store.db
+      .prepare(
+        `UPDATE workflow_versions SET canonical_definition_json=?
+         WHERE workflow_id=? AND version_hash=?`,
+      )
+      .run(canonicalJson(invalid as unknown as JsonValue), run.workflowId, run.versionHash);
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      undefined,
+      () => 500,
+    );
+
+    await runner.tickOnce();
+
+    expect(queue.run(run.runId)).toMatchObject({
+      state: "dead_letter",
+      error:
+        "workflow_version_schema_rejected: stored definition does not satisfy the supported schema",
     });
     store.close();
   });

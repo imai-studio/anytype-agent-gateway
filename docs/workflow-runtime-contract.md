@@ -169,7 +169,8 @@ The backup created before a schema 11 migration can still contain those plaintex
 mode `0600`, restrict access to the operator, and remove it after the migration and rollback window
 have been verified.
 
-Schema 12 adds the runner cursor, deliveries, runs, steps, and attempts. It records retry deadlines,
+Schema 12 adds the runner cursor, deliveries, runs, steps, and attempts. Schema 13 adds durable
+delivery deferral so an unapproved delivery cannot starve later approved work. The runner records retry deadlines,
 cancellation, leases, and fences in SQLite. A restart recovers an expired claim from this state. The
 runner does not infer success from a missing worker process. It also records
 `source_refetch_required` for a claimed step and attempt when the immutable version contains

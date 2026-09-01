@@ -31,7 +31,7 @@ describe("sanitized v0.1.3 upgrade fixture", () => {
     fixtureDatabase.close();
 
     const store = new Store(databasePath);
-    expect(store.schemaVersion()).toBe(12);
+    expect(store.schemaVersion()).toBe(13);
     expect(store.cursor(routeId)).toBe("0000000000000042");
     expect(store.sessionGeneration(routeId)).toBe(2);
     expect(store.sessionBinding(routeId)).toMatchObject({

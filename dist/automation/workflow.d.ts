@@ -283,6 +283,7 @@ export declare function canonicalWorkflowDefinition(workflow: WorkflowDefinition
 export declare function canonicalStoredWorkflowDefinition(workflow: WorkflowDefinition): string;
 export declare function canonicalStoredWorkflowApproval(workflow: WorkflowDefinition): string;
 export declare function redactStoredWorkflowJson(value: string): string;
+export declare function isSensitiveWorkflowTextPath(path: readonly string[]): boolean;
 export declare function workflowVersionHash(workflow: WorkflowDefinition): string;
 export declare function workflowSourceDigest(source: string): string;
 export declare function workflowPrincipalDigest(participantId: string): string;

@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalStoredWorkflowApproval, canonicalStoredWorkflowDefinition, canonicalWorkflowDefinition, redactStoredWorkflowJson, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -66,6 +66,8 @@ export class Store {
                 this.migrateToVersion11();
             if (current < 12)
                 this.migrateToVersion12();
+            if (current < 13)
+                this.migrateToVersion13();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -76,7 +78,7 @@ export class Store {
         }
         if (this._migrationBackupPath)
             this.reportMigration(`Knot upgraded the state database from schema ${current} to ${SCHEMA_VERSION}. Backup: ${this._migrationBackupPath}`);
-        if (current > 0 && current < 12) {
+        if (current > 0 && current < SCHEMA_VERSION) {
             this.db.exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
         }
     }
@@ -629,6 +631,20 @@ export class Store {
       CREATE TRIGGER workflow_attempts_no_delete BEFORE DELETE ON workflow_attempts
         BEGIN SELECT RAISE(ABORT,'workflow attempts are durable'); END;
     `);
+    }
+    migrateToVersion13() {
+        this.db.exec(`
+      ALTER TABLE workflow_deliveries ADD COLUMN next_dispatch_at INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX idx_workflow_deliveries_dispatch
+        ON workflow_deliveries(state,next_dispatch_at,created_at,delivery_id);
+    `);
+        const eventColumns = this.db.prepare("PRAGMA table_info(normalized_events)").all();
+        if (["kind", "source", "payload_json"].every((name) => eventColumns.some((c) => c.name === name)))
+            this.db.exec(`
+        UPDATE normalized_events SET source='workflow'
+          WHERE source='poll' AND kind IN ('object.created','object.updated','object.archived')
+            AND json_extract(payload_json,'$.controlPlane')='workflow-definition';
+      `);
     }
     isInitialized(routeId) {
         return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));

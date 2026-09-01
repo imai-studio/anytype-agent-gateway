@@ -388,8 +388,10 @@ Deleting that evidence before the first long soak would make failure analysis gu
 Knot may compact replaceable Anytype run-status projections and transient debug logs. It must not
 compact SQLite execution truth in v0.3.
 
-`knot doctor` must report database size, oldest event, oldest unresolved run, dead-letter count,
-and estimated growth. A later retention command needs its own reviewed design. It must refuse to
+The current `knot doctor` checks connectivity and runtime configuration; it does not yet report
+workflow queue health. Queue-health reporting should add database size, oldest event, oldest
+unresolved run, dead-letter count, and estimated growth before retention is enabled. A later
+retention command needs its own reviewed design. It must refuse to
 delete a record referenced by a live run, approval, effect receipt, mirror provenance record, or
 backup manifest.
 

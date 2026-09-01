@@ -14,7 +14,10 @@ import { canonicalJson, type JsonValue, type WorkflowDefinition } from "./workfl
 const MAX_STORED_STEP_RESULT_BYTES = 64 * 1024;
 const MAX_STORED_STEP_ERROR_CHARACTERS = 4_000;
 
-type WorkflowDeliveryInput = Omit<WorkflowDeliveryRecord, "state" | "createdAt" | "dispatchedAt">;
+type WorkflowDeliveryInput = Omit<
+  WorkflowDeliveryRecord,
+  "state" | "createdAt" | "nextDispatchAt" | "dispatchedAt"
+>;
 
 export interface WorkflowRetryPolicy {
   attempts: number;
@@ -142,8 +145,8 @@ export class WorkflowQueue {
       .prepare(
         `INSERT OR IGNORE INTO workflow_deliveries(
           delivery_id,workflow_id,version_hash,event_id,event_dedupe_key,approval_hash,
-          authority_hash,actor_principal_digest,actor_provenance,state,created_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,'pending',?)`,
+          authority_hash,actor_principal_digest,actor_provenance,state,created_at,next_dispatch_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?)`,
       )
       .run(
         input.deliveryId,
@@ -155,6 +158,7 @@ export class WorkflowQueue {
         input.authorityHash,
         input.actorPrincipalDigest,
         input.actorProvenance,
+        now,
         now,
       );
     const delivery = this.deliveryForEvent(
@@ -173,15 +177,28 @@ export class WorkflowQueue {
     return delivery;
   }
 
-  pendingDeliveries(limit: number): WorkflowDeliveryRecord[] {
+  pendingDeliveries(limit: number, now = Date.now()): WorkflowDeliveryRecord[] {
     return (
       this.store.db
         .prepare(
-          `SELECT * FROM workflow_deliveries WHERE state='pending'
-           ORDER BY created_at,delivery_id LIMIT ?`,
+          `SELECT * FROM workflow_deliveries WHERE state='pending' AND next_dispatch_at<=?
+           ORDER BY next_dispatch_at,created_at,delivery_id LIMIT ?`,
         )
-        .all(limit) as unknown as DeliveryRow[]
+        .all(now, limit) as unknown as DeliveryRow[]
     ).map(mapDelivery);
+  }
+
+  deferDelivery(deliveryId: string, availableAt: number): boolean {
+    return (
+      Number(
+        this.store.db
+          .prepare(
+            `UPDATE workflow_deliveries SET next_dispatch_at=?
+             WHERE delivery_id=? AND state='pending'`,
+          )
+          .run(availableAt, deliveryId).changes,
+      ) === 1
+    );
   }
 
   isActiveVersion(workflowId: string, versionHash: string): boolean {
@@ -344,7 +361,7 @@ export class WorkflowQueue {
 
   claimStep(
     workerId: string,
-    allowedAuthorityHashes: ReadonlySet<string>,
+    allowedAuthorityHashes: ReadonlySet<string> | undefined,
     leaseMilliseconds: number,
     now = Date.now(),
   ): WorkflowClaim | undefined {
@@ -363,7 +380,9 @@ export class WorkflowQueue {
              s.available_at,s.updated_at,s.run_id,s.position LIMIT 100`,
         )
         .all(now, now, last ?? "") as unknown as StepRow[];
-      const selected = rows.find((row) => allowedAuthorityHashes.has(row.authority_hash));
+      const selected = allowedAuthorityHashes
+        ? rows.find((row) => allowedAuthorityHashes.has(row.authority_hash))
+        : rows[0];
       if (!selected) {
         this.store.db.exec("COMMIT");
         return undefined;
@@ -751,16 +770,30 @@ export class WorkflowQueue {
   recoverExpiredLeases(
     retryFor: (runId: string, stepId: string) => WorkflowRetryPolicy,
     now = Date.now(),
+    limit = 100,
   ): number {
     const expired = this.store.db
       .prepare(
         `SELECT * FROM workflow_steps WHERE state IN ('leased','running') AND lease_expires_at<=?
-         ORDER BY lease_expires_at,run_id,position`,
+         ORDER BY lease_expires_at,run_id,position LIMIT ?`,
       )
-      .all(now) as unknown as StepRow[];
+      .all(now, limit) as unknown as StepRow[];
     let recovered = 0;
     for (const row of expired) {
-      const policy = retryFor(row.run_id, row.step_id);
+      let policy: WorkflowRetryPolicy;
+      try {
+        policy = retryFor(row.run_id, row.step_id);
+      } catch {
+        if (
+          this.deadLetterRun(
+            row.run_id,
+            "Workflow retry policy is unavailable during lease recovery",
+            now,
+          )
+        )
+          recovered += 1;
+        continue;
+      }
       if (
         this.failExpiredLease(
           row.run_id,
@@ -776,14 +809,43 @@ export class WorkflowQueue {
     return recovered;
   }
 
-  expireRunDeadlines(now = Date.now()): number {
+  recoverTimedOutClaim(
+    runId: string,
+    stepId: string,
+    fencingToken: string,
+    retry: WorkflowRetryPolicy,
+    now = Date.now(),
+  ): boolean {
+    const step = this.store.db
+      .prepare("SELECT * FROM workflow_steps WHERE run_id=? AND step_id=?")
+      .get(runId, stepId) as StepRow | undefined;
+    if (
+      !step ||
+      !["leased", "running"].includes(step.state) ||
+      step.fencing_token !== fencingToken ||
+      (step.lease_hard_expires_at ?? Number.MAX_SAFE_INTEGER) > now ||
+      step.run_deadline_at <= now
+    )
+      return false;
+    return this.failExpiredLease(
+      runId,
+      stepId,
+      fencingToken,
+      "Workflow step timed out before completion",
+      retry,
+      now,
+    );
+  }
+
+  expireRunDeadlines(now = Date.now(), limit = 100): number {
     const rows = this.store.db
       .prepare(
         `SELECT DISTINCT r.run_id FROM workflow_runs r
          JOIN workflow_steps s ON s.run_id=r.run_id
-         WHERE r.state IN ('pending','running','waiting') AND s.run_deadline_at<=?`,
+         WHERE r.state IN ('pending','running','waiting') AND s.run_deadline_at<=?
+         ORDER BY s.run_deadline_at,r.run_id LIMIT ?`,
       )
-      .all(now) as Array<{ run_id: string }>;
+      .all(now, limit) as Array<{ run_id: string }>;
     let expired = 0;
     for (const row of rows)
       if (this.deadLetterRun(row.run_id, "Workflow maximum run time expired", now)) expired += 1;
@@ -956,6 +1018,17 @@ export class WorkflowQueue {
            ORDER BY created_at,run_id`,
         )
         .all() as unknown as RunRow[]
+    ).map(mapRun);
+  }
+
+  activeRunsAfter(afterRunId: string | undefined, limit: number): WorkflowRunRecord[] {
+    return (
+      this.store.db
+        .prepare(
+          `SELECT * FROM workflow_runs WHERE state IN ('pending','running','waiting')
+           ORDER BY CASE WHEN run_id>? THEN 0 ELSE 1 END,run_id LIMIT ?`,
+        )
+        .all(afterRunId ?? "", limit) as unknown as RunRow[]
     ).map(mapRun);
   }
 
@@ -1221,6 +1294,7 @@ type DeliveryRow = {
   actor_provenance: "anytype-native" | "authenticated-chat" | "operator-cli";
   state: WorkflowDeliveryRecord["state"];
   created_at: number;
+  next_dispatch_at: number;
   dispatched_at: number | null;
 };
 
@@ -1327,6 +1401,7 @@ function mapDelivery(row: DeliveryRow): WorkflowDeliveryRecord {
     actorProvenance: row.actor_provenance,
     state: row.state,
     createdAt: row.created_at,
+    nextDispatchAt: row.next_dispatch_at,
     ...(row.dispatched_at === null ? {} : { dispatchedAt: row.dispatched_at }),
   };
 }
