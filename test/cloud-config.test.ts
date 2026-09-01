@@ -13,6 +13,13 @@ import {
 } from "../src/cloud-config.js";
 
 describe("cloud configuration", () => {
+  it("uses distinct key files for distinct configs in the same directory", () => {
+    const first = resolveCloudPaths({ configFile: "/tmp/knot/klee.json" });
+    const second = resolveCloudPaths({ configFile: "/tmp/knot/anya.json" });
+    expect(first.privateKeyFile).not.toBe(second.privateKeyFile);
+    expect(first.pairingFile).not.toBe(second.pairingFile);
+  });
+
   it("stores an Ed25519 identity outside the repository with private permissions", async () => {
     const home = await mkdtemp(join(tmpdir(), "knot-cloud-config-"));
     const paths = resolveCloudPaths({ home });

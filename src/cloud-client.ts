@@ -93,7 +93,7 @@ export class CloudClient {
 
   async claimCommands(input: { leaseSeconds?: number } = {}) {
     const connectorId = this.pairedConnectorId();
-    return this.request({
+    const response = await this.request({
       method: "POST",
       path: `/api/v1/connectors/${encodeURIComponent(connectorId)}/commands/claim`,
       body: {
@@ -104,6 +104,8 @@ export class CloudClient {
       schema: commandClaimResponseSchema,
       signed: true,
     });
+    for (const command of response.commands) this.assertCommandConnector(command);
+    return response;
   }
 
   async extendLease(command: CloudCommandEnvelope, extendBySeconds = 60) {

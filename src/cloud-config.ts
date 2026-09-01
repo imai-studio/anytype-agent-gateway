@@ -12,7 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import {
   CLOUD_PROTOCOL_VERSION,
@@ -78,10 +78,11 @@ export function resolveCloudPaths(
     expandHome(configured ?? join(home, ".config", "knot", "cloud.json"), home),
   );
   const directory = dirname(configFile);
+  const stem = basename(configFile, extname(configFile));
   return {
     configFile,
-    privateKeyFile: join(directory, "cloud-connector-ed25519.pem"),
-    pairingFile: join(directory, "cloud-pairing.json"),
+    privateKeyFile: join(directory, `${stem}-connector-ed25519.pem`),
+    pairingFile: join(directory, `${stem}-pairing.json`),
   };
 }
 
