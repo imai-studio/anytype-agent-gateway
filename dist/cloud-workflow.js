@@ -4,6 +4,7 @@ import { basename, isAbsolute, join, relative } from "node:path";
 import { z } from "zod";
 import { commandEnvelopeSchema, commandResultSchema, } from "./cloud-contract.js";
 import { canonicalJson } from "./automation/workflow.js";
+import { principalAllowed, principalFromMessage } from "./principal.js";
 export class CloudCommandStore {
     store;
     constructor(store) {
@@ -597,11 +598,13 @@ export class AnytypeCloudCommandExecutor {
     cloud;
     cloudConfig;
     agentParticipantId;
-    constructor(anytype, cloud, cloudConfig, agentParticipantId) {
+    allowedOriginParticipantIds;
+    constructor(anytype, cloud, cloudConfig, agentParticipantId, allowedOriginParticipantIds = []) {
         this.anytype = anytype;
         this.cloud = cloud;
         this.cloudConfig = cloudConfig;
         this.agentParticipantId = agentParticipantId;
+        this.allowedOriginParticipantIds = allowedOriginParticipantIds;
     }
     async execute(command, effectKey) {
         if (command.payload.domain === "publication") {
@@ -756,6 +759,23 @@ export class AnytypeCloudCommandExecutor {
                 });
             }
             case "chat.send": {
+                const origin = operation.channelOrigin;
+                // Cloud supplies only a lookup pointer. Authority comes from a fresh
+                // native Anytype read immediately before the external effect.
+                const source = await this.anytype.getMessage(origin.spaceId, origin.chatId, origin.messageId);
+                if (source.id !== origin.messageId)
+                    return {
+                        outcome: "rejected-by-local-policy",
+                        reasonCode: "channel-origin-mismatch",
+                    };
+                const principal = principalFromMessage(source);
+                if (!principalAllowed(principal, this.allowedOriginParticipantIds))
+                    return {
+                        outcome: "rejected-by-local-policy",
+                        reasonCode: principal
+                            ? "channel-origin-sender-denied"
+                            : "channel-origin-sender-unverified",
+                    };
                 const messageId = await this.anytype.sendMessage(operation.spaceId, operation.chatId, {
                     text: operation.message,
                 });

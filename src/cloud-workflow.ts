@@ -15,6 +15,7 @@ import type { Store } from "./store.js";
 import type { AnytypePort } from "./types.js";
 import type { WorkflowRunnerExtension } from "./automation/runner.js";
 import { canonicalJson, type JsonValue } from "./automation/workflow.js";
+import { principalAllowed, principalFromMessage } from "./principal.js";
 
 type CommandState =
   | "received"
@@ -924,6 +925,7 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
     private readonly cloud: CloudCommandClient,
     private readonly cloudConfig: CloudConfig,
     private readonly agentParticipantId: string,
+    private readonly allowedOriginParticipantIds: readonly string[] = [],
   ) {}
 
   async execute(command: CloudCommandEnvelope, effectKey: string): Promise<CloudCommandResult> {
@@ -1109,6 +1111,27 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
         });
       }
       case "chat.send": {
+        const origin = operation.channelOrigin;
+        // Cloud supplies only a lookup pointer. Authority comes from a fresh
+        // native Anytype read immediately before the external effect.
+        const source = await this.anytype.getMessage(
+          origin.spaceId,
+          origin.chatId,
+          origin.messageId,
+        );
+        if (source.id !== origin.messageId)
+          return {
+            outcome: "rejected-by-local-policy",
+            reasonCode: "channel-origin-mismatch",
+          };
+        const principal = principalFromMessage(source);
+        if (!principalAllowed(principal, this.allowedOriginParticipantIds))
+          return {
+            outcome: "rejected-by-local-policy",
+            reasonCode: principal
+              ? "channel-origin-sender-denied"
+              : "channel-origin-sender-unverified",
+          };
         const messageId = await this.anytype.sendMessage(operation.spaceId, operation.chatId, {
           text: operation.message,
         });

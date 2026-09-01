@@ -173,11 +173,28 @@ const anytypeOperationSchema = z.discriminatedUnion("type", [
         chatId: opaqueIdSchema,
         limit: z.number().int().min(1).max(100).default(50),
     }),
-    z.object({
+    z
+        .object({
         type: z.literal("chat.send"),
         spaceId: opaqueIdSchema,
         chatId: opaqueIdSchema,
         message: z.string().min(1).max(100_000),
+        channelOrigin: z
+            .object({
+            spaceId: opaqueIdSchema,
+            chatId: opaqueIdSchema,
+            messageId: opaqueIdSchema,
+        })
+            .strict(),
+    })
+        .superRefine((value, context) => {
+        if (value.channelOrigin.spaceId !== value.spaceId ||
+            value.channelOrigin.chatId !== value.chatId)
+            context.addIssue({
+                code: "custom",
+                path: ["channelOrigin"],
+                message: "chat.send must be authorized from the destination channel",
+            });
     }),
 ]);
 const publicationControlOperationSchema = z.discriminatedUnion("type", [

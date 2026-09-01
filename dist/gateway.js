@@ -110,7 +110,7 @@ export class Gateway {
                     if (!cloudConfig?.paired)
                         throw new Error("cloudCommands requires an approved Knot Cloud pairing");
                     const cloud = new CloudClient(cloudConfig);
-                    const executor = new AnytypeCloudCommandExecutor(this.anytype, cloud, cloudConfig, this.config.agent.participantId);
+                    const executor = new AnytypeCloudCommandExecutor(this.anytype, cloud, cloudConfig, this.config.agent.participantId, this.config.cloudCommands.allowedOriginParticipantIds);
                     extensions.push(new CloudWorkflowExtension(this.store, cloud, executor, this.config.cloudCommands, this.anytype, this.log));
                 }
                 this.trackAuxiliary(new WorkflowRunner(this.store, this.config.automation, this.log, new PublishWebWorkflowStepExecutor(this.config.automation, new NoEffectWorkflowStepExecutor()), Date.now, new AnytypeWorkflowSourceResolver(this.anytype, this.config.automation.definitionTypeKeys, this.config.automation.polling.pageSize), extensions).run(this.abort.signal), "workflow_runner_stopped");

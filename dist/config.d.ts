@@ -443,6 +443,7 @@ export declare const configSchema: z.ZodObject<{
             "first-party-service": "first-party-service";
         }>>>;
         allowedSpaceIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        allowedOriginParticipantIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
         allowedActorDigests: z.ZodDefault<z.ZodArray<z.ZodString>>;
         allowedScopes: z.ZodDefault<z.ZodArray<z.ZodEnum<{
             "anytype.objects.read": "anytype.objects.read";

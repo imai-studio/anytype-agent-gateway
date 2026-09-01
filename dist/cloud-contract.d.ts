@@ -572,6 +572,11 @@ export declare const commandEnvelopeSchema: z.ZodObject<{
             spaceId: z.ZodString;
             chatId: z.ZodString;
             message: z.ZodString;
+            channelOrigin: z.ZodObject<{
+                spaceId: z.ZodString;
+                chatId: z.ZodString;
+                messageId: z.ZodString;
+            }, z.core.$strict>;
         }, z.core.$strip>], "type">;
     }, z.core.$strip>, z.ZodObject<{
         domain: z.ZodLiteral<"publication">;
@@ -695,6 +700,11 @@ export declare const commandClaimResponseSchema: z.ZodObject<{
                 spaceId: z.ZodString;
                 chatId: z.ZodString;
                 message: z.ZodString;
+                channelOrigin: z.ZodObject<{
+                    spaceId: z.ZodString;
+                    chatId: z.ZodString;
+                    messageId: z.ZodString;
+                }, z.core.$strict>;
             }, z.core.$strip>], "type">;
         }, z.core.$strip>, z.ZodObject<{
             domain: z.ZodLiteral<"publication">;
