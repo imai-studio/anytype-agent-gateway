@@ -10,6 +10,7 @@ export declare class Store {
     get migrationBackupPath(): string | undefined;
     schemaVersion(): number;
     private migrate;
+    private secureStateFiles;
     private hasUserTables;
     private backupBeforeMigration;
     private migrateToVersion1;

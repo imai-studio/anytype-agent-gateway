@@ -102,11 +102,12 @@ export class CloudCommandStore {
             throw error;
         }
     }
-    prepare(commandId, approvalRequired, now = Date.now()) {
+    prepare(commandId, approvalRequired, now = Date.now(), availableAt = now) {
         const next = approvalRequired ? "awaiting_approval" : "queued";
         const changed = this.store.db
-            .prepare("UPDATE cloud_command_inbox SET state=?,updated_at=? WHERE command_id=? AND state='received'")
-            .run(next, now, commandId).changes;
+            .prepare(`UPDATE cloud_command_inbox SET state=?,available_at=?,updated_at=?
+         WHERE command_id=? AND state='received'`)
+            .run(next, availableAt, now, commandId).changes;
         if (changed)
             this.enqueueProjection(commandId, next, now);
         return changed === 1;
@@ -118,9 +119,10 @@ export class CloudCommandStore {
         return this.setTerminalPending(commandId, { outcome: "rejected-by-local-policy", reasonCode: "operator-cancelled" }, now, ["received", "awaiting_approval", "queued"]);
     }
     approve(commandId, now = Date.now()) {
+        const notBefore = this.envelope(commandId).notBefore * 1_000;
         const changed = this.store.db
             .prepare("UPDATE cloud_command_inbox SET state='queued',available_at=?,updated_at=? WHERE command_id=? AND state='awaiting_approval'")
-            .run(now, now, commandId).changes;
+            .run(Math.max(now, notBefore), now, commandId).changes;
         if (changed)
             this.enqueueProjection(commandId, "approved", now);
         return changed === 1;
@@ -410,21 +412,21 @@ export class CloudWorkflowExtension {
     config;
     anytype;
     log;
-    now;
     inbox;
     projectionWorkerId = `cloud-projection-${randomUUID()}`;
     nextPollAt = 0;
     recovered = false;
     inFlight;
-    constructor(store, client, executor, config, anytype, log, now = Date.now) {
+    constructor(store, client, executor, config, anytype, log, now) {
         this.client = client;
         this.executor = executor;
         this.config = config;
         this.anytype = anytype;
         this.log = log;
-        this.now = now;
         this.inbox = new CloudCommandStore(store);
+        this.now = now ?? (() => this.client.serverAdjustedNow());
     }
+    now;
     async beforeTick() {
         const now = this.now();
         if (!this.recovered) {
@@ -489,7 +491,7 @@ export class CloudWorkflowExtension {
                 if (denial)
                     this.inbox.reject(command.commandId, denial, now);
                 else
-                    this.inbox.prepare(command.commandId, approvalRequired(command, this.config), now);
+                    this.inbox.prepare(command.commandId, approvalRequired(command, this.config), now, Math.max(now, command.notBefore * 1_000));
                 this.log("cloud_command_persisted", {
                     commandId: command.commandId,
                     requiredScope: command.requiredScope,
@@ -771,8 +773,6 @@ export class AnytypeCloudCommandExecutor {
 function localPolicyDenial(command, config, now) {
     if (command.expiresAt * 1_000 <= now)
         return "command-expired";
-    if (command.notBefore * 1_000 > now)
-        return "command-not-active";
     if (!config.allowedCreatorKinds.includes(command.createdBy))
         return "creator-kind-denied";
     if (!config.allowedActorDigests.includes(command.actor.principalDigest))

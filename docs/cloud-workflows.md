@@ -76,6 +76,11 @@ stored result with the Cloud attempt and lease token. A duplicate Cloud acknowle
 Retryable reads and idempotent publication controls use bounded backoff; unsafe mutations do not
 repeat automatically.
 
+`notBefore` and `expiresAt` are evaluated with the same server-adjusted clock used to sign Cloud
+requests. A command received before `notBefore` remains durably queued at that timestamp; it is not
+reported as a policy rejection. Clock-skew responses update that shared offset before the next
+dispatch decision.
+
 Optional Anytype audit projection uses its own durable outbox:
 
 ```yaml

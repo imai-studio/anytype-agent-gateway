@@ -272,6 +272,7 @@ describe("CloudClient", () => {
     });
     await client.claimCommands();
     expect(timestamps).toEqual([String(now), String(now + 90)]);
+    expect(client.serverAdjustedNow()).toBe((now + 90) * 1_000);
   });
 
   it("retries an unparseable transient server response", async () => {

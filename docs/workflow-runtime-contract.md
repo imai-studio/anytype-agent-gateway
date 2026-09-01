@@ -174,6 +174,15 @@ The backup created before a schema 11 migration can still contain those plaintex
 mode `0600`, restrict access to the operator, and remove it after the migration and rollback window
 have been verified.
 
+Schema 15 broadens that rule to every nested `prompt` and `message` field. A schema 11–14 database
+written by an older development build can therefore contain a projection that the current runner
+cannot safely reconstruct. Migration detects those legacy plaintext fields, marks the owning
+definition invalid, clears its active version, records `workflow_integrity_failed`, and redacts the
+affected stored definition and approval projections. It does not recalculate immutable version or
+approval hashes or silently keep that version executable. The operator must re-author the workflow
+from its Anytype source so observation can store a new fully redacted version and obtain a new
+approval.
+
 Schema 12 adds the runner cursor, deliveries, runs, steps, and attempts. Schema 13 adds durable
 delivery deferral so an unapproved delivery cannot starve later approved work. The runner records retry deadlines,
 cancellation, leases, and fences in SQLite. A restart recovers an expired claim from this state. The
@@ -181,6 +190,8 @@ runner does not infer success from a missing worker process. It also records
 `source_refetch_required` for a claimed step and attempt when the immutable version contains
 redacted source text.
 
-Schema 15 adds the Cloud command inbox, effect receipts, and Anytype projection outbox. The live
-state database is forced to mode `0600` because the inbox must retain the current fenced Cloud lease
-until its terminal result is acknowledged. CLI views omit that lease.
+Schema 15 adds durable approval-pending delivery state, Cloud command inbox, effect receipts, and
+the Anytype projection outbox. Approval and capacity deferrals do not consume the permanent-denial
+budget. The live state directory is forced to mode `0700`; the database and live `-wal`/`-shm`
+sidecars are forced to mode `0600` because the inbox retains the current fenced Cloud lease until
+its terminal result is acknowledged. CLI views omit that lease.

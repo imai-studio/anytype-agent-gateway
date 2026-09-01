@@ -27,6 +27,7 @@ export interface CloudCommandRecord {
     completedAt?: number;
 }
 export interface CloudCommandClient {
+    serverAdjustedNow(): number;
     claimCommands(input?: {
         leaseSeconds?: number;
     }): ReturnType<CloudClient["claimCommands"]>;
@@ -45,7 +46,7 @@ export declare class CloudCommandStore {
     envelope(commandId: string): CloudCommandEnvelope;
     list(limit?: number): CloudCommandRecord[];
     recoverInterruptedEffects(now?: number): number;
-    prepare(commandId: string, approvalRequired: boolean, now?: number): boolean;
+    prepare(commandId: string, approvalRequired: boolean, now?: number, availableAt?: number): boolean;
     reject(commandId: string, reasonCode: string, now?: number): boolean;
     cancel(commandId: string, now?: number): boolean;
     approve(commandId: string, now?: number): boolean;
@@ -91,13 +92,13 @@ export declare class CloudWorkflowExtension implements WorkflowRunnerExtension {
     private readonly config;
     private readonly anytype;
     private readonly log;
-    private readonly now;
     private readonly inbox;
     private readonly projectionWorkerId;
     private nextPollAt;
     private recovered;
     private inFlight;
     constructor(store: Store, client: CloudCommandClient, executor: CloudCommandExecutionPort, config: AgentConfig["cloudCommands"], anytype: AnytypePort, log: (event: string, fields?: Record<string, unknown>) => void, now?: () => number);
+    private readonly now;
     beforeTick(): Promise<void>;
     stop(): Promise<void>;
     afterTick(): Promise<void>;

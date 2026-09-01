@@ -2,7 +2,7 @@ import type { Store } from "../store.js";
 import { type NormalizedEventRecord } from "./event.js";
 import type { WorkflowAttemptRecord, WorkflowDeliveryRecord, WorkflowRunRecord, WorkflowRunnerCursor, WorkflowStepRecord, WorkflowVersionRecord } from "./store-types.js";
 import { type JsonValue, type WorkflowDefinition } from "./workflow.js";
-type WorkflowDeliveryInput = Omit<WorkflowDeliveryRecord, "state" | "createdAt" | "nextDispatchAt" | "dispatchAttemptCount" | "dispatchedAt">;
+type WorkflowDeliveryInput = Omit<WorkflowDeliveryRecord, "state" | "createdAt" | "nextDispatchAt" | "dispatchAttemptCount" | "approvalPending" | "dispatchedAt">;
 export interface WorkflowRetryPolicy {
     attempts: number;
     initialDelaySeconds: number;
@@ -33,6 +33,9 @@ export declare class WorkflowQueue {
     private insertDelivery;
     pendingDeliveries(limit: number, now?: number): WorkflowDeliveryRecord[];
     deferDelivery(deliveryId: string, availableAt: number, maximumAttempts: number): "deferred" | "dead_letter" | undefined;
+    deferDeliveryForApproval(deliveryId: string, availableAt: number): boolean;
+    deferDeliveryTransient(deliveryId: string, availableAt: number): boolean;
+    private deferDeliveryWithoutBudget;
     isActiveVersion(workflowId: string, versionHash: string): boolean;
     cancelDelivery(deliveryId: string): boolean;
     deadLetterDelivery(deliveryId: string): boolean;

@@ -21,11 +21,14 @@ export class Store {
     constructor(path, reportMigration = (message) => console.warn(message)) {
         this.reportMigration = reportMigration;
         const existed = path !== ":memory:" && existsSync(path);
-        if (path !== ":memory:")
+        if (path !== ":memory:") {
             mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+            chmodSync(dirname(path), 0o700);
+        }
         this.db = new DatabaseSync(path);
         this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 5000;");
         this.migrate(path, existed);
+        this.secureStateFiles(path);
     }
     get migrationBackupPath() {
         return this._migrationBackupPath;
@@ -85,6 +88,15 @@ export class Store {
         if (current > 0 && current < SCHEMA_VERSION) {
             this.db.exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
         }
+        this.secureStateFiles(path);
+    }
+    secureStateFiles(path) {
+        if (path === ":memory:")
+            return;
+        chmodSync(dirname(path), 0o700);
+        for (const candidate of [path, `${path}-wal`, `${path}-shm`])
+            if (existsSync(candidate))
+                chmodSync(candidate, 0o600);
     }
     hasUserTables() {
         return Boolean(this.db
@@ -704,9 +716,80 @@ export class Store {
     `);
     }
     migrateToVersion15() {
+        const legacyUnredactedWorkflowIds = new Set();
+        const versionRedactions = [];
+        const versionTable = this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_versions'")
+            .get();
+        const versionColumns = versionTable
+            ? this.db.prepare("PRAGMA table_info(workflow_versions)").all()
+            : [];
+        if (versionColumns.some((column) => column.name === "workflow_id") &&
+            versionColumns.some((column) => column.name === "canonical_definition_json")) {
+            const versions = this.db
+                .prepare("SELECT rowid,workflow_id,canonical_definition_json FROM workflow_versions")
+                .all();
+            for (const version of versions) {
+                const canonical = canonicalJson(JSON.parse(version.canonical_definition_json));
+                const redacted = redactStoredWorkflowJson(version.canonical_definition_json);
+                if (redacted !== canonical) {
+                    legacyUnredactedWorkflowIds.add(version.workflow_id);
+                    versionRedactions.push({ rowid: version.rowid, value: redacted });
+                }
+            }
+        }
+        const subjectTable = this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_approval_subjects'")
+            .get();
+        const subjectColumns = subjectTable
+            ? this.db.prepare("PRAGMA table_info(workflow_approval_subjects)").all()
+            : [];
+        const subjectRedactions = [];
+        if (subjectColumns.some((column) => column.name === "workflow_id") &&
+            subjectColumns.some((column) => column.name === "canonical_approval_json")) {
+            const subjects = this.db
+                .prepare("SELECT rowid,workflow_id,canonical_approval_json FROM workflow_approval_subjects")
+                .all();
+            for (const subject of subjects) {
+                const canonical = canonicalJson(JSON.parse(subject.canonical_approval_json));
+                const redacted = redactStoredWorkflowJson(subject.canonical_approval_json);
+                if (redacted !== canonical) {
+                    legacyUnredactedWorkflowIds.add(subject.workflow_id);
+                    subjectRedactions.push({ rowid: subject.rowid, value: redacted });
+                }
+            }
+        }
+        if (versionRedactions.length > 0 || subjectRedactions.length > 0) {
+            this.db.exec(`
+        DROP TRIGGER IF EXISTS workflow_versions_no_update;
+        DROP TRIGGER IF EXISTS workflow_approval_subjects_no_update;
+      `);
+            if (versionRedactions.length > 0) {
+                const updateVersion = this.db.prepare("UPDATE workflow_versions SET canonical_definition_json=? WHERE rowid=?");
+                for (const redaction of versionRedactions)
+                    updateVersion.run(redaction.value, redaction.rowid);
+            }
+            if (subjectRedactions.length > 0) {
+                const updateSubject = this.db.prepare("UPDATE workflow_approval_subjects SET canonical_approval_json=? WHERE rowid=?");
+                for (const redaction of subjectRedactions)
+                    updateSubject.run(redaction.value, redaction.rowid);
+            }
+            if (versionColumns.length > 0)
+                this.db.exec(`
+          CREATE TRIGGER workflow_versions_no_update BEFORE UPDATE ON workflow_versions
+            BEGIN SELECT RAISE(ABORT,'workflow versions are append-only'); END;
+        `);
+            if (subjectColumns.length > 0)
+                this.db.exec(`
+          CREATE TRIGGER workflow_approval_subjects_no_update BEFORE UPDATE ON workflow_approval_subjects
+            BEGIN SELECT RAISE(ABORT,'workflow approval subjects are append-only'); END;
+        `);
+        }
         this.db.exec(`
       ALTER TABLE workflow_deliveries
         ADD COLUMN dispatch_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_attempt_count >= 0);
+      ALTER TABLE workflow_deliveries
+        ADD COLUMN approval_pending INTEGER NOT NULL DEFAULT 0 CHECK(approval_pending IN (0,1));
       ALTER TABLE workflow_steps
         ADD COLUMN source_refetch_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(source_refetch_attempt_count >= 0);
 
@@ -785,6 +868,15 @@ export class Store {
       CREATE TRIGGER cloud_projection_outbox_no_delete BEFORE DELETE ON cloud_projection_outbox
         BEGIN SELECT RAISE(ABORT,'cloud projection outbox is durable'); END;
     `);
+        if (legacyUnredactedWorkflowIds.size > 0) {
+            const invalidate = this.db.prepare(`UPDATE workflow_definitions
+         SET state='invalid',active_version_hash=NULL,
+             validation_errors_json='["workflow_integrity_failed"]',updated_at=MAX(updated_at,?)
+         WHERE workflow_id=?`);
+            const invalidatedAt = Date.now();
+            for (const workflowId of legacyUnredactedWorkflowIds)
+                invalidate.run(invalidatedAt, workflowId);
+        }
     }
     isInitialized(routeId) {
         return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));

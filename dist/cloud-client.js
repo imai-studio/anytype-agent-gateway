@@ -44,6 +44,9 @@ export class CloudClient {
         this.clockOffsetSeconds = response.serverUnixSeconds - Math.floor(this.now() / 1_000);
         return response;
     }
+    serverAdjustedNow() {
+        return this.now() + this.clockOffsetSeconds * 1_000;
+    }
     async pollPairing(credentials) {
         return this.request({
             method: "POST",
@@ -271,7 +274,7 @@ export class CloudClient {
         await validateCloudKey(this.config);
         const connectorId = this.pairedConnectorId();
         const authority = normalizeAuthority(url.host);
-        const timestamp = Math.floor(this.now() / 1_000) + this.clockOffsetSeconds;
+        const timestamp = Math.floor(this.serverAdjustedNow() / 1_000);
         const nonce = randomBytes(24).toString("base64url");
         const bodySha256 = createHash("sha256").update(body).digest("hex");
         const canonical = [

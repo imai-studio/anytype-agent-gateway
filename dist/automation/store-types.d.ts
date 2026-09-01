@@ -87,6 +87,7 @@ export interface WorkflowDeliveryRecord {
     createdAt: number;
     nextDispatchAt: number;
     dispatchAttemptCount: number;
+    approvalPending: boolean;
     dispatchedAt?: number;
 }
 export interface WorkflowRunRecord {

@@ -114,6 +114,7 @@ export class WorkflowQueue {
         const changed = this.store.db
             .prepare(`UPDATE workflow_deliveries
          SET dispatch_attempt_count=dispatch_attempt_count+1,
+             approval_pending=0,
              next_dispatch_at=?,
              state=CASE
                WHEN dispatch_attempt_count+1>=? THEN 'dead_letter'
@@ -128,6 +129,21 @@ export class WorkflowQueue {
             .get(deliveryId).state === "dead_letter"
             ? "dead_letter"
             : "deferred";
+    }
+    deferDeliveryForApproval(deliveryId, availableAt) {
+        return this.deferDeliveryWithoutBudget(deliveryId, availableAt, true);
+    }
+    deferDeliveryTransient(deliveryId, availableAt) {
+        return this.deferDeliveryWithoutBudget(deliveryId, availableAt, false);
+    }
+    deferDeliveryWithoutBudget(deliveryId, availableAt, approvalPending) {
+        if (!Number.isSafeInteger(availableAt) || availableAt < 0)
+            throw new Error("availableAt must be a non-negative safe integer");
+        return (Number(this.store.db
+            .prepare(`UPDATE workflow_deliveries
+             SET next_dispatch_at=?,approval_pending=?
+             WHERE delivery_id=? AND state='pending'`)
+            .run(availableAt, approvalPending ? 1 : 0, deliveryId).changes) === 1);
     }
     isActiveVersion(workflowId, versionHash) {
         return Boolean(this.store.db
@@ -926,6 +942,7 @@ function mapDelivery(row) {
         createdAt: row.created_at,
         nextDispatchAt: row.next_dispatch_at,
         dispatchAttemptCount: row.dispatch_attempt_count,
+        approvalPending: row.approval_pending === 1,
         ...(row.dispatched_at === null ? {} : { dispatchedAt: row.dispatched_at }),
     };
 }

@@ -51,6 +51,8 @@ export declare class WorkflowRunner {
     matchEventsOnce(now?: number): number;
     dispatchOnce(now?: number): number;
     private deferPendingDelivery;
+    private deferApprovalPendingDelivery;
+    private deferTransientDelivery;
     private executeClaim;
     private startLeaseHeartbeat;
     private handleRejectedSettlement;

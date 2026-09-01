@@ -76,6 +76,7 @@ export interface CloudCommandRecord {
 }
 
 export interface CloudCommandClient {
+  serverAdjustedNow(): number;
   claimCommands(input?: { leaseSeconds?: number }): ReturnType<CloudClient["claimCommands"]>;
   extendLease(
     command: CloudCommandEnvelope,
@@ -239,13 +240,19 @@ export class CloudCommandStore {
     }
   }
 
-  prepare(commandId: string, approvalRequired: boolean, now = Date.now()): boolean {
+  prepare(
+    commandId: string,
+    approvalRequired: boolean,
+    now = Date.now(),
+    availableAt = now,
+  ): boolean {
     const next = approvalRequired ? "awaiting_approval" : "queued";
     const changed = this.store.db
       .prepare(
-        "UPDATE cloud_command_inbox SET state=?,updated_at=? WHERE command_id=? AND state='received'",
+        `UPDATE cloud_command_inbox SET state=?,available_at=?,updated_at=?
+         WHERE command_id=? AND state='received'`,
       )
-      .run(next, now, commandId).changes;
+      .run(next, availableAt, now, commandId).changes;
     if (changed) this.enqueueProjection(commandId, next, now);
     return changed === 1;
   }
@@ -269,11 +276,12 @@ export class CloudCommandStore {
   }
 
   approve(commandId: string, now = Date.now()): boolean {
+    const notBefore = this.envelope(commandId).notBefore * 1_000;
     const changed = this.store.db
       .prepare(
         "UPDATE cloud_command_inbox SET state='queued',available_at=?,updated_at=? WHERE command_id=? AND state='awaiting_approval'",
       )
-      .run(now, now, commandId).changes;
+      .run(Math.max(now, notBefore), now, commandId).changes;
     if (changed) this.enqueueProjection(commandId, "approved", now);
     return changed === 1;
   }
@@ -717,10 +725,13 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
     private readonly config: AgentConfig["cloudCommands"],
     private readonly anytype: AnytypePort,
     private readonly log: (event: string, fields?: Record<string, unknown>) => void,
-    private readonly now: () => number = Date.now,
+    now?: () => number,
   ) {
     this.inbox = new CloudCommandStore(store);
+    this.now = now ?? (() => this.client.serverAdjustedNow());
   }
+
+  private readonly now: () => number;
 
   async beforeTick(): Promise<void> {
     const now = this.now();
@@ -795,7 +806,13 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
         if (record.state !== "received") continue;
         const denial = localPolicyDenial(command, this.config, now);
         if (denial) this.inbox.reject(command.commandId, denial, now);
-        else this.inbox.prepare(command.commandId, approvalRequired(command, this.config), now);
+        else
+          this.inbox.prepare(
+            command.commandId,
+            approvalRequired(command, this.config),
+            now,
+            Math.max(now, command.notBefore * 1_000),
+          );
         this.log("cloud_command_persisted", {
           commandId: command.commandId,
           requiredScope: command.requiredScope,
@@ -1113,7 +1130,6 @@ function localPolicyDenial(
   now: number,
 ): string | undefined {
   if (command.expiresAt * 1_000 <= now) return "command-expired";
-  if (command.notBefore * 1_000 > now) return "command-not-active";
   if (!config.allowedCreatorKinds.includes(command.createdBy)) return "creator-kind-denied";
   if (!config.allowedActorDigests.includes(command.actor.principalDigest))
     return "actor-principal-denied";

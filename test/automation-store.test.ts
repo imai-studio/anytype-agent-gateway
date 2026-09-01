@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -115,6 +115,96 @@ describe("automation persistence foundation", () => {
     ).toBe(6);
     expect(backup.prepare("SELECT value FROM fixture").get()).toEqual({ value: "kept" });
     backup.close();
+    store.close();
+  });
+
+  it("forces the live state directory and SQLite files to private modes", () => {
+    const directory = mkdtempSync(join(tmpdir(), "knot-state-modes-"));
+    temporaryDirectories.push(directory);
+    chmodSync(directory, 0o777);
+    const path = join(directory, "state.sqlite");
+    const store = new Store(path);
+
+    expect(statSync(directory).mode & 0o777).toBe(0o700);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(existsSync(`${path}-wal`)).toBe(true);
+    expect(existsSync(`${path}-shm`)).toBe(true);
+    expect(statSync(`${path}-wal`).mode & 0o777).toBe(0o600);
+    expect(statSync(`${path}-shm`).mode & 0o777).toBe(0o600);
+    store.close();
+  });
+
+  it("invalidates schema-14 definitions that retain newly sensitive prompt or message text", () => {
+    const directory = mkdtempSync(join(tmpdir(), "knot-v14-redaction-boundary-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE workflow_definitions (
+        workflow_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        active_version_hash TEXT,
+        validation_errors_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE workflow_versions (
+        workflow_id TEXT NOT NULL,
+        canonical_definition_json TEXT NOT NULL
+      );
+      CREATE TABLE workflow_approval_subjects (
+        workflow_id TEXT NOT NULL,
+        canonical_approval_json TEXT NOT NULL
+      );
+      CREATE TABLE workflow_deliveries (delivery_id TEXT PRIMARY KEY);
+      CREATE TABLE workflow_steps (run_id TEXT NOT NULL,step_id TEXT NOT NULL);
+      INSERT INTO workflow_definitions VALUES
+        ('unsafe','valid','version-unsafe','[]',1),
+        ('safe','valid','version-safe','[]',1);
+      INSERT INTO workflow_versions VALUES
+        ('unsafe','{"metadata":{"labels":{"prompt":"legacy plaintext"}}}'),
+        ('safe','{"metadata":{"labels":{"prompt":{"redacted":true,"digest":"sha256:${"a".repeat(64)}"}}}}');
+      INSERT INTO workflow_approval_subjects VALUES
+        ('unsafe','{"spec":{"steps":[{"config":{"message":"legacy approval plaintext"}}]}}');
+      PRAGMA user_version=14;
+    `);
+    legacy.close();
+
+    const store = new Store(path, () => undefined);
+
+    expect(
+      store.db
+        .prepare(
+          "SELECT state,active_version_hash,validation_errors_json FROM workflow_definitions WHERE workflow_id='unsafe'",
+        )
+        .get(),
+    ).toEqual({
+      state: "invalid",
+      active_version_hash: null,
+      validation_errors_json: '["workflow_integrity_failed"]',
+    });
+    expect(
+      store.db
+        .prepare(
+          "SELECT state,active_version_hash FROM workflow_definitions WHERE workflow_id='safe'",
+        )
+        .get(),
+    ).toEqual({ state: "valid", active_version_hash: "version-safe" });
+    expect(
+      store.db
+        .prepare(
+          "SELECT canonical_definition_json FROM workflow_versions WHERE workflow_id='unsafe'",
+        )
+        .get(),
+    ).toMatchObject({ canonical_definition_json: expect.not.stringContaining("legacy plaintext") });
+    expect(
+      store.db
+        .prepare(
+          "SELECT canonical_approval_json FROM workflow_approval_subjects WHERE workflow_id='unsafe'",
+        )
+        .get(),
+    ).toMatchObject({
+      canonical_approval_json: expect.not.stringContaining("legacy approval plaintext"),
+    });
     store.close();
   });
 

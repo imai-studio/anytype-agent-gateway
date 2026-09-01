@@ -42,6 +42,7 @@ export declare class CloudClient {
         maximumProtocolVersion: string;
         serverUnixSeconds: number;
     }>;
+    serverAdjustedNow(): number;
     pollPairing(credentials: PairingCredentials): Promise<{
         protocolVersion: "1.0";
         status: "pending";

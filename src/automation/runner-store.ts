@@ -16,7 +16,12 @@ const MAX_STORED_STEP_ERROR_CHARACTERS = 4_000;
 
 type WorkflowDeliveryInput = Omit<
   WorkflowDeliveryRecord,
-  "state" | "createdAt" | "nextDispatchAt" | "dispatchAttemptCount" | "dispatchedAt"
+  | "state"
+  | "createdAt"
+  | "nextDispatchAt"
+  | "dispatchAttemptCount"
+  | "approvalPending"
+  | "dispatchedAt"
 >;
 
 export interface WorkflowRetryPolicy {
@@ -199,6 +204,7 @@ export class WorkflowQueue {
       .prepare(
         `UPDATE workflow_deliveries
          SET dispatch_attempt_count=dispatch_attempt_count+1,
+             approval_pending=0,
              next_dispatch_at=?,
              state=CASE
                WHEN dispatch_attempt_count+1>=? THEN 'dead_letter'
@@ -215,6 +221,34 @@ export class WorkflowQueue {
     ).state === "dead_letter"
       ? "dead_letter"
       : "deferred";
+  }
+
+  deferDeliveryForApproval(deliveryId: string, availableAt: number): boolean {
+    return this.deferDeliveryWithoutBudget(deliveryId, availableAt, true);
+  }
+
+  deferDeliveryTransient(deliveryId: string, availableAt: number): boolean {
+    return this.deferDeliveryWithoutBudget(deliveryId, availableAt, false);
+  }
+
+  private deferDeliveryWithoutBudget(
+    deliveryId: string,
+    availableAt: number,
+    approvalPending: boolean,
+  ): boolean {
+    if (!Number.isSafeInteger(availableAt) || availableAt < 0)
+      throw new Error("availableAt must be a non-negative safe integer");
+    return (
+      Number(
+        this.store.db
+          .prepare(
+            `UPDATE workflow_deliveries
+             SET next_dispatch_at=?,approval_pending=?
+             WHERE delivery_id=? AND state='pending'`,
+          )
+          .run(availableAt, approvalPending ? 1 : 0, deliveryId).changes,
+      ) === 1
+    );
   }
 
   isActiveVersion(workflowId: string, versionHash: string): boolean {
@@ -1366,6 +1400,7 @@ type DeliveryRow = {
   created_at: number;
   next_dispatch_at: number;
   dispatch_attempt_count: number;
+  approval_pending: number;
   dispatched_at: number | null;
 };
 
@@ -1475,6 +1510,7 @@ function mapDelivery(row: DeliveryRow): WorkflowDeliveryRecord {
     createdAt: row.created_at,
     nextDispatchAt: row.next_dispatch_at,
     dispatchAttemptCount: row.dispatch_attempt_count,
+    approvalPending: row.approval_pending === 1,
     ...(row.dispatched_at === null ? {} : { dispatchedAt: row.dispatched_at }),
   };
 }

@@ -108,8 +108,15 @@ function clientFor(commands: CloudCommandEnvelope[]) {
   const controlPublication = vi.fn(async () => {
     throw new Error("not used");
   });
+  const serverAdjustedNow = vi.fn(() => 1_000_000);
   return {
-    client: { claimCommands, extendLease, submitResult, controlPublication } as CloudCommandClient,
+    client: {
+      serverAdjustedNow,
+      claimCommands,
+      extendLease,
+      submitResult,
+      controlPublication,
+    } as CloudCommandClient,
     claimCommands,
     extendLease,
     submitResult,
@@ -508,6 +515,39 @@ describe("cloud workflow bridge", () => {
       outcome: "rejected-by-local-policy",
       reasonCode: "command-expired",
     });
+    store.close();
+  });
+
+  it("defers not-before commands using the same server-adjusted clock as request signing", async () => {
+    const store = new Store(":memory:");
+    const item = command({ notBefore: 1_100, leaseExpiresAt: 1_150 });
+    const fixture = clientFor([item]);
+    let adjustedNow = 1_000_000;
+    fixture.client.serverAdjustedNow = () => adjustedNow;
+    const execute = vi.fn(async () => succeeded);
+    const extension = new CloudWorkflowExtension(
+      store,
+      fixture.client,
+      { execute },
+      settings(),
+      new FakeAnytype(),
+      () => undefined,
+    );
+
+    await extension.beforeTick();
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(
+      store.db
+        .prepare("SELECT state,available_at FROM cloud_command_inbox WHERE command_id=?")
+        .get(item.commandId),
+    ).toEqual({ state: "queued", available_at: 1_100_000 });
+
+    adjustedNow = 1_100_000;
+    await extension.beforeTick();
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(new CloudCommandStore(store).command(item.commandId)?.state).toBe("terminal_pending");
     store.close();
   });
 

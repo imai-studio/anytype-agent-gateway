@@ -312,7 +312,7 @@ export class WorkflowRunner {
         now,
       );
       if (!approval) {
-        this.deferPendingDelivery(delivery, "no current exact approval permits the delivery", now);
+        this.deferApprovalPendingDelivery(delivery, now);
         continue;
       }
       if (
@@ -325,12 +325,7 @@ export class WorkflowRunner {
         )
       )
         dispatched += 1;
-      else
-        this.deferPendingDelivery(
-          delivery,
-          "workflow concurrency or rate limit deferred dispatch",
-          now,
-        );
+      else this.deferTransientDelivery(delivery, now);
     }
     return dispatched;
   }
@@ -353,6 +348,16 @@ export class WorkflowRunner {
         reason,
         attempts: delivery.dispatchAttemptCount + 1,
       });
+  }
+
+  private deferApprovalPendingDelivery(delivery: WorkflowDeliveryRecord, now: number): void {
+    const delay = Math.max(1_000, this.config.runner.pollIntervalMilliseconds * 5);
+    this.queue.deferDeliveryForApproval(delivery.deliveryId, now + delay);
+  }
+
+  private deferTransientDelivery(delivery: WorkflowDeliveryRecord, now: number): void {
+    const delay = Math.max(1_000, this.config.runner.pollIntervalMilliseconds * 5);
+    this.queue.deferDeliveryTransient(delivery.deliveryId, now + delay);
   }
 
   private async executeClaim(
@@ -596,7 +601,7 @@ export class WorkflowRunner {
         if (
           this.queue.cancelRun(
             run.runId,
-            version.editorPrincipalDigest ?? workflowPrincipalDigest("system:workflow-runner"),
+            workflowPrincipalDigest("system:workflow-runner"),
             definition.spec.enabled
               ? "Workflow version was superseded or archived"
               : "Workflow was disabled",

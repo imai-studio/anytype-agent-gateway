@@ -225,13 +225,13 @@ export class WorkflowRunner {
             const authorityHash = authorization.evaluation.authorityHash;
             const approval = this.store.currentWorkflowApproval(delivery.workflowId, delivery.approvalHash, authorityHash, now);
             if (!approval) {
-                this.deferPendingDelivery(delivery, "no current exact approval permits the delivery", now);
+                this.deferApprovalPendingDelivery(delivery, now);
                 continue;
             }
             if (this.queue.dispatchDelivery(delivery.deliveryId, definition, authorization.evaluation.effectiveLimits, authorityHash, now))
                 dispatched += 1;
             else
-                this.deferPendingDelivery(delivery, "workflow concurrency or rate limit deferred dispatch", now);
+                this.deferTransientDelivery(delivery, now);
         }
         return dispatched;
     }
@@ -245,6 +245,14 @@ export class WorkflowRunner {
                 reason,
                 attempts: delivery.dispatchAttemptCount + 1,
             });
+    }
+    deferApprovalPendingDelivery(delivery, now) {
+        const delay = Math.max(1_000, this.config.runner.pollIntervalMilliseconds * 5);
+        this.queue.deferDeliveryForApproval(delivery.deliveryId, now + delay);
+    }
+    deferTransientDelivery(delivery, now) {
+        const delay = Math.max(1_000, this.config.runner.pollIntervalMilliseconds * 5);
+        this.queue.deferDeliveryTransient(delivery.deliveryId, now + delay);
     }
     async executeClaim(claim, shutdownSignal, cooperativeSignal) {
         const now = this.now();
@@ -399,7 +407,7 @@ export class WorkflowRunner {
             }
             if (!definition.spec.enabled ||
                 !this.queue.isActiveVersion(run.workflowId, run.versionHash)) {
-                if (this.queue.cancelRun(run.runId, version.editorPrincipalDigest ?? workflowPrincipalDigest("system:workflow-runner"), definition.spec.enabled
+                if (this.queue.cancelRun(run.runId, workflowPrincipalDigest("system:workflow-runner"), definition.spec.enabled
                     ? "Workflow version was superseded or archived"
                     : "Workflow was disabled", now))
                     revoked += 1;
