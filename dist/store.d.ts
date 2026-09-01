@@ -183,6 +183,7 @@ export declare class Store {
         objectId: string;
         name: string;
         sourceDigest: string;
+        sourceModifiedAt: number;
         seenAt: number;
         errorCode: WorkflowValidationErrorCode;
     }): WorkflowDefinitionObservation;

@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { AnytypeClient } from "../src/anytype-client.js";
+import { AnytypeClient, AnytypeHttpError } from "../src/anytype-client.js";
 import { configSchema } from "../src/config.js";
 
 const servers: Server[] = [];
@@ -153,7 +153,7 @@ describe("Anytype object REST client", () => {
     expect(hydrated).toEqual(["one"]);
   });
 
-  it("clamps workflow REST identifiers by UTF-16 code units", async () => {
+  it("rejects overlong workflow space IDs and drops overlong object IDs before hydration", async () => {
     const hostileId = "😀".repeat(400);
     const paths: string[] = [];
     const server = createServer((request, response) => {
@@ -164,15 +164,7 @@ describe("Anytype object REST client", () => {
         response.end(JSON.stringify({ data: [{ id: hostileId, type: { key: "knot-workflow" } }] }));
         return;
       }
-      response.end(
-        JSON.stringify({
-          object: {
-            id: hostileId,
-            type: { key: "knot-workflow" },
-            modified_at: 1_700_000_000,
-          },
-        }),
-      );
+      response.end(JSON.stringify({ object: { id: "unexpected" } }));
     });
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -191,12 +183,36 @@ describe("Anytype object REST client", () => {
       }),
     );
 
-    const [workflow] = await client.searchWorkflowObjects(hostileId, ["knot-workflow"], 0, 1);
+    await expect(client.searchWorkflowObjects(hostileId, ["knot-workflow"], 0, 1)).rejects.toThrow(
+      "workflow space ID is invalid",
+    );
+    expect(paths).toEqual([]);
 
-    expect(workflow?.id.length).toBeLessThanOrEqual(512);
-    expect(/[\uD800-\uDBFF]$/u.test(workflow?.id ?? "")).toBe(false);
-    expect(decodeURIComponent(paths[0]!.split("/")[3]!).length).toBeLessThanOrEqual(512);
-    expect(decodeURIComponent(paths[1]!.split("/").at(-1)!).length).toBeLessThanOrEqual(512);
+    await expect(client.searchWorkflowObjects("space", ["knot-workflow"], 0, 1)).resolves.toEqual([
+      {
+        id: hostileId,
+        name: [...hostileId].slice(0, 256).join(""),
+        typeKey: "knot-workflow",
+        modifiedAt: 0,
+        archived: false,
+        observationError: "object_identifier_invalid",
+      },
+    ]);
+    expect(paths).toEqual(["/v1/spaces/space/search"]);
+  });
+
+  it("reports endpoint templates without leaking concrete Anytype IDs", () => {
+    const error = new AnytypeHttpError(
+      503,
+      "GET",
+      "/v1/spaces/private-space/objects/private-object?token=private-token",
+    );
+
+    expect(error.endpoint).toBe("/v1/spaces/:spaceId/objects/:objectId");
+    expect(error.message).toContain("/v1/spaces/:spaceId/objects/:objectId");
+    expect(error.message).not.toContain("private-space");
+    expect(error.message).not.toContain("private-object");
+    expect(error.message).not.toContain("private-token");
   });
 
   it("does not trust undocumented top-level editor aliases", async () => {

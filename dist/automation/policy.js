@@ -29,7 +29,7 @@ const t1Capabilities = new Set([
 ]);
 export const workflowAuthorityFields = {
     allowedAuthorIds: z.array(z.string().min(1)).default([]),
-    allowedSpaceIds: z.array(z.string().min(1)).default([]),
+    allowedSpaceIds: z.array(z.string().trim().min(1).max(512)).default([]),
     allowedCapabilities: z.array(workflowCapabilitySchema).default([]),
     allowedConnections: z.array(z.string().min(1)).default([]),
     allowedSecretNames: z.array(z.string().min(1)).default([]),

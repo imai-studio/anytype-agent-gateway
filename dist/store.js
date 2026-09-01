@@ -1169,16 +1169,31 @@ export class Store {
         return this.workflowDefinition(input.spaceId, input.objectId);
     }
     recordWorkflowDefinitionReadFailure(input) {
+        assertStoredTimestamp(input.sourceModifiedAt, "Workflow source modification time");
         assertStoredTimestamp(input.seenAt, "Workflow observation time");
         this.db
             .prepare(`INSERT INTO workflow_definitions(
           workflow_id,space_id,object_id,name,state,active_version_hash,source_modified_at,
           last_seen_at,validation_errors_json,observed_source_digest,created_at,updated_at
-        ) VALUES(?,?,?,?, 'invalid',NULL,0,?,?,?,?,?)
+        ) VALUES(?,?,?,?, 'invalid',NULL,?,?,?,?,?,?)
         ON CONFLICT(workflow_id) DO UPDATE SET
-          state='invalid',active_version_hash=NULL,last_seen_at=excluded.last_seen_at,
-          validation_errors_json=excluded.validation_errors_json,updated_at=excluded.updated_at`)
-            .run(input.workflowId, input.spaceId, input.objectId, input.name, input.seenAt, JSON.stringify([input.errorCode]), input.sourceDigest, input.seenAt, input.seenAt);
+          name=CASE WHEN excluded.source_modified_at>workflow_definitions.source_modified_at
+            THEN excluded.name ELSE workflow_definitions.name END,
+          state=CASE WHEN excluded.source_modified_at>workflow_definitions.source_modified_at
+            THEN 'invalid' ELSE workflow_definitions.state END,
+          active_version_hash=CASE
+            WHEN excluded.source_modified_at>workflow_definitions.source_modified_at THEN NULL
+            ELSE workflow_definitions.active_version_hash END,
+          source_modified_at=MAX(workflow_definitions.source_modified_at,excluded.source_modified_at),
+          last_seen_at=MAX(workflow_definitions.last_seen_at,excluded.last_seen_at),
+          validation_errors_json=CASE
+            WHEN excluded.source_modified_at>workflow_definitions.source_modified_at
+            THEN excluded.validation_errors_json ELSE workflow_definitions.validation_errors_json END,
+          observed_source_digest=CASE
+            WHEN excluded.source_modified_at>workflow_definitions.source_modified_at
+            THEN excluded.observed_source_digest ELSE workflow_definitions.observed_source_digest END,
+          updated_at=MAX(workflow_definitions.updated_at,excluded.updated_at)`)
+            .run(input.workflowId, input.spaceId, input.objectId, input.name, input.sourceModifiedAt, input.seenAt, JSON.stringify([input.errorCode]), input.sourceDigest, input.seenAt, input.seenAt);
         return this.workflowDefinition(input.spaceId, input.objectId);
     }
     workflowDefinitionsMissingSince(spaceId, reconcileStartedAt, limit = 100) {

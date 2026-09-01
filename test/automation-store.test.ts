@@ -556,6 +556,14 @@ describe("automation persistence foundation", () => {
         }
       ).count,
     ).toBe(1);
+    store.prune(1_000);
+    expect(
+      (
+        store.db.prepare("SELECT COUNT(*) AS count FROM normalized_events").get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(1);
     store.close();
   });
 

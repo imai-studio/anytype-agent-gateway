@@ -165,6 +165,8 @@ export type AnytypeWorkflowObject = {
   editorParticipantId?: string;
   archived: boolean;
   observationError?:
+    | "anytype_request_failed"
+    | "object_identifier_invalid"
     | "object_read_failed"
     | "object_not_found"
     | "object_too_large"

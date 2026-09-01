@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkflowObserver } from "../src/automation/observer.js";
 import type { WorkflowObserverState } from "../src/automation/store-types.js";
 import { workflowSourceDigest } from "../src/automation/workflow.js";
+import { AnytypeHttpError } from "../src/anytype-client.js";
 import { configSchema } from "../src/config.js";
 import { Store } from "../src/store.js";
 import type { AnytypeWorkflowObject } from "../src/types.js";
@@ -186,8 +187,7 @@ describe("read-only workflow observer", () => {
     ).toMatchObject({ failed: false });
     expect(eventRows(store)).toHaveLength(1);
     expect(store.workflowDefinition("space-1", "definition-1")).toMatchObject({
-      state: "invalid",
-      validationErrors: ["object_read_failed"],
+      state: "valid",
     });
     eventWrite.mockRestore();
     store.close();
@@ -204,8 +204,8 @@ describe("read-only workflow observer", () => {
     expect(result.changes).toBe(1);
     expect(eventRows(store)).toHaveLength(2);
     expect(eventRows(store).map((event) => event.kind)).toEqual([
+      "object.unreadable",
       "object.created",
-      "object.updated",
     ]);
     expect(store.workflowDefinition("space-1", "definition-1")?.state).toBe("valid");
     store.close();
@@ -590,6 +590,77 @@ describe("read-only workflow observer", () => {
     store.close();
   });
 
+  it("preserves the first successful object.created after an unreadable observation", async () => {
+    const anytype = new FakeAnytype();
+    const store = new Store(":memory:");
+    let now = 200;
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => now,
+    );
+    anytype.workflowObjects = [
+      workflowObject({ observationError: "object_read_failed", modifiedAt: 100 }),
+    ];
+    await observer.scanSpaceOnce("space-1");
+    now = 300;
+    anytype.workflowObjects = [workflowObject({ modifiedAt: 101 })];
+
+    await observer.scanSpaceOnce("space-1");
+
+    expect(eventRows(store).map((event) => event.kind)).toEqual([
+      "object.unreadable",
+      "object.created",
+    ]);
+    expect(store.workflowDefinition("space-1", "definition-1")?.state).toBe("valid");
+    store.close();
+  });
+
+  it("does not discard an active version for a stale or same-revision read failure", async () => {
+    const anytype = new FakeAnytype();
+    const store = new Store(":memory:");
+    let now = 200;
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => now,
+    );
+    anytype.workflowObjects = [workflowObject({ modifiedAt: 100 })];
+    await observer.scanSpaceOnce("space-1");
+    const activeVersionHash = store.workflowDefinition(
+      "space-1",
+      "definition-1",
+    )?.activeVersionHash;
+    now = 300;
+    anytype.workflowObjects = [
+      workflowObject({ modifiedAt: 100, observationError: "object_read_failed" }),
+    ];
+
+    await observer.scanSpaceOnce("space-1");
+
+    expect(store.workflowDefinition("space-1", "definition-1")).toMatchObject({
+      state: "valid",
+      activeVersionHash,
+      sourceModifiedAt: 100,
+    });
+    now = 400;
+    anytype.workflowObjects = [
+      workflowObject({ modifiedAt: 150, observationError: "object_read_failed" }),
+    ];
+    await observer.scanSpaceOnce("space-1");
+    expect(store.workflowDefinition("space-1", "definition-1")).toMatchObject({
+      state: "invalid",
+      sourceModifiedAt: 150,
+      validationErrors: ["object_read_failed"],
+    });
+    expect(store.workflowDefinition("space-1", "definition-1")?.activeVersionHash).toBeUndefined();
+    store.close();
+  });
+
   it("records a poisoned object and advances pagination through reconciliation", async () => {
     const anytype = new FakeAnytype();
     anytype.workflowObjects = [
@@ -629,7 +700,7 @@ describe("read-only workflow observer", () => {
     expect(store.workflowObserverState("space-1")?.pageOffset).toBe(2);
     expect(store.workflowDefinition("space-1", "poisoned")).toMatchObject({
       state: "invalid",
-      validationErrors: ["object_read_failed"],
+      validationErrors: ["store_write_failed"],
     });
     expect(await observer.scanSpaceOnce("space-1")).toMatchObject({
       failed: false,
@@ -640,6 +711,29 @@ describe("read-only workflow observer", () => {
     expect(store.workflowDefinition("space-1", "good-2")?.state).toBe("valid");
     expect(store.workflowDefinition("space-1", "missing")?.state).toBe("archived");
     expect(saveVersion).toHaveBeenCalled();
+    store.close();
+  });
+
+  it("classifies immutable workflow collisions separately from transient store failures", async () => {
+    const anytype = new FakeAnytype();
+    anytype.workflowObjects = [workflowObject()];
+    const store = new Store(":memory:");
+    vi.spyOn(store, "saveWorkflowVersion").mockImplementationOnce(() => {
+      throw new Error("Workflow version collision or divergent immutable record");
+    });
+
+    await new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => 200,
+    ).scanSpaceOnce("space-1");
+
+    expect(store.workflowDefinition("space-1", "definition-1")).toMatchObject({
+      state: "invalid",
+      validationErrors: ["workflow_integrity_failed"],
+    });
     store.close();
   });
 
@@ -731,7 +825,7 @@ describe("read-only workflow observer", () => {
       () => 200,
     ).scanSpaceOnce("space-1");
 
-    expect(result).toMatchObject({ failed: false, archived: 1 });
+    expect(result).toMatchObject({ failed: true, archived: 1 });
     expect(store.workflowDefinition("space-1", "missing-1")?.state).toBe("invalid");
     expect(store.workflowDefinition("space-1", "missing-2")?.state).toBe("archived");
     expect(logs).toContainEqual({
@@ -768,38 +862,90 @@ describe("read-only workflow observer", () => {
       () => 200,
     ).scanSpaceOnce("space-1");
 
-    expect(result).toMatchObject({ failed: false, archived: 0 });
+    expect(result).toMatchObject({ failed: true, archived: 0 });
+    expect(store.workflowDefinition("space-1", "missing")?.lastSeenAt).toBe(200);
     expect(boundedRead).toHaveBeenCalledWith("space-1", "missing");
     expect(generalRead).not.toHaveBeenCalled();
     store.close();
   });
 
-  it("clamps hostile astral object and space IDs by UTF-16 code units", async () => {
+  it("backs off a failed confirmation without letting it pin later reconciliation candidates", async () => {
+    const anytype = new FakeAnytype();
+    const store = new Store(":memory:");
+    for (const objectId of ["bad", "good"]) {
+      store.recordWorkflowDefinitionStatus({
+        workflowId: `workflow-${objectId}`,
+        spaceId: "space-1",
+        objectId,
+        name: objectId,
+        state: "invalid",
+        sourceModifiedAt: 1,
+        sourceDigest: workflowSourceDigest(objectId),
+        seenAt: 1,
+        validationErrors: ["source_missing"],
+      });
+    }
+    anytype.missingObjectIds.add("good");
+    const originalRead = anytype.getWorkflowObject.bind(anytype);
+    vi.spyOn(anytype, "getWorkflowObject").mockImplementation((spaceId, objectId) => {
+      if (objectId === "bad")
+        return Promise.reject(
+          new AnytypeHttpError(503, "GET", `/v1/spaces/${spaceId}/objects/${objectId}`),
+        );
+      return originalRead(spaceId, objectId);
+    });
+    let now = 200;
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(1),
+      () => {},
+      () => now,
+      () => 0.5,
+    );
+
+    const failed = await observer.scanSpaceOnce("space-1");
+    expect(failed).toMatchObject({ failed: true, archived: 0 });
+    expect(store.workflowDefinition("space-1", "bad")?.lastSeenAt).toBe(200);
+    expect(store.workflowObserverState("space-1")).toMatchObject({
+      pageOffset: 0,
+      consecutiveFailures: 1,
+      pollIntervalMilliseconds: 20_000,
+      lastError: "reconciliation_confirmation_failed",
+    });
+
+    now = 300;
+    const progressed = await observer.scanSpaceOnce("space-1");
+    expect(progressed.archived).toBe(1);
+    expect(store.workflowDefinition("space-1", "good")?.state).toBe("archived");
+    store.close();
+  });
+
+  it("rejects hostile space IDs and drops overlong object IDs without sentinel collisions", async () => {
     const anytype = new FakeAnytype();
     const hostileId = "😀".repeat(400);
-    const search = vi
-      .spyOn(anytype, "searchWorkflowObjects")
-      .mockResolvedValue([workflowObject({ id: hostileId })]);
+    const search = vi.spyOn(anytype, "searchWorkflowObjects");
     const store = new Store(":memory:");
-
-    const result = await new WorkflowObserver(
+    const observer = new WorkflowObserver(
       anytype,
       store,
       automationConfig(),
       () => {},
       () => 200,
-    ).scanSpaceOnce(hostileId);
+    );
 
-    const observedSpaceId = String(search.mock.calls[0]![0]);
-    const stored = store.db
-      .prepare("SELECT space_id,object_id FROM workflow_definitions")
-      .get() as { space_id: string; object_id: string };
+    await expect(observer.scanSpaceOnce(hostileId)).rejects.toThrow("Workflow space ID is invalid");
+    expect(search).not.toHaveBeenCalled();
+
+    anytype.workflowObjects = [
+      workflowObject({ id: hostileId }),
+      workflowObject({ id: "invalid-object-id", source: source("Safe") }),
+    ];
+    const result = await observer.scanSpaceOnce("space-1");
     expect(result.failed).toBe(false);
-    expect(observedSpaceId.length).toBeLessThanOrEqual(512);
-    expect(result.spaceId).toBe(observedSpaceId);
-    expect(stored.space_id.length).toBeLessThanOrEqual(512);
-    expect(stored.object_id.length).toBeLessThanOrEqual(512);
-    expect(/[\uD800-\uDBFF]$/u.test(stored.object_id)).toBe(false);
+    expect(result.objects).toBe(2);
+    expect(store.workflowDefinition("space-1", hostileId)).toBeUndefined();
+    expect(store.workflowDefinition("space-1", "invalid-object-id")?.state).toBe("valid");
     store.close();
   });
 

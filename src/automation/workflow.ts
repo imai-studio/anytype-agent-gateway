@@ -360,7 +360,7 @@ export function workflowApprovalMaterial(workflow: WorkflowDefinition): JsonValu
   const normalizedSteps = workflow.spec.steps.map((step) => ({
     ...step,
     config: step.config ?? {},
-    dependsOn: [...new Set(step.dependsOn)].sort(),
+    dependsOn: [...new Set(step.dependsOn)].sort(compareBytewise),
   }));
   return {
     apiVersion: workflow.apiVersion,
@@ -375,7 +375,7 @@ export function workflowApprovalMaterial(workflow: WorkflowDefinition): JsonValu
         ),
       ),
       budget: workflow.spec.budget,
-      capabilities: [...new Set(workflow.spec.capabilities)].sort(),
+      capabilities: [...new Set(workflow.spec.capabilities)].sort(compareBytewise),
       concurrency: workflow.spec.concurrency,
       retry: workflow.spec.retry,
       steps: normalizedSteps,

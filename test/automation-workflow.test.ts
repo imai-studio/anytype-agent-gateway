@@ -136,6 +136,20 @@ describe("workflow foundation", () => {
     expect(material.spec.behaviorReferences.map((reference) => reference.id)).toEqual(["z", "ä"]);
   });
 
+  it("sorts dependency IDs by deterministic UTF-8 bytes", () => {
+    const material = workflowApprovalMaterial(
+      workflow({
+        steps: [
+          { id: "z", kind: "transform" },
+          { id: "a", kind: "transform" },
+          { id: "final", kind: "transform", dependsOn: ["z", "a"] },
+        ],
+      }),
+    ) as { spec: { steps: Array<{ id: string; dependsOn: string[] }> } };
+
+    expect(material.spec.steps[2]!.dependsOn).toEqual(["a", "z"]);
+  });
+
   it("bounds workflow schema collections", () => {
     expect(() =>
       workflow({

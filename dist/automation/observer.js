@@ -23,9 +23,7 @@ export class WorkflowObserver {
         this.random = random;
     }
     async run(signal) {
-        const spaces = [
-            ...new Set(this.config.allowedSpaceIds.map((spaceId) => boundedIdentifier(spaceId) ?? "invalid-space-id")),
-        ];
+        const spaces = [...new Set(this.config.allowedSpaceIds.map(requiredIdentifier))];
         let escapedFailures = 0;
         while (!signal.aborted) {
             try {
@@ -69,31 +67,35 @@ export class WorkflowObserver {
         }
     }
     async scanSpaceOnce(spaceId) {
-        spaceId = boundedIdentifier(spaceId) ?? "invalid-space-id";
+        spaceId = requiredIdentifier(spaceId);
         const startedAt = this.now();
         const state = this.state(spaceId, startedAt);
         try {
-            const objects = (await this.anytype.searchWorkflowObjects(spaceId, this.config.definitionTypeKeys, state.pageOffset, this.config.polling.pageSize))
-                .slice(0, this.config.polling.pageSize)
-                .map((object) => ({
-                ...object,
-                id: boundedIdentifier(object.id) ?? "invalid-object-id",
-            }));
+            const objects = (await this.anytype.searchWorkflowObjects(spaceId, this.config.definitionTypeKeys, state.pageOffset, this.config.polling.pageSize)).slice(0, this.config.polling.pageSize);
             let changes = 0;
             let watermarkModifiedAt = state.watermarkModifiedAt;
             let watermarkFingerprint = state.watermarkFingerprint;
             for (const object of objects) {
+                if (!validIdentifier(object.id) ||
+                    object.observationError === "object_identifier_invalid") {
+                    this.log("workflow_observer_object_dropped", {
+                        spaceId,
+                        errorCode: "object_identifier_invalid",
+                    });
+                    continue;
+                }
                 let observed;
                 try {
                     observed = this.observeObject(spaceId, object, startedAt);
                 }
-                catch {
+                catch (error) {
+                    const errorCode = observationFailureCode(error);
                     try {
-                        observed = this.observeReadFailure(spaceId, object, startedAt, "object_read_failed");
+                        observed = this.observeReadFailure(spaceId, object, startedAt, errorCode);
                         this.log("workflow_observer_object_failed", {
                             spaceId,
                             objectIdDigest: stableId("object-log", object.id),
-                            errorCode: "object_read_failed",
+                            errorCode,
                         });
                     }
                     catch {
@@ -117,15 +119,18 @@ export class WorkflowObserver {
             const pageComplete = objects.length < this.config.polling.pageSize;
             const archiveResult = pageComplete
                 ? await this.archiveMissing(spaceId, state.reconcileStartedAt, startedAt, this.config.polling.pageSize)
-                : { changed: 0, complete: false };
+                : { changed: 0, complete: false, failures: 0, errorCode: undefined };
             const archived = archiveResult.changed;
             const complete = pageComplete && archiveResult.complete;
+            const failed = archiveResult.failures > 0;
             changes += archived;
             const minimum = this.config.polling.minimumIntervalSeconds * 1_000;
             const maximum = this.config.polling.maximumIntervalSeconds * 1_000;
-            const interval = changes > 0 || !complete
-                ? minimum
-                : Math.min(maximum, Math.max(minimum, state.pollIntervalMilliseconds * 2));
+            const interval = failed
+                ? Math.min(maximum, Math.max(minimum, state.pollIntervalMilliseconds * 2))
+                : changes > 0 || !complete
+                    ? minimum
+                    : Math.min(maximum, Math.max(minimum, state.pollIntervalMilliseconds * 2));
             const nextState = {
                 spaceId,
                 pageOffset: complete ? 0 : state.pageOffset + objects.length,
@@ -133,10 +138,15 @@ export class WorkflowObserver {
                 watermarkModifiedAt,
                 watermarkFingerprint,
                 pollIntervalMilliseconds: interval,
-                consecutiveFailures: 0,
+                consecutiveFailures: failed ? state.consecutiveFailures + 1 : 0,
                 nextScanAt: startedAt + jitter(interval, this.random),
                 lastScanAt: startedAt,
-                lastSuccessAt: startedAt,
+                ...(failed
+                    ? {
+                        ...(state.lastSuccessAt === undefined ? {} : { lastSuccessAt: state.lastSuccessAt }),
+                        lastError: archiveResult.errorCode ?? "reconciliation_failed",
+                    }
+                    : { lastSuccessAt: startedAt }),
             };
             this.store.saveWorkflowObserverState(nextState);
             return {
@@ -144,7 +154,7 @@ export class WorkflowObserver {
                 objects: objects.length,
                 changes,
                 archived,
-                failed: false,
+                failed,
                 nextScanAt: nextState.nextScanAt,
             };
         }
@@ -188,6 +198,8 @@ export class WorkflowObserver {
             return this.observeReadFailure(spaceId, { ...object, modifiedAt: 0 }, observedAt, "native_revision_missing");
         const previous = this.store.workflowDefinition(spaceId, object.id);
         const sourceDigest = workflowSourceDigest(object.source ?? "");
+        if (object.observationError === "object_identifier_invalid")
+            throw new ObserverValidationError("object_read_failed");
         if (object.observationError)
             return this.observeReadFailure(spaceId, object, observedAt, object.observationError);
         const workflowId = stableId("workflow", spaceId, object.id);
@@ -321,37 +333,58 @@ export class WorkflowObserver {
             objectId: object.id,
             name: boundedLabel(object.name),
             sourceDigest,
+            sourceModifiedAt: object.modifiedAt,
             seenAt: observedAt,
             errorCode,
         });
-        const inserted = this.recordEvent(this.store.hasNormalizedObjectEvent(spaceId, object.id) ? "object.updated" : "object.created", spaceId, object, sourceDigest, observedAt, { workflowId, state: "invalid", valid: false, errorCode });
+        const inserted = this.recordEvent("object.unreadable", spaceId, object, sourceDigest, observedAt, { workflowId, state: "invalid", valid: false, errorCode });
         return {
             changed: inserted ||
                 previous?.state !== current.state ||
                 previous?.sourceDigest !== current.sourceDigest,
-            sourceDigest,
+            sourceDigest: current.sourceDigest,
         };
     }
     async archiveMissing(spaceId, startedAt, observedAt, limit) {
         const candidates = this.store.workflowDefinitionsMissingSince(spaceId, startedAt, limit + 1);
         const batch = candidates.slice(0, limit);
         let changed = 0;
+        let failures = 0;
+        let errorCode;
         for (const definition of batch) {
+            const objectId = validIdentifier(definition.objectId);
+            if (!objectId) {
+                failures += 1;
+                errorCode ??= "reconciliation_identifier_invalid";
+                this.store.recordWorkflowDefinitionStatus({ ...definition, seenAt: observedAt });
+                this.log("workflow_observer_object_failed", {
+                    spaceId,
+                    errorCode: "reconciliation_identifier_invalid",
+                });
+                continue;
+            }
             try {
-                const objectId = boundedIdentifier(definition.objectId) ?? "invalid-object-id";
                 let confirmed = false;
-                let readSucceeded = false;
+                let confirmationFailed = false;
                 try {
                     const object = await this.anytype.getWorkflowObject(spaceId, objectId);
-                    readSucceeded = true;
                     confirmed = object.archived === true || object.is_archived === true;
                 }
                 catch (error) {
                     confirmed = error instanceof AnytypeHttpError && [404, 410].includes(error.status);
+                    confirmationFailed = !confirmed;
                 }
                 if (!confirmed) {
-                    if (readSucceeded)
-                        this.store.recordWorkflowDefinitionStatus({ ...definition, seenAt: observedAt });
+                    this.store.recordWorkflowDefinitionStatus({ ...definition, seenAt: observedAt });
+                    if (confirmationFailed) {
+                        failures += 1;
+                        errorCode ??= "reconciliation_confirmation_failed";
+                        this.log("workflow_observer_object_failed", {
+                            spaceId,
+                            objectIdDigest: stableId("object-log", objectId),
+                            errorCode: "reconciliation_confirmation_failed",
+                        });
+                    }
                     continue;
                 }
                 const sourceDigest = definition.sourceDigest || workflowSourceDigest("");
@@ -370,20 +403,31 @@ export class WorkflowObserver {
                     state: "archived",
                     sourceModifiedAt: definition.sourceModifiedAt,
                     sourceDigest,
-                    seenAt: definition.lastSeenAt,
+                    seenAt: observedAt,
                 });
                 if (inserted || definition.state !== "archived")
                     changed += 1;
             }
             catch {
+                // Even if the archive event or transition failed, move this candidate behind the
+                // current reconciliation boundary so another poisoned object can be attempted next.
+                // If this fallback store write also fails, let the whole scan enter durable backoff.
+                this.store.recordWorkflowDefinitionStatus({ ...definition, seenAt: observedAt });
+                failures += 1;
+                errorCode ??= "reconciliation_persistence_failed";
                 this.log("workflow_observer_object_failed", {
                     spaceId,
-                    objectIdDigest: stableId("object-log", boundedIdentifier(definition.objectId) ?? ""),
+                    objectIdDigest: stableId("object-log", objectId),
                     errorCode: "reconciliation_persistence_failed",
                 });
             }
         }
-        return { changed, complete: candidates.length <= limit };
+        return {
+            changed,
+            complete: candidates.length <= limit,
+            failures,
+            ...(errorCode ? { errorCode } : {}),
+        };
     }
     recordEvent(kind, spaceId, object, sourceDigest, observedAt, payload) {
         const principal = principalFromParticipantId(object.editorParticipantId);
@@ -500,13 +544,34 @@ function boundedLabel(value) {
     const label = [...value.trim()].slice(0, 256).join("");
     return label || "Workflow";
 }
-function boundedIdentifier(value) {
-    if (!value)
+function validIdentifier(value) {
+    if (!value || value.length > MAX_IDENTIFIER_CODE_UNITS)
         return undefined;
-    let bounded = value.slice(0, MAX_IDENTIFIER_CODE_UNITS);
-    if (/[\uD800-\uDBFF]$/u.test(bounded))
-        bounded = bounded.slice(0, -1);
-    return bounded || undefined;
+    for (let index = 0; index < value.length; index += 1) {
+        const codeUnit = value.charCodeAt(index);
+        if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+            const next = value.charCodeAt(index + 1);
+            if (next < 0xdc00 || next > 0xdfff)
+                return undefined;
+            index += 1;
+        }
+        else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff)
+            return undefined;
+    }
+    return value;
+}
+function requiredIdentifier(value) {
+    const identifier = validIdentifier(value);
+    if (!identifier)
+        throw new Error("Workflow space ID is invalid");
+    return identifier;
+}
+function observationFailureCode(error) {
+    if (error instanceof AnytypeHttpError)
+        return "anytype_request_failed";
+    if (error instanceof Error && /\b(collision|divergent|immutable)\b/iu.test(error.message))
+        return "workflow_integrity_failed";
+    return "store_write_failed";
 }
 function stableId(domain, ...parts) {
     return `sha256:${createHash("sha256")

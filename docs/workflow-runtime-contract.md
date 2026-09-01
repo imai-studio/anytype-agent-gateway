@@ -145,6 +145,11 @@ Schema 11 redacts author prompt and message strings from stored definition and a
 The backup created before a schema 11 migration can still contain those plaintext strings. Keep it
 mode `0600`, restrict access to the operator, and remove it after the migration and rollback window
 have been verified.
+
+Schema 11 is also the first release boundary that writes observer approval material. Approval rows
+whose behavior-reference ordering came from an unpublished development build are therefore not a
+supported migration input; those development databases must be recreated or their workflows
+re-authored. Rewriting their approval hashes in place would break the append-only approval ledger.
 Schema 10 added definition source digests and durable per-space observer state. A restart resumes the
 saved page and reconciliation boundary. Repeated pages and repeated revisions reuse the same event
 dedupe key. An interrupted observation repairs a missing event on the next pass before it advances

@@ -321,7 +321,7 @@ export function workflowApprovalMaterial(workflow) {
     const normalizedSteps = workflow.spec.steps.map((step) => ({
         ...step,
         config: step.config ?? {},
-        dependsOn: [...new Set(step.dependsOn)].sort(),
+        dependsOn: [...new Set(step.dependsOn)].sort(compareBytewise),
     }));
     return {
         apiVersion: workflow.apiVersion,
@@ -331,7 +331,7 @@ export function workflowApprovalMaterial(workflow) {
             behavior: workflow.spec.behavior,
             behaviorReferences: [...workflow.spec.behaviorReferences].sort((left, right) => compareBytewise(`${left.kind}\0${left.id}\0${left.digest}`, `${right.kind}\0${right.id}\0${right.digest}`)),
             budget: workflow.spec.budget,
-            capabilities: [...new Set(workflow.spec.capabilities)].sort(),
+            capabilities: [...new Set(workflow.spec.capabilities)].sort(compareBytewise),
             concurrency: workflow.spec.concurrency,
             retry: workflow.spec.retry,
             steps: normalizedSteps,

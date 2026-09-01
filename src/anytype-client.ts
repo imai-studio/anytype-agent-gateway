@@ -21,13 +21,17 @@ const MAX_OBJECT_RESPONSE_BYTES = 2 * 1024 * 1024;
 const WORKFLOW_OBJECT_READ_CONCURRENCY = 4;
 
 export class AnytypeHttpError extends Error {
+  readonly endpoint: string;
+
   constructor(
     readonly status: number,
     readonly method: string,
-    readonly path: string,
+    path: string,
   ) {
-    super(`Anytype ${method} request failed (${status})`);
+    const endpoint = anytypeEndpointTemplate(path);
+    super(`Anytype ${method} ${endpoint} request failed (${status})`);
     this.name = "AnytypeHttpError";
+    this.endpoint = endpoint;
   }
 }
 
@@ -369,14 +373,14 @@ export class AnytypeClient implements AnytypePort {
   }
 
   async getWorkflowObject(spaceId: string, objectId: string): Promise<JsonRecord & { id: string }> {
-    const boundedSpaceId = boundedIdentifier(spaceId, 512) ?? "invalid-space-id";
-    const boundedObjectId = boundedIdentifier(objectId, 512) ?? "invalid-object-id";
+    const boundedSpaceId = requiredIdentifier(spaceId, "workflow space");
+    const boundedObjectId = requiredIdentifier(objectId, "workflow object");
     const response = await this.request(
       `/v1/spaces/${encodeURIComponent(boundedSpaceId)}/objects/${encodeURIComponent(boundedObjectId)}`,
     );
     const json = await readBoundedJson(response, MAX_OBJECT_RESPONSE_BYTES);
     const object = json.object ?? json;
-    return { ...object, id: boundedIdentifier(object.id, 512) ?? boundedObjectId };
+    return { ...object, id: validIdentifier(object.id, 512) ?? boundedObjectId };
   }
 
   async listTypes(spaceId: string): Promise<JsonRecord[]> {
@@ -468,12 +472,18 @@ export class AnytypeClient implements AnytypePort {
     offset: number,
     limit: number,
   ): Promise<AnytypeWorkflowObject[]> {
-    const boundedSpaceId = boundedIdentifier(spaceId, 512) ?? "invalid-space-id";
+    const boundedSpaceId = requiredIdentifier(spaceId, "workflow space");
     const summaries = (
       await this.searchSpaceRequest(boundedSpaceId, { types: typeKeys, offset, limit }, true)
     ).slice(0, limit);
     return mapConcurrent(summaries, WORKFLOW_OBJECT_READ_CONCURRENCY, async (summary) => {
-      const summaryId = boundedIdentifier(summary.id, 512) ?? "invalid-object-id";
+      const summaryId = validIdentifier(summary.id, 512);
+      if (!summaryId)
+        return invalidWorkflowSummary(
+          typeof summary.id === "string" ? summary.id : "",
+          summary,
+          "object_identifier_invalid",
+        );
       try {
         const raw = await this.getWorkflowObject(boundedSpaceId, summaryId);
         const typeKey = objectTypeKey(raw) ?? objectTypeKey(summary);
@@ -485,7 +495,7 @@ export class AnytypeClient implements AnytypePort {
         const source = objectSource(raw);
         const editorParticipantId = objectEditorParticipantId(raw);
         return {
-          id: boundedIdentifier(raw.id ?? summary.id, 512) ?? summaryId,
+          id: validIdentifier(raw.id ?? summary.id, 512) ?? summaryId,
           name: boundedName(raw.name ?? summary.name ?? raw.id ?? summary.id, 256) ?? "Workflow",
           typeKey,
           ...(source === undefined ? {} : { source }),
@@ -499,7 +509,9 @@ export class AnytypeClient implements AnytypePort {
             ? "object_not_found"
             : error instanceof Error && error.message === "Anytype object response is too large"
               ? "object_too_large"
-              : "object_read_failed";
+              : error instanceof AnytypeHttpError
+                ? "anytype_request_failed"
+                : "object_read_failed";
         return invalidWorkflowSummary(summaryId, summary, observationError);
       }
     });
@@ -733,11 +745,53 @@ function boundedName(value: unknown, maximum: number): string | undefined {
   return normalized ? [...normalized].slice(0, maximum).join("") : undefined;
 }
 
-function boundedIdentifier(value: unknown, maximumCodeUnits: number): string | undefined {
-  if (typeof value !== "string" || !value) return undefined;
-  let bounded = value.slice(0, maximumCodeUnits);
-  if (/[\uD800-\uDBFF]$/u.test(bounded)) bounded = bounded.slice(0, -1);
-  return bounded || undefined;
+function validIdentifier(value: unknown, maximumCodeUnits: number): string | undefined {
+  if (typeof value !== "string" || !value || value.length > maximumCodeUnits) return undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return undefined;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return undefined;
+  }
+  return value;
+}
+
+function requiredIdentifier(value: unknown, label: string): string {
+  const identifier = validIdentifier(value, 512);
+  if (!identifier) throw new Error(`Anytype ${label} ID is invalid`);
+  return identifier;
+}
+
+function anytypeEndpointTemplate(path: string): string {
+  const identifiers = new Map<string, string>([
+    ["spaces", "spaceId"],
+    ["objects", "objectId"],
+    ["chats", "chatId"],
+    ["messages", "messageId"],
+    ["types", "typeId"],
+    ["properties", "propertyId"],
+    ["files", "fileId"],
+    ["members", "memberId"],
+    ["templates", "templateId"],
+  ]);
+  const staticSegments = new Set([
+    "v1",
+    ...identifiers.keys(),
+    "search",
+    "stream",
+    "tags",
+    "reactions",
+    "spaces",
+  ]);
+  const segments = path.split("?", 1)[0]!.split("/").filter(Boolean);
+  const templated = segments.map((segment, index) => {
+    const parameter = index > 0 ? identifiers.get(segments[index - 1]!) : undefined;
+    if (parameter) return `:${parameter}`;
+    return staticSegments.has(segment) ? segment : ":id";
+  });
+  return templated.length ? `/${templated.join("/")}` : "/";
 }
 
 async function mapConcurrent<T, U>(

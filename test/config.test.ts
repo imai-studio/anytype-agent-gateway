@@ -114,6 +114,16 @@ describe("loadConfig", () => {
       configSchema.parse({
         ...base,
         automation: {
+          enabled: true,
+          allowedAuthorIds: ["operator"],
+          allowedSpaceIds: ["😀".repeat(400)],
+        },
+      }),
+    ).toThrow("Too big");
+    expect(() =>
+      configSchema.parse({
+        ...base,
+        automation: {
           polling: { minimumIntervalSeconds: 30, maximumIntervalSeconds: 10 },
         },
       }),

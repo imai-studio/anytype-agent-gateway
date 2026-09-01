@@ -28,6 +28,8 @@ export type WorkflowValidationErrorCode =
   | "source_missing"
   | "source_too_large"
   | "space_unauthorized"
+  | "store_write_failed"
+  | "workflow_integrity_failed"
   | "yaml_invalid";
 
 export interface WorkflowDefinitionObservation {

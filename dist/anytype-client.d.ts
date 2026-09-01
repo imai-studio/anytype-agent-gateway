@@ -4,7 +4,7 @@ type JsonRecord = Record<string, any>;
 export declare class AnytypeHttpError extends Error {
     readonly status: number;
     readonly method: string;
-    readonly path: string;
+    readonly endpoint: string;
     constructor(status: number, method: string, path: string);
 }
 export declare class AnytypeClient implements AnytypePort {
