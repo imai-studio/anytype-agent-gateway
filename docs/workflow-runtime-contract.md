@@ -34,6 +34,29 @@ allowed capabilities, and one or more workflow object type keys. Set `automation
 start the durable matcher, dispatcher, and bounded workers. Execution requires observation.
 Authoring and data-product gates remain unavailable.
 
+The local `knot workflow` command is the operator surface for this execution plane. Read commands
+list workflows, runs, redacted events, append-only operator audit records, and dead letters.
+Approval, rejection, revocation, enable/disable overrides, manual triggers, cancellation, and safe
+retry require an exact actor ID already present in `automation.allowedAuthorIds` plus explicit
+confirmation. Local OS access to the private configuration and state database authenticates the
+operator; the selected actor attributes the mutation. The actor ID is reduced to a domain-separated
+digest before persistence and never needs to appear in process arguments. Event
+payloads, diffs, step results, and error strings are represented by digests in CLI output.
+
+An operator retry reuses the same run and stable effect keys. It is allowed only for a failed or
+dead-letter run under the current active version, approval, and authority, with no active step lease
+and no `running` or `outcome_unknown` effect receipt. Completed steps remain completed and completed
+effects replay their receipt. Retry gives every step one new deadline derived from the immutable
+approved `maximumRunSeconds` budget. A failed pre-effect receipt may run again only under a new
+fenced attempt; the stable receipt remains the replay barrier. An uncertain external outcome always
+requires reconciliation rather than automatic repetition. A durable disable override removes the
+workflow from dispatch and closes the claim fence checked before effects.
+
+The current Anytype port cannot create native object types or properties. Knot therefore does not
+fake `Knot Workflow`, approval, run, or connection-reference types with ordinary objects. An
+operator must provision the native type/property schema outside Knot before the observer can use
+it. Native Anytype approval controls and status projections remain planned.
+
 The runner stores deliveries, runs, steps, and attempts before it claims work. Claims have a worker
 ID, lease deadline, and random fencing token. A stale worker cannot complete a reclaimed step.
 Retry deadlines, cancellation requests, dead letters, the event cursor, and the fair-claim hint are
@@ -224,3 +247,8 @@ the Anytype projection outbox. Approval and capacity deferrals do not consume th
 budget. The live state directory is forced to mode `0700`; the database and live `-wal`/`-shm`
 sidecars are forced to mode `0600` because the inbox retains the current fenced Cloud lease until
 its terminal result is acknowledged. CLI views omit that lease.
+
+Schema 17 adds durable workflow enable/disable overrides and an append-only local operator audit.
+Override and audit writes are one transaction; audit rows cannot be updated or deleted. Approval
+decisions, run cancellation, and safe retry record their operator evidence in the same transaction
+as the mutation.

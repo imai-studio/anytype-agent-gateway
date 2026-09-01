@@ -409,6 +409,37 @@ describe("durable workflow runner", () => {
     store.close();
   });
 
+  it("dispatches a manual event only to the workflow named in its payload", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const selected = saveVersion(store, workflow("Selected manual workflow"), "manual-selected");
+    saveVersion(store, workflow("Other manual workflow"), "manual-other");
+    const runner = new WorkflowRunner(
+      store,
+      config,
+      () => {},
+      undefined,
+      () => 500,
+    );
+    runner.queue.initializeMatcher(250);
+    recordEvent(store, selected.workflowId);
+
+    expect(runner.matchEventsOnce(500)).toBe(1);
+    expect(runner.queue.pendingDeliveries(10, 500)).toEqual([
+      expect.objectContaining({ workflowId: selected.workflowId }),
+    ]);
+    expect(runner.dispatchOnce(500)).toBe(1);
+    expect(runner.queue.runs()).toEqual([
+      expect.objectContaining({ workflowId: selected.workflowId }),
+    ]);
+    expect(
+      store.db
+        .prepare("SELECT COUNT(*) AS count FROM workflow_deliveries WHERE workflow_id=?")
+        .get("manual-other"),
+    ).toEqual({ count: 0 });
+    store.close();
+  });
+
   it("atomically persists event deliveries with the matcher cursor", () => {
     const store = new Store(":memory:");
     const config = runnerConfig();
@@ -971,6 +1002,29 @@ describe("durable workflow runner", () => {
       queue.completeStep(run.runId, "noop", claim.attempt.fencingToken, { ignored: true }, 700),
     ).toBe(true);
     expect(queue.run(run.runId)?.state).toBe("cancelled");
+    store.close();
+  });
+
+  it("closes the execution fence immediately when an operator disables a workflow", () => {
+    const store = new Store(":memory:");
+    const config = runnerConfig();
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, config, workflow(), "workflow-disabled");
+    const claim = queue.claimStep("worker", new Set([run.authorityHash]), 5_000, 500)!;
+    expect(queue.startStep(run.runId, "noop", claim.attempt.fencingToken, 501)).toBe(true);
+
+    store.setWorkflowOperatorOverride({
+      workflowId: run.workflowId,
+      enabled: false,
+      actorPrincipalDigest: workflowPrincipalDigest("operator"),
+      reasonCode: "maintenance",
+      auditId: "audit-disable",
+      now: 502,
+    });
+
+    expect(queue.isActiveVersion(run.workflowId, run.versionHash)).toBe(false);
+    expect(queue.claimMayExecute(run.runId, "noop", claim.attempt.fencingToken, 503)).toBe(false);
+    expect(store.workflowOperatorAudits()).toMatchObject([{ action: "workflow.disable" }]);
     store.close();
   });
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { TypedWorkflowStepExecutor } from "../src/automation/executors.js";
 import {
@@ -328,6 +329,115 @@ describe("closed typed workflow executors", () => {
     expect(state.store.db.prepare("SELECT state FROM workflow_effect_receipts").get()).toEqual({
       state: "succeeded",
     });
+    state.store.close();
+  });
+
+  it("retries a proven pre-effect failure under a new fenced attempt", async () => {
+    const definition = workflow(
+      [
+        {
+          id: "write-retry",
+          kind: "anytype.write",
+          config: { operation: "create", values: { typeKey: "page", name: "Retried" } },
+        },
+      ],
+      ["anytype.write"],
+    );
+    const agentConfig = config();
+    const state = prepare(definition, agentConfig);
+    const now = Date.now();
+    const authorityHash = workflowAuthorityHash(agentConfig.automation);
+    const effectKey = `workflow:${state.claim.run.runId}:${state.claim.step.stepId}`;
+    const operationDigest = `sha256:${createHash("sha256")
+      .update("knot.workflow.effect.v1")
+      .update("\0")
+      .update(
+        canonicalJson(
+          JSON.parse(
+            JSON.stringify({
+              kind: "anytype.write",
+              config: definition.spec.steps[0]!.config!,
+              approvalHash: state.claim.run.approvalHash,
+              authorityHash,
+              discriminator: null,
+            }),
+          ),
+        ),
+      )
+      .digest("hex")}`;
+    state.store.db
+      .prepare(
+        `INSERT INTO workflow_effect_receipts(
+          effect_key,run_id,step_id,operation_digest,state,fencing_token,
+          error,completed_at,updated_at
+        ) VALUES(?,?,?,?, 'failed',?, 'Effect authority changed',?,?)`,
+      )
+      .run(
+        effectKey,
+        state.claim.run.runId,
+        state.claim.step.stepId,
+        operationDigest,
+        state.claim.attempt.fencingToken,
+        now + 1,
+        now + 1,
+      );
+    expect(
+      state.queue.failStep(
+        state.claim.run.runId,
+        state.claim.step.stepId,
+        state.claim.attempt.fencingToken,
+        "pre-effect authority failure",
+        definition.spec.retry,
+        false,
+        now + 2,
+      ),
+    ).toBe(true);
+    expect(
+      state.queue.retryRun(
+        state.claim.run.runId,
+        authorityHash,
+        workflowPrincipalDigest("operator"),
+        "operator-retry",
+        "audit-retry-effect",
+        now + 3,
+      ),
+    ).toBe(true);
+    const retried = state.queue.claimStep(
+      "retry-worker",
+      new Set([authorityHash]),
+      60_000,
+      now + 4,
+    )!;
+    expect(retried.attempt.fencingToken).not.toBe(state.claim.attempt.fencingToken);
+    expect(
+      state.queue.startStep(
+        retried.run.runId,
+        retried.step.stepId,
+        retried.attempt.fencingToken,
+        now + 5,
+      ),
+    ).toBe(true);
+    const createObject = vi.fn(async () => ({ id: "created-after-safe-retry" }));
+    const executor = new TypedWorkflowStepExecutor(
+      state.store,
+      agentConfig,
+      anytype({ createObject }),
+      runtime(),
+      fallback,
+    );
+
+    expect(await executor.execute(retried, definition, new AbortController().signal)).toMatchObject(
+      {
+        ok: true,
+        result: { operation: "created", objectId: "created-after-safe-retry" },
+      },
+    );
+    expect(createObject).toHaveBeenCalledOnce();
+    expect(
+      state.store.db
+        .prepare("SELECT state,fencing_token FROM workflow_effect_receipts WHERE effect_key=?")
+        .get(effectKey),
+    ).toEqual({ state: "succeeded", fencing_token: retried.attempt.fencingToken });
     state.store.close();
   });
 

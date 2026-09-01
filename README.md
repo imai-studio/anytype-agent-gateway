@@ -235,6 +235,8 @@ mentions, replies, and agent claims never grant authority.
 | `knot service logs`    | Read private service logs                                      |
 | `knot mcp`             | Start the policy-mediated Anytype tool server                  |
 | `knot join`            | Join another Anytype space with the current identity           |
+| `knot workflow list`   | Inspect local durable workflows and exact approval state       |
+| `knot workflow runs`   | Inspect, cancel, or safely retry local workflow runs           |
 
 Inside an authorized Anytype chat, `/new` starts a fresh runtime session. Codex-backed agents also
 support `/projects`, `/project <name>`, `/models`, and `/model <id>` when the operator enables the

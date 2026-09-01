@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import type { AgentRuntime, ConversationModelState, OutboundItem, OutboundOperation, OutputCycle, OutputCyclePhase, OutputCycleState, ProactiveDelivery, RuntimeCapabilities, SessionBinding, SessionBindingState } from "./session-types.js";
-import type { NormalizedEventRecord, WorkflowApprovalDecision, WorkflowDefinitionObservation, WorkflowDefinitionState, WorkflowObserverState, WorkflowVersionInput, WorkflowVersionRecord, WorkflowValidationErrorCode } from "./automation/store-types.js";
+import type { NormalizedEventRecord, WorkflowApprovalDecision, WorkflowDefinitionObservation, WorkflowDefinitionState, WorkflowObserverState, WorkflowOperatorAuditRecord, WorkflowOperatorOverride, WorkflowVersionInput, WorkflowVersionRecord, WorkflowValidationErrorCode } from "./automation/store-types.js";
 export type ManagementCapabilityScope = "wake" | "access" | "model" | "publish";
 export declare class Store {
     private readonly reportMigration;
@@ -29,6 +29,7 @@ export declare class Store {
     private migrateToVersion14;
     private migrateToVersion15;
     private migrateToVersion16;
+    private migrateToVersion17;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;
@@ -172,6 +173,8 @@ export declare class Store {
     bridgeCursor(bridgeId: string, streamKey: string): string | undefined;
     saveBridgeCursor(bridgeId: string, streamKey: string, cursor: string, now?: number): void;
     workflowDefinition(spaceId: string, objectId: string): WorkflowDefinitionObservation | undefined;
+    workflowDefinitionById(workflowId: string): WorkflowDefinitionObservation | undefined;
+    workflowDefinitions(limit?: number): WorkflowDefinitionObservation[];
     recordWorkflowDefinitionStatus(input: {
         workflowId: string;
         spaceId: string;
@@ -199,9 +202,22 @@ export declare class Store {
     saveWorkflowVersion(input: WorkflowVersionInput, observationDigest?: string): WorkflowVersionRecord;
     activateWorkflowVersionObservation(input: Pick<WorkflowVersionInput, "workflowId" | "versionHash" | "name" | "sourceModifiedAt" | "sourceDigest" | "createdAt">, observationDigest?: string): void;
     workflowVersion(workflowId: string, versionHash: string): WorkflowVersionRecord | undefined;
-    recordWorkflowApproval(input: Omit<WorkflowApprovalDecision, "sequence">): WorkflowApprovalDecision;
+    recordWorkflowApproval(input: Omit<WorkflowApprovalDecision, "sequence">, audit?: Omit<WorkflowOperatorAuditRecord, "sequence" | "createdAt"> & {
+        createdAt?: number;
+    }): WorkflowApprovalDecision;
     currentWorkflowApproval(workflowId: string, approvalHash: string, authorityHash: string, now?: number): WorkflowApprovalDecision | undefined;
     latestWorkflowApproval(workflowId: string, approvalHash: string): WorkflowApprovalDecision | undefined;
+    workflowOperatorOverride(workflowId: string): WorkflowOperatorOverride | undefined;
+    setWorkflowOperatorOverride(input: {
+        workflowId: string;
+        enabled: boolean;
+        actorPrincipalDigest: string;
+        reasonCode: string;
+        auditId: string;
+        now?: number;
+    }): WorkflowOperatorOverride;
+    appendWorkflowOperatorAudit(input: Omit<WorkflowOperatorAuditRecord, "sequence">): WorkflowOperatorAuditRecord;
+    workflowOperatorAudits(limit?: number): WorkflowOperatorAuditRecord[];
     recordNormalizedEvent(input: NormalizedEventRecord): NormalizedEventRecord;
     hasNormalizedEvent(dedupeKey: string): boolean;
     hasNormalizedObjectEvent(spaceId: string, objectId: string): boolean;

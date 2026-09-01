@@ -27,6 +27,7 @@ import { migrateInstallation } from "./migration.js";
 import { DEFAULT_CLOUD_SCOPES, DEFAULT_CLOUD_URL, cloudDoctor, cloudLogin, cloudPair, cloudRevoke, cloudStatus, } from "./cloud-cli.js";
 import { publicationAction, publicationOperationStatus, preparePublicationAssetManifest, readPublicationDocument, retryPublicationOperation, } from "./cloud-publication.js";
 import { cloudCommandAction, cloudCommandList, cloudCommandShow } from "./cloud-command-cli.js";
+import { workflowApprovalAction, workflowAuditList, workflowDeadLetterList, workflowEventList, workflowList, workflowManualRun, workflowRunList, workflowRunMutation, workflowRunShow, workflowSetEnabled, workflowShow, } from "./workflow-operator-cli.js";
 const program = new Command()
     .name(PRODUCT.current.executable)
     .description(PRODUCT.current.name)
@@ -301,6 +302,135 @@ program
     ...(options.routeId ? { routeId: options.routeId } : {}),
     ...(options.spaceId ? { spaceId: options.spaceId } : {}),
 }));
+const workflows = program
+    .command("workflow")
+    .description("Inspect and explicitly control the local durable workflow runner");
+workflows
+    .command("list")
+    .requiredOption("-c, --config <path>")
+    .option("--limit <count>", "maximum records", "100")
+    .option("--json", "emit machine-readable records")
+    .action(async (options) => workflowList({
+    agentConfigFile: selectedConfigPath(options.config),
+    limit: parseWorkflowLimit(options.limit),
+    json: Boolean(options.json),
+}));
+workflows
+    .command("show")
+    .argument("<workflow-id>")
+    .requiredOption("-c, --config <path>")
+    .option("--json", "emit machine-readable output")
+    .action(async (workflowId, options) => workflowShow({
+    agentConfigFile: selectedConfigPath(options.config),
+    workflowId,
+    json: Boolean(options.json),
+}));
+for (const action of ["approve", "reject", "revoke"])
+    workflows
+        .command(action)
+        .argument("<workflow-id>")
+        .requiredOption("-c, --config <path>")
+        .requiredOption("--approval-hash <digest>", "exact active approval hash")
+        .option("--actor-digest <sha256>", "required when multiple operator IDs are allowlisted")
+        .option("--reason <code>", "stable reason code")
+        .option("--expires-at <milliseconds>", "approval expiry as Unix milliseconds")
+        .option("--yes", "confirm this mutation")
+        .action(async (workflowId, options) => workflowApprovalAction({
+        agentConfigFile: selectedConfigPath(options.config),
+        workflowId,
+        approvalHash: options.approvalHash,
+        ...(options.actorDigest ? { actorDigest: options.actorDigest } : {}),
+        action,
+        yes: Boolean(options.yes),
+        ...(options.reason ? { reasonCode: options.reason } : {}),
+        ...(options.expiresAt ? { expiresAt: parseWorkflowTimestamp(options.expiresAt) } : {}),
+    }));
+for (const enabled of [true, false])
+    workflows
+        .command(enabled ? "enable" : "disable")
+        .argument("<workflow-id>")
+        .requiredOption("-c, --config <path>")
+        .option("--actor-digest <sha256>", "required when multiple operator IDs are allowlisted")
+        .requiredOption("--reason <code>", "stable reason code")
+        .option("--yes", "confirm this mutation")
+        .action(async (workflowId, options) => workflowSetEnabled({
+        agentConfigFile: selectedConfigPath(options.config),
+        workflowId,
+        ...(options.actorDigest ? { actorDigest: options.actorDigest } : {}),
+        reasonCode: options.reason,
+        enabled,
+        yes: Boolean(options.yes),
+    }));
+workflows
+    .command("run")
+    .argument("<workflow-id>")
+    .description("Queue one manual trigger after exact approval and authority checks")
+    .requiredOption("-c, --config <path>")
+    .requiredOption("--approval-hash <digest>", "exact active approval hash")
+    .option("--actor-digest <sha256>", "required when multiple operator IDs are allowlisted")
+    .option("--yes", "confirm this mutation")
+    .action(async (workflowId, options) => workflowManualRun({
+    agentConfigFile: selectedConfigPath(options.config),
+    workflowId,
+    approvalHash: options.approvalHash,
+    ...(options.actorDigest ? { actorDigest: options.actorDigest } : {}),
+    yes: Boolean(options.yes),
+}));
+const workflowRuns = workflows.command("runs").description("Inspect and control durable runs");
+workflowRuns
+    .command("list")
+    .requiredOption("-c, --config <path>")
+    .option("--state <state>", "exact workflow run state")
+    .option("--limit <count>", "maximum records", "100")
+    .option("--json", "emit machine-readable records")
+    .action(async (options) => workflowRunList({
+    agentConfigFile: selectedConfigPath(options.config),
+    limit: parseWorkflowLimit(options.limit),
+    ...(options.state ? { state: parseWorkflowRunState(options.state) } : {}),
+    json: Boolean(options.json),
+}));
+workflowRuns
+    .command("show")
+    .argument("<run-id>")
+    .requiredOption("-c, --config <path>")
+    .option("--json", "emit machine-readable output")
+    .action(async (runId, options) => workflowRunShow({
+    agentConfigFile: selectedConfigPath(options.config),
+    runId,
+    json: Boolean(options.json),
+}));
+for (const action of ["cancel", "retry"])
+    workflowRuns
+        .command(action)
+        .argument("<run-id>")
+        .requiredOption("-c, --config <path>")
+        .option("--actor-digest <sha256>", "required when multiple operator IDs are allowlisted")
+        .requiredOption("--reason <code>", "stable reason code")
+        .option("--yes", "confirm this mutation")
+        .action(async (runId, options) => workflowRunMutation({
+        agentConfigFile: selectedConfigPath(options.config),
+        runId,
+        action,
+        ...(options.actorDigest ? { actorDigest: options.actorDigest } : {}),
+        reasonCode: options.reason,
+        yes: Boolean(options.yes),
+    }));
+for (const [name, description, operation] of [
+    ["events", "List redacted normalized events", workflowEventList],
+    ["audit", "List append-only operator audit records", workflowAuditList],
+    ["dead-letters", "List dead-letter runs and deliveries", workflowDeadLetterList],
+])
+    workflows
+        .command(name)
+        .description(description)
+        .requiredOption("-c, --config <path>")
+        .option("--limit <count>", "maximum records", "100")
+        .option("--json", "emit machine-readable records")
+        .action(async (options) => operation({
+        agentConfigFile: selectedConfigPath(options.config),
+        limit: parseWorkflowLimit(options.limit),
+        json: Boolean(options.json),
+    }));
 const cloud = program
     .command("cloud")
     .description("Connect this local Knot runtime to Knot Cloud without exposing a listener");
@@ -654,4 +784,30 @@ function bundledOpenClawPluginPath() {
 }
 function selectedConfigPath(explicit) {
     return resolveConfigPath({ ...(explicit ? { explicit } : {}) });
+}
+function parseWorkflowLimit(value) {
+    const limit = Number(value);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500)
+        throw new Error("--limit must be an integer from 1 to 500");
+    return limit;
+}
+function parseWorkflowTimestamp(value) {
+    const timestamp = Number(value);
+    if (!Number.isSafeInteger(timestamp) || timestamp < 0)
+        throw new Error("--expires-at must be a nonnegative Unix millisecond timestamp");
+    return timestamp;
+}
+function parseWorkflowRunState(value) {
+    const states = [
+        "pending",
+        "running",
+        "waiting",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "dead_letter",
+    ];
+    if (!states.includes(value))
+        throw new Error("Unknown workflow run state");
+    return value;
 }
