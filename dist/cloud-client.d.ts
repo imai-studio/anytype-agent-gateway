@@ -1,5 +1,5 @@
 import { type CloudConfig } from "./cloud-config.js";
-import { type CloudCommandEnvelope, type CloudCommandResult, type PairingCredentials } from "./cloud-contract.js";
+import { type CloudCommandEnvelope, type CloudCommandResult, type PairingCredentials, type AssetUploadCreated, type AssetUploadRequest, type PublicationControlRequest, type PublicationMutation } from "./cloud-contract.js";
 export declare class CloudRequestError extends Error {
     readonly options: {
         status?: number;
@@ -23,6 +23,7 @@ export interface CloudClientOptions {
     sleep?: (milliseconds: number) => Promise<void>;
     requestTimeoutMilliseconds?: number;
     maximumAttempts?: number;
+    assetUploadTimeoutMilliseconds?: number;
 }
 export declare class CloudClient {
     private readonly config;
@@ -32,6 +33,7 @@ export declare class CloudClient {
     private readonly sleep;
     private readonly requestTimeoutMilliseconds;
     private readonly maximumAttempts;
+    private readonly assetUploadTimeoutMilliseconds;
     private clockOffsetSeconds;
     constructor(config: CloudConfig, options?: CloudClientOptions);
     protocolStatus(): Promise<{
@@ -179,8 +181,64 @@ export declare class CloudClient {
         status: "accepted" | "duplicate";
         state: "failed" | "pending" | "cancelled" | "succeeded" | "leased" | "expired" | "rejected-by-local-policy" | "dead-lettered";
     }>;
+    publish(mutation: PublicationMutation): Promise<{
+        protocolVersion: "1.0";
+        publicationId: string;
+        versionId: string;
+        state: "ready";
+    }>;
+    requestAssetUpload(input: AssetUploadRequest): Promise<{
+        protocolVersion: "1.0";
+        assetId: string;
+        uploadId: string;
+        method: "PUT";
+        uploadUrl: string;
+        requiredHeaders: Record<string, string>;
+        expiresAt: number;
+    }>;
+    uploadAsset(upload: AssetUploadCreated, bytes: Uint8Array): Promise<void>;
+    commitAssetUpload(input: {
+        assetId: string;
+        uploadId: string;
+        expectedSha256: string;
+        expectedByteSize: number;
+        idempotencyKey: string;
+    }): Promise<{
+        status: "verified";
+        assetId: string;
+        sha256: string;
+        byteSize: number;
+        verifiedAt: number;
+    } | {
+        status: "rejected";
+        assetId: string;
+        reason: "digest-mismatch" | "size-mismatch" | "upload-missing";
+    }>;
+    publicationStatus(publicationId: string): Promise<{
+        protocolVersion: "1.0";
+        publicationId: string;
+        siteId: string;
+        slug: string;
+        state: "disabled" | "ready" | "draft" | "unpublished";
+        updatedAt: number;
+        currentVersionId?: string | undefined;
+    }>;
+    controlPublication(input: PublicationControlRequest): Promise<{
+        type: "publication.disable";
+        publicationId: string;
+        disabledAt: number;
+    } | {
+        type: "publication.rollback";
+        publicationId: string;
+        currentVersionId: string;
+    } | {
+        type: "publication.unpublish";
+        publicationId: string;
+        unpublishedAt: number;
+    }>;
     private pairedConnectorId;
     private assertCommandConnector;
+    private assertGranted;
     private request;
     private signedHeaders;
 }

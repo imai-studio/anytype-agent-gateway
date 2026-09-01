@@ -75,6 +75,398 @@ export declare const problemDetailsSchema: z.ZodObject<{
     retryAfterSeconds: z.ZodOptional<z.ZodNumber>;
     serverUnixSeconds: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strict>;
+export declare const maximumAssetBytes: number;
+export declare const publicationSourceProvenanceSchema: z.ZodObject<{
+    sourceType: z.ZodEnum<{
+        "anytype-object": "anytype-object";
+        "anytype-collection": "anytype-collection";
+        "anytype-chat": "anytype-chat";
+        other: "other";
+    }>;
+    sourceDigest: z.ZodString;
+    sourcePointer: z.ZodOptional<z.ZodString>;
+}, z.core.$strict>;
+export declare const publicationBlockSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+    type: z.ZodLiteral<"heading">;
+    level: z.ZodNumber;
+    content: z.ZodArray<z.ZodObject<{
+        text: z.ZodString;
+        marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+            code: "code";
+            bold: "bold";
+            strikethrough: "strikethrough";
+            italic: "italic";
+            underline: "underline";
+        }>>>;
+        href: z.ZodOptional<z.ZodURL>;
+    }, z.core.$strict>>;
+}, z.core.$strict>, z.ZodObject<{
+    type: z.ZodLiteral<"paragraph">;
+    content: z.ZodArray<z.ZodObject<{
+        text: z.ZodString;
+        marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+            code: "code";
+            bold: "bold";
+            strikethrough: "strikethrough";
+            italic: "italic";
+            underline: "underline";
+        }>>>;
+        href: z.ZodOptional<z.ZodURL>;
+    }, z.core.$strict>>;
+}, z.core.$strict>, z.ZodObject<{
+    type: z.ZodLiteral<"quote">;
+    content: z.ZodArray<z.ZodObject<{
+        text: z.ZodString;
+        marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+            code: "code";
+            bold: "bold";
+            strikethrough: "strikethrough";
+            italic: "italic";
+            underline: "underline";
+        }>>>;
+        href: z.ZodOptional<z.ZodURL>;
+    }, z.core.$strict>>;
+}, z.core.$strict>, z.ZodObject<{
+    type: z.ZodLiteral<"code">;
+    language: z.ZodOptional<z.ZodString>;
+    code: z.ZodString;
+}, z.core.$strict>, z.ZodObject<{
+    type: z.ZodLiteral<"list">;
+    ordered: z.ZodBoolean;
+    items: z.ZodArray<z.ZodArray<z.ZodObject<{
+        text: z.ZodString;
+        marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+            code: "code";
+            bold: "bold";
+            strikethrough: "strikethrough";
+            italic: "italic";
+            underline: "underline";
+        }>>>;
+        href: z.ZodOptional<z.ZodURL>;
+    }, z.core.$strict>>>;
+}, z.core.$strict>, z.ZodObject<{
+    type: z.ZodEnum<{
+        file: "file";
+        image: "image";
+    }>;
+    assetDigest: z.ZodString;
+    alt: z.ZodOptional<z.ZodString>;
+    caption: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        text: z.ZodString;
+        marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+            code: "code";
+            bold: "bold";
+            strikethrough: "strikethrough";
+            italic: "italic";
+            underline: "underline";
+        }>>>;
+        href: z.ZodOptional<z.ZodURL>;
+    }, z.core.$strict>>>;
+}, z.core.$strict>, z.ZodObject<{
+    type: z.ZodLiteral<"table">;
+    rows: z.ZodArray<z.ZodArray<z.ZodArray<z.ZodObject<{
+        text: z.ZodString;
+        marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+            code: "code";
+            bold: "bold";
+            strikethrough: "strikethrough";
+            italic: "italic";
+            underline: "underline";
+        }>>>;
+        href: z.ZodOptional<z.ZodURL>;
+    }, z.core.$strict>>>>;
+}, z.core.$strict>], "type">;
+export declare const publicationDocumentSchema: z.ZodObject<{
+    schemaVersion: z.ZodLiteral<"1.0">;
+    title: z.ZodString;
+    description: z.ZodOptional<z.ZodString>;
+    blocks: z.ZodArray<z.ZodDiscriminatedUnion<[z.ZodObject<{
+        type: z.ZodLiteral<"heading">;
+        level: z.ZodNumber;
+        content: z.ZodArray<z.ZodObject<{
+            text: z.ZodString;
+            marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                code: "code";
+                bold: "bold";
+                strikethrough: "strikethrough";
+                italic: "italic";
+                underline: "underline";
+            }>>>;
+            href: z.ZodOptional<z.ZodURL>;
+        }, z.core.$strict>>;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodLiteral<"paragraph">;
+        content: z.ZodArray<z.ZodObject<{
+            text: z.ZodString;
+            marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                code: "code";
+                bold: "bold";
+                strikethrough: "strikethrough";
+                italic: "italic";
+                underline: "underline";
+            }>>>;
+            href: z.ZodOptional<z.ZodURL>;
+        }, z.core.$strict>>;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodLiteral<"quote">;
+        content: z.ZodArray<z.ZodObject<{
+            text: z.ZodString;
+            marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                code: "code";
+                bold: "bold";
+                strikethrough: "strikethrough";
+                italic: "italic";
+                underline: "underline";
+            }>>>;
+            href: z.ZodOptional<z.ZodURL>;
+        }, z.core.$strict>>;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodLiteral<"code">;
+        language: z.ZodOptional<z.ZodString>;
+        code: z.ZodString;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodLiteral<"list">;
+        ordered: z.ZodBoolean;
+        items: z.ZodArray<z.ZodArray<z.ZodObject<{
+            text: z.ZodString;
+            marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                code: "code";
+                bold: "bold";
+                strikethrough: "strikethrough";
+                italic: "italic";
+                underline: "underline";
+            }>>>;
+            href: z.ZodOptional<z.ZodURL>;
+        }, z.core.$strict>>>;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodEnum<{
+            file: "file";
+            image: "image";
+        }>;
+        assetDigest: z.ZodString;
+        alt: z.ZodOptional<z.ZodString>;
+        caption: z.ZodOptional<z.ZodArray<z.ZodObject<{
+            text: z.ZodString;
+            marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                code: "code";
+                bold: "bold";
+                strikethrough: "strikethrough";
+                italic: "italic";
+                underline: "underline";
+            }>>>;
+            href: z.ZodOptional<z.ZodURL>;
+        }, z.core.$strict>>>;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodLiteral<"table">;
+        rows: z.ZodArray<z.ZodArray<z.ZodArray<z.ZodObject<{
+            text: z.ZodString;
+            marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                code: "code";
+                bold: "bold";
+                strikethrough: "strikethrough";
+                italic: "italic";
+                underline: "underline";
+            }>>>;
+            href: z.ZodOptional<z.ZodURL>;
+        }, z.core.$strict>>>>;
+    }, z.core.$strict>], "type">>;
+}, z.core.$strict>;
+export declare const publicationMutationSchema: z.ZodObject<{
+    connectorId: z.ZodUUID;
+    siteId: z.ZodUUID;
+    publicationId: z.ZodUUID;
+    slug: z.ZodString;
+    operation: z.ZodEnum<{
+        create: "create";
+        update: "update";
+    }>;
+    document: z.ZodObject<{
+        schemaVersion: z.ZodLiteral<"1.0">;
+        title: z.ZodString;
+        description: z.ZodOptional<z.ZodString>;
+        blocks: z.ZodArray<z.ZodDiscriminatedUnion<[z.ZodObject<{
+            type: z.ZodLiteral<"heading">;
+            level: z.ZodNumber;
+            content: z.ZodArray<z.ZodObject<{
+                text: z.ZodString;
+                marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                    code: "code";
+                    bold: "bold";
+                    strikethrough: "strikethrough";
+                    italic: "italic";
+                    underline: "underline";
+                }>>>;
+                href: z.ZodOptional<z.ZodURL>;
+            }, z.core.$strict>>;
+        }, z.core.$strict>, z.ZodObject<{
+            type: z.ZodLiteral<"paragraph">;
+            content: z.ZodArray<z.ZodObject<{
+                text: z.ZodString;
+                marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                    code: "code";
+                    bold: "bold";
+                    strikethrough: "strikethrough";
+                    italic: "italic";
+                    underline: "underline";
+                }>>>;
+                href: z.ZodOptional<z.ZodURL>;
+            }, z.core.$strict>>;
+        }, z.core.$strict>, z.ZodObject<{
+            type: z.ZodLiteral<"quote">;
+            content: z.ZodArray<z.ZodObject<{
+                text: z.ZodString;
+                marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                    code: "code";
+                    bold: "bold";
+                    strikethrough: "strikethrough";
+                    italic: "italic";
+                    underline: "underline";
+                }>>>;
+                href: z.ZodOptional<z.ZodURL>;
+            }, z.core.$strict>>;
+        }, z.core.$strict>, z.ZodObject<{
+            type: z.ZodLiteral<"code">;
+            language: z.ZodOptional<z.ZodString>;
+            code: z.ZodString;
+        }, z.core.$strict>, z.ZodObject<{
+            type: z.ZodLiteral<"list">;
+            ordered: z.ZodBoolean;
+            items: z.ZodArray<z.ZodArray<z.ZodObject<{
+                text: z.ZodString;
+                marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                    code: "code";
+                    bold: "bold";
+                    strikethrough: "strikethrough";
+                    italic: "italic";
+                    underline: "underline";
+                }>>>;
+                href: z.ZodOptional<z.ZodURL>;
+            }, z.core.$strict>>>;
+        }, z.core.$strict>, z.ZodObject<{
+            type: z.ZodEnum<{
+                file: "file";
+                image: "image";
+            }>;
+            assetDigest: z.ZodString;
+            alt: z.ZodOptional<z.ZodString>;
+            caption: z.ZodOptional<z.ZodArray<z.ZodObject<{
+                text: z.ZodString;
+                marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                    code: "code";
+                    bold: "bold";
+                    strikethrough: "strikethrough";
+                    italic: "italic";
+                    underline: "underline";
+                }>>>;
+                href: z.ZodOptional<z.ZodURL>;
+            }, z.core.$strict>>>;
+        }, z.core.$strict>, z.ZodObject<{
+            type: z.ZodLiteral<"table">;
+            rows: z.ZodArray<z.ZodArray<z.ZodArray<z.ZodObject<{
+                text: z.ZodString;
+                marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
+                    code: "code";
+                    bold: "bold";
+                    strikethrough: "strikethrough";
+                    italic: "italic";
+                    underline: "underline";
+                }>>>;
+                href: z.ZodOptional<z.ZodURL>;
+            }, z.core.$strict>>>>;
+        }, z.core.$strict>], "type">>;
+    }, z.core.$strict>;
+    contentSha256: z.ZodString;
+    assetDigests: z.ZodArray<z.ZodString>;
+    sourceProvenance: z.ZodOptional<z.ZodObject<{
+        sourceType: z.ZodEnum<{
+            "anytype-object": "anytype-object";
+            "anytype-collection": "anytype-collection";
+            "anytype-chat": "anytype-chat";
+            other: "other";
+        }>;
+        sourceDigest: z.ZodString;
+        sourcePointer: z.ZodOptional<z.ZodString>;
+    }, z.core.$strict>>;
+    idempotencyKey: z.ZodString;
+}, z.core.$strict>;
+export declare const publicationCreatedSchema: z.ZodObject<{
+    protocolVersion: z.ZodLiteral<"1.0">;
+    publicationId: z.ZodUUID;
+    versionId: z.ZodUUID;
+    state: z.ZodLiteral<"ready">;
+}, z.core.$strict>;
+export declare const connectorPublicationStatusSchema: z.ZodObject<{
+    protocolVersion: z.ZodLiteral<"1.0">;
+    publicationId: z.ZodUUID;
+    siteId: z.ZodUUID;
+    slug: z.ZodString;
+    state: z.ZodEnum<{
+        disabled: "disabled";
+        ready: "ready";
+        draft: "draft";
+        unpublished: "unpublished";
+    }>;
+    currentVersionId: z.ZodOptional<z.ZodUUID>;
+    updatedAt: z.ZodNumber;
+}, z.core.$strict>;
+export declare const connectorPublicationControlRequestSchema: z.ZodObject<{
+    protocolVersion: z.ZodLiteral<"1.0">;
+    connectorId: z.ZodUUID;
+    idempotencyKey: z.ZodString;
+    operation: z.ZodDiscriminatedUnion<[z.ZodObject<{
+        type: z.ZodLiteral<"publication.disable">;
+        publicationId: z.ZodUUID;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodLiteral<"publication.rollback">;
+        publicationId: z.ZodUUID;
+        versionId: z.ZodUUID;
+    }, z.core.$strict>, z.ZodObject<{
+        type: z.ZodLiteral<"publication.unpublish">;
+        publicationId: z.ZodUUID;
+    }, z.core.$strict>], "type">;
+}, z.core.$strict>;
+export declare const assetUploadRequestSchema: z.ZodObject<{
+    protocolVersion: z.ZodLiteral<"1.0">;
+    connectorId: z.ZodUUID;
+    siteId: z.ZodUUID;
+    sha256: z.ZodString;
+    byteSize: z.ZodNumber;
+    contentType: z.ZodString;
+    fileName: z.ZodString;
+    idempotencyKey: z.ZodString;
+}, z.core.$strict>;
+export declare const assetUploadCreatedSchema: z.ZodObject<{
+    protocolVersion: z.ZodLiteral<"1.0">;
+    assetId: z.ZodUUID;
+    uploadId: z.ZodUUID;
+    method: z.ZodLiteral<"PUT">;
+    uploadUrl: z.ZodURL;
+    requiredHeaders: z.ZodRecord<z.ZodString, z.ZodString>;
+    expiresAt: z.ZodNumber;
+}, z.core.$strict>;
+export declare const assetUploadCommitSchema: z.ZodObject<{
+    protocolVersion: z.ZodLiteral<"1.0">;
+    assetId: z.ZodUUID;
+    uploadId: z.ZodUUID;
+    expectedSha256: z.ZodString;
+    expectedByteSize: z.ZodNumber;
+    idempotencyKey: z.ZodString;
+}, z.core.$strict>;
+export declare const assetUploadResultSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+    status: z.ZodLiteral<"verified">;
+    assetId: z.ZodUUID;
+    sha256: z.ZodString;
+    byteSize: z.ZodNumber;
+    verifiedAt: z.ZodNumber;
+}, z.core.$strict>, z.ZodObject<{
+    status: z.ZodLiteral<"rejected">;
+    assetId: z.ZodUUID;
+    reason: z.ZodEnum<{
+        "digest-mismatch": "digest-mismatch";
+        "size-mismatch": "size-mismatch";
+        "upload-missing": "upload-missing";
+    }>;
+}, z.core.$strict>], "status">;
 export declare const commandEnvelopeSchema: z.ZodObject<{
     protocolVersion: z.ZodLiteral<"1.0">;
     commandId: z.ZodString;
@@ -301,6 +693,19 @@ export declare const commandClaimResponseSchema: z.ZodObject<{
     }, z.core.$strict>>;
     pollAfterSeconds: z.ZodNumber;
 }, z.core.$strict>;
+export declare const publicationControlResultSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+    type: z.ZodLiteral<"publication.disable">;
+    publicationId: z.ZodUUID;
+    disabledAt: z.ZodNumber;
+}, z.core.$strict>, z.ZodObject<{
+    type: z.ZodLiteral<"publication.rollback">;
+    publicationId: z.ZodUUID;
+    currentVersionId: z.ZodUUID;
+}, z.core.$strict>, z.ZodObject<{
+    type: z.ZodLiteral<"publication.unpublish">;
+    publicationId: z.ZodUUID;
+    unpublishedAt: z.ZodNumber;
+}, z.core.$strict>], "type">;
 export declare const commandResultSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     outcome: z.ZodLiteral<"succeeded">;
     result: z.ZodUnion<readonly [z.ZodDiscriminatedUnion<[z.ZodObject<{
@@ -435,15 +840,15 @@ export declare const commandResultSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
         sentAt: z.ZodNumber;
     }, z.core.$strict>], "type">, z.ZodDiscriminatedUnion<[z.ZodObject<{
         type: z.ZodLiteral<"publication.disable">;
-        publicationId: z.ZodString;
+        publicationId: z.ZodUUID;
         disabledAt: z.ZodNumber;
     }, z.core.$strict>, z.ZodObject<{
         type: z.ZodLiteral<"publication.rollback">;
-        publicationId: z.ZodString;
-        currentVersionId: z.ZodString;
+        publicationId: z.ZodUUID;
+        currentVersionId: z.ZodUUID;
     }, z.core.$strict>, z.ZodObject<{
         type: z.ZodLiteral<"publication.unpublish">;
-        publicationId: z.ZodString;
+        publicationId: z.ZodUUID;
         unpublishedAt: z.ZodNumber;
     }, z.core.$strict>], "type">]>;
 }, z.core.$strict>, z.ZodObject<{
@@ -484,3 +889,15 @@ export type PairingCredentials = z.infer<typeof pairingCredentialsSchema>;
 export type PairingStatus = z.infer<typeof pairingStatusSchema>;
 export type CloudCommandEnvelope = z.infer<typeof commandEnvelopeSchema>;
 export type CloudCommandResult = z.infer<typeof commandResultSchema>;
+export type PublicationDocument = z.infer<typeof publicationDocumentSchema>;
+export type PublicationMutation = z.infer<typeof publicationMutationSchema>;
+export type PublicationControlRequest = z.infer<typeof connectorPublicationControlRequestSchema>;
+export type PublicationControlResult = z.infer<typeof publicationControlResultSchema>;
+export type AssetUploadRequest = z.infer<typeof assetUploadRequestSchema>;
+export type AssetUploadCreated = z.infer<typeof assetUploadCreatedSchema>;
+type JsonPrimitive = boolean | null | number | string;
+type JsonValue = JsonPrimitive | JsonValue[] | {
+    [key: string]: JsonValue;
+};
+export declare function canonicalJson(value: JsonValue): string;
+export {};

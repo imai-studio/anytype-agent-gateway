@@ -4,16 +4,30 @@ import { z, type ZodType } from "zod";
 import { validateCloudKey, type CloudConfig } from "./cloud-config.js";
 import {
   CLOUD_PROTOCOL_VERSION,
+  assetUploadCommitSchema,
+  assetUploadCreatedSchema,
+  assetUploadRequestSchema,
+  assetUploadResultSchema,
   commandClaimResponseSchema,
   commandLeaseExtendedSchema,
   commandResultSchema,
   commandResultReceiptSchema,
+  connectorPublicationControlRequestSchema,
+  connectorPublicationStatusSchema,
   pairingStatusSchema,
   problemDetailsSchema,
   protocolMetaSchema,
+  publicationControlResultSchema,
+  publicationCreatedSchema,
+  publicationMutationSchema,
   type CloudCommandEnvelope,
   type CloudCommandResult,
+  type CloudScope,
   type PairingCredentials,
+  type AssetUploadCreated,
+  type AssetUploadRequest,
+  type PublicationControlRequest,
+  type PublicationMutation,
 } from "./cloud-contract.js";
 
 const maximumResponseBytes = 1024 * 1024;
@@ -41,6 +55,7 @@ export interface CloudClientOptions {
   sleep?: (milliseconds: number) => Promise<void>;
   requestTimeoutMilliseconds?: number;
   maximumAttempts?: number;
+  assetUploadTimeoutMilliseconds?: number;
 }
 
 export class CloudClient {
@@ -50,6 +65,7 @@ export class CloudClient {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly requestTimeoutMilliseconds: number;
   private readonly maximumAttempts: number;
+  private readonly assetUploadTimeoutMilliseconds: number;
   private clockOffsetSeconds = 0;
 
   constructor(
@@ -64,6 +80,7 @@ export class CloudClient {
       ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.requestTimeoutMilliseconds = options.requestTimeoutMilliseconds ?? 15_000;
     this.maximumAttempts = options.maximumAttempts ?? 4;
+    this.assetUploadTimeoutMilliseconds = options.assetUploadTimeoutMilliseconds ?? 5 * 60_000;
   }
 
   async protocolStatus() {
@@ -151,6 +168,107 @@ export class CloudClient {
     });
   }
 
+  async publish(mutation: PublicationMutation) {
+    const connectorId = this.pairedConnectorId();
+    if (mutation.connectorId !== connectorId)
+      throw new Error("The publication belongs to a different connector");
+    this.assertGranted("publications.write");
+    return this.request({
+      method: "POST",
+      path: `/api/v1/connectors/${encodeURIComponent(connectorId)}/publications`,
+      body: publicationMutationSchema.parse(mutation),
+      schema: publicationCreatedSchema,
+      signed: true,
+    });
+  }
+
+  async requestAssetUpload(input: AssetUploadRequest) {
+    const connectorId = this.pairedConnectorId();
+    if (input.connectorId !== connectorId)
+      throw new Error("The asset upload belongs to a different connector");
+    this.assertGranted("publications.write");
+    return this.request({
+      method: "POST",
+      path: `/api/v1/connectors/${encodeURIComponent(connectorId)}/assets/request`,
+      body: assetUploadRequestSchema.parse(input),
+      schema: assetUploadCreatedSchema,
+      signed: true,
+    });
+  }
+
+  async uploadAsset(upload: AssetUploadCreated, bytes: Uint8Array): Promise<void> {
+    const target = assetUploadCreatedSchema.parse(upload);
+    const response = await this.fetchImplementation(target.uploadUrl, {
+      method: "PUT",
+      headers: target.requiredHeaders,
+      body: Buffer.from(bytes),
+      redirect: "error",
+      signal: AbortSignal.timeout(this.assetUploadTimeoutMilliseconds),
+    });
+    if (!response.ok)
+      throw new CloudRequestError(`Asset storage returned HTTP ${response.status}`, {
+        status: response.status,
+        retryable: response.status >= 500 || response.status === 408 || response.status === 429,
+      });
+  }
+
+  async commitAssetUpload(input: {
+    assetId: string;
+    uploadId: string;
+    expectedSha256: string;
+    expectedByteSize: number;
+    idempotencyKey: string;
+  }) {
+    const connectorId = this.pairedConnectorId();
+    this.assertGranted("publications.write");
+    return this.request({
+      method: "POST",
+      path: `/api/v1/connectors/${encodeURIComponent(connectorId)}/assets/commit`,
+      body: assetUploadCommitSchema.parse({
+        protocolVersion: CLOUD_PROTOCOL_VERSION,
+        ...input,
+      }),
+      schema: assetUploadResultSchema,
+      signed: true,
+    });
+  }
+
+  async publicationStatus(publicationId: string) {
+    const connectorId = z.uuid().parse(this.pairedConnectorId());
+    this.assertGranted("publications.read");
+    const parsedPublicationId = z.uuid().parse(publicationId);
+    return this.request({
+      method: "POST",
+      path: `/api/v1/connectors/${encodeURIComponent(connectorId)}/publications/${encodeURIComponent(parsedPublicationId)}/status`,
+      body: {
+        protocolVersion: CLOUD_PROTOCOL_VERSION,
+        connectorId,
+        publicationId: parsedPublicationId,
+      },
+      schema: connectorPublicationStatusSchema,
+      signed: true,
+    });
+  }
+
+  async controlPublication(input: PublicationControlRequest) {
+    const parsed = connectorPublicationControlRequestSchema.parse(input);
+    const connectorId = this.pairedConnectorId();
+    if (parsed.connectorId !== connectorId)
+      throw new Error("The publication control request belongs to a different connector");
+    const requiredScope =
+      parsed.operation.type === "publication.unpublish"
+        ? "publications.unpublish"
+        : "publications.write";
+    this.assertGranted(requiredScope);
+    return this.request({
+      method: "POST",
+      path: `/api/v1/connectors/${encodeURIComponent(connectorId)}/publications/${encodeURIComponent(parsed.operation.publicationId)}/control`,
+      body: parsed,
+      schema: publicationControlResultSchema,
+      signed: true,
+    });
+  }
+
   private pairedConnectorId(): string {
     if (!this.config.paired) throw new Error("This machine is not paired with Knot Cloud");
     return this.config.paired.connectorId;
@@ -161,6 +279,11 @@ export class CloudClient {
       throw new Error("The command belongs to a different connector");
     if (!this.config.paired?.scopes.includes(command.requiredScope))
       throw new Error("The command requires a scope that is absent from the local pairing grant");
+  }
+
+  private assertGranted(scope: CloudScope): void {
+    if (!this.config.paired?.scopes.includes(scope))
+      throw new Error(`The local pairing grant does not include ${scope}`);
   }
 
   private async request<T>(input: {

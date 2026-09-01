@@ -807,6 +807,8 @@ export class AgentController {
             capabilities.access = this.store.issueManagementCapability(routeId, actor.participantId, "access");
         if (this.config.models.enabled && this.config.management.allowModelChanges)
             capabilities.model = this.store.issueManagementCapability(routeId, actor.participantId, "model");
+        if (this.config.tools.publish.enabled)
+            capabilities.publish = this.store.issueManagementCapability(routeId, actor.participantId, "publish");
         return this.managementCommand(routeId, capabilities);
     }
     async thread(conversation, message) {

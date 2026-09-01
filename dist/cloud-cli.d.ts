@@ -14,6 +14,7 @@ export declare function cloudLogin(input: {
     connectorName?: string;
     scopes?: string[];
     slugGrants?: string[];
+    assetRoots?: string[];
 }, context?: CloudCommandContext): Promise<CloudConfig>;
 export declare function cloudPair(input: {
     configFile?: string;

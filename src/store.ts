@@ -45,7 +45,7 @@ import {
 
 const SCHEMA_VERSION = 13;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
-export type ManagementCapabilityScope = "wake" | "access" | "model";
+export type ManagementCapabilityScope = "wake" | "access" | "model" | "publish";
 
 function managementCapabilityHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");

@@ -1,9 +1,9 @@
 # Connect a local Knot runtime to Knot Cloud
 
-Status: the local connector identity, pairing poller, protocol checks, and signed command client are
-implemented in this repository. They require a Knot Cloud deployment that includes the matching
-pairing and signed command routes. Those routes are still being reviewed and are not available on
-the current production deployment.
+Status: the local connector identity, pairing poller, protocol checks, signed command client, typed
+publication client, and durable publication outbox are implemented in this repository. They require
+a Knot Cloud deployment that includes the matching routes; check its release notes before assuming a
+particular deployment supports them.
 
 ## What the connection permits
 
@@ -107,9 +107,9 @@ The claim call is the connector's outbound poll. The cloud contract does not cur
 separate signed heartbeat route. Connector status in the local CLI therefore means local state plus
 protocol reachability, not proof that the cloud has recorded a recent heartbeat.
 
-Publication lifecycle routes are still stacked in the Knot Cloud repository. This CLI does not
-offer `publish`, `rollback`, `disable`, or `unpublish` commands until those routes and their release
-gates merge. It does not guess endpoint behavior from a proposal document.
+The publication commands use only the signed connector routes frozen in the Cloud contract. See
+[`cloud-publishing.md`](cloud-publishing.md) for typed document input, asset manifests, durable
+operation status, lifecycle controls, and the constrained `aag_publish` tool.
 
 ## Troubleshooting
 

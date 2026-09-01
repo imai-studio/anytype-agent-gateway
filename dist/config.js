@@ -319,6 +319,56 @@ export const configSchema = z.object({
             sandbox: z.enum(["read-only", "workspace-write"]).default("workspace-write"),
         })
             .default({ enabled: false, command: "codex", sandbox: "workspace-write" }),
+        publish: z
+            .object({
+            enabled: z.boolean().default(false),
+            cloudConfigFile: z.string().optional(),
+            allowedUsers: z.array(z.string().min(1)).default([]),
+            allowedSiteIds: z.array(z.uuid()).default([]),
+            allowedSlugPrefixes: z
+                .array(z.string().regex(/^[a-z0-9](?:[a-z0-9/_-]*[a-z0-9/])?$/u))
+                .default([]),
+            allowUpdate: z.boolean().default(false),
+            allowRollback: z.boolean().default(false),
+            allowDisable: z.boolean().default(false),
+            allowUnpublish: z.boolean().default(false),
+        })
+            .superRefine((value, context) => {
+            if (value.enabled && value.allowedUsers.length === 0)
+                context.addIssue({
+                    code: "custom",
+                    path: ["allowedUsers"],
+                    message: "tools.publish.allowedUsers is required when publishing is enabled",
+                });
+            if (value.enabled && value.allowedUsers.includes("*"))
+                context.addIssue({
+                    code: "custom",
+                    path: ["allowedUsers"],
+                    message: "tools.publish.allowedUsers requires native participant IDs, not a wildcard",
+                });
+            if (value.enabled && value.allowedSiteIds.length === 0)
+                context.addIssue({
+                    code: "custom",
+                    path: ["allowedSiteIds"],
+                    message: "tools.publish.allowedSiteIds is required when publishing is enabled",
+                });
+            if (value.enabled && value.allowedSlugPrefixes.length === 0)
+                context.addIssue({
+                    code: "custom",
+                    path: ["allowedSlugPrefixes"],
+                    message: "tools.publish.allowedSlugPrefixes is required when publishing is enabled",
+                });
+        })
+            .default({
+            enabled: false,
+            allowedUsers: [],
+            allowedSiteIds: [],
+            allowedSlugPrefixes: [],
+            allowUpdate: false,
+            allowRollback: false,
+            allowDisable: false,
+            allowUnpublish: false,
+        }),
     })
         .default({
         anytype: {
@@ -329,6 +379,16 @@ export const configSchema = z.object({
             allowedFileRoots: [],
         },
         codex: { enabled: false, command: "codex", sandbox: "workspace-write" },
+        publish: {
+            enabled: false,
+            allowedUsers: [],
+            allowedSiteIds: [],
+            allowedSlugPrefixes: [],
+            allowUpdate: false,
+            allowRollback: false,
+            allowDisable: false,
+            allowUnpublish: false,
+        },
     }),
     responses: z
         .object({
@@ -551,6 +611,8 @@ export async function loadConfig(path) {
     if (canonicalProjectRoots.some((root) => pathContains(root, stateDirectory)))
         throw new Error("state.path must be outside agent-accessible project directories");
     config.tools.anytype.allowedFileRoots = config.tools.anytype.allowedFileRoots.map(expandHome);
+    if (config.tools.publish.cloudConfigFile)
+        config.tools.publish.cloudConfigFile = expandHome(config.tools.publish.cloudConfigFile);
     if (config.runtime.kind === "codex" && config.runtime.command === "codex-acp") {
         const bundled = resolve(dirname(fileURLToPath(import.meta.url)), "..", "node_modules", ".bin", process.platform === "win32" ? "codex-acp.cmd" : "codex-acp");
         try {

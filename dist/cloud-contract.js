@@ -101,6 +101,15 @@ const objectPropertiesSchema = z
     .refine((value) => Object.keys(value).length <= 1_000)
     .refine((value) => Object.keys(value).every((key) => !["__proto__", "constructor", "prototype"].includes(key)));
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+const uuidSchema = z.uuid();
+const idempotencyKeySchema = z.string().trim().min(16).max(200);
+export const maximumAssetBytes = 100 * 1024 * 1024;
+const mediaTypeSchema = z
+    .string()
+    .trim()
+    .min(3)
+    .max(200)
+    .regex(/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:;[\x20-\x7E]+)?$/u);
 const anytypeOperationSchema = z.discriminatedUnion("type", [
     z.object({ type: z.literal("object.read"), spaceId: opaqueIdSchema, objectId: opaqueIdSchema }),
     z.object({
@@ -179,6 +188,215 @@ const publicationControlOperationSchema = z.discriminatedUnion("type", [
         versionId: opaqueIdSchema,
     }),
     z.object({ type: z.literal("publication.unpublish"), publicationId: opaqueIdSchema }),
+]);
+const publicationSlugSchema = z
+    .string()
+    .regex(/^[a-z0-9](?:[a-z0-9/_-]{0,198}[a-z0-9])?$/u)
+    .refine((value) => !value.includes("//"), "Slug cannot contain consecutive slashes")
+    .refine((value) => !["api", "_next", "www", "admin", "health", "assets"].includes(value.split("/")[0]), "Slug uses a reserved prefix");
+export const publicationSourceProvenanceSchema = z
+    .object({
+    sourceType: z.enum(["anytype-object", "anytype-collection", "anytype-chat", "other"]),
+    sourceDigest: sha256Schema,
+    sourcePointer: z
+        .string()
+        .trim()
+        .regex(/^[A-Za-z0-9_-]{1,512}$/u)
+        .optional(),
+})
+    .strict();
+const publicationTextMarkSchema = z.enum(["bold", "code", "italic", "strikethrough", "underline"]);
+const publicationTextSpanSchema = z
+    .object({
+    text: z.string().max(10_000),
+    marks: z.array(publicationTextMarkSchema).max(5).default([]),
+    href: z
+        .url()
+        .refine((value) => ["http:", "https:", "mailto:"].includes(new URL(value).protocol), {
+        message: "Links must use http, https, or mailto",
+    })
+        .optional(),
+})
+    .strict();
+const publicationTextContentSchema = z.array(publicationTextSpanSchema).max(1_000);
+export const publicationBlockSchema = z.discriminatedUnion("type", [
+    z
+        .object({
+        type: z.literal("heading"),
+        level: z.number().int().min(1).max(6),
+        content: publicationTextContentSchema,
+    })
+        .strict(),
+    z.object({ type: z.literal("paragraph"), content: publicationTextContentSchema }).strict(),
+    z.object({ type: z.literal("quote"), content: publicationTextContentSchema }).strict(),
+    z
+        .object({
+        type: z.literal("code"),
+        language: z
+            .string()
+            .trim()
+            .regex(/^[a-z0-9+#.-]{1,30}$/u)
+            .optional(),
+        code: z.string().max(250_000),
+    })
+        .strict(),
+    z
+        .object({
+        type: z.literal("list"),
+        ordered: z.boolean(),
+        items: z.array(publicationTextContentSchema).max(1_000),
+    })
+        .strict(),
+    z
+        .object({
+        type: z.enum(["file", "image"]),
+        assetDigest: sha256Schema,
+        alt: z.string().max(2_000).optional(),
+        caption: publicationTextContentSchema.optional(),
+    })
+        .strict(),
+    z
+        .object({
+        type: z.literal("table"),
+        rows: z.array(z.array(publicationTextContentSchema).max(100)).max(1_000),
+    })
+        .strict(),
+]);
+export const publicationDocumentSchema = z
+    .object({
+    schemaVersion: z.literal("1.0"),
+    title: z.string().trim().min(1).max(500),
+    description: z.string().max(5_000).optional(),
+    blocks: z.array(publicationBlockSchema).max(10_000),
+})
+    .strict();
+export const publicationMutationSchema = z
+    .object({
+    connectorId: uuidSchema,
+    siteId: uuidSchema,
+    publicationId: uuidSchema,
+    slug: publicationSlugSchema,
+    operation: z.enum(["create", "update"]),
+    document: publicationDocumentSchema,
+    contentSha256: sha256Schema,
+    assetDigests: z.array(sha256Schema).max(1_000),
+    sourceProvenance: publicationSourceProvenanceSchema.optional(),
+    idempotencyKey: idempotencyKeySchema,
+})
+    .strict()
+    .superRefine((value, context) => {
+    const declared = new Set(value.assetDigests);
+    if (declared.size !== value.assetDigests.length)
+        context.addIssue({
+            code: "custom",
+            path: ["assetDigests"],
+            message: "Asset digests must be unique",
+        });
+    for (const [index, block] of value.document.blocks.entries())
+        if ((block.type === "file" || block.type === "image") && !declared.has(block.assetDigest))
+            context.addIssue({
+                code: "custom",
+                path: ["document", "blocks", index, "assetDigest"],
+                message: "Every document asset must be declared in assetDigests",
+            });
+});
+export const publicationCreatedSchema = z
+    .object({
+    protocolVersion: z.literal(CLOUD_PROTOCOL_VERSION),
+    publicationId: uuidSchema,
+    versionId: uuidSchema,
+    state: z.literal("ready"),
+})
+    .strict();
+export const connectorPublicationStatusSchema = z
+    .object({
+    protocolVersion: z.literal(CLOUD_PROTOCOL_VERSION),
+    publicationId: uuidSchema,
+    siteId: uuidSchema,
+    slug: publicationSlugSchema,
+    state: z.enum(["draft", "ready", "disabled", "unpublished"]),
+    currentVersionId: uuidSchema.optional(),
+    updatedAt: unixSecondsSchema,
+})
+    .strict();
+export const connectorPublicationControlRequestSchema = z
+    .object({
+    protocolVersion: z.literal(CLOUD_PROTOCOL_VERSION),
+    connectorId: uuidSchema,
+    idempotencyKey: idempotencyKeySchema,
+    operation: z.discriminatedUnion("type", [
+        z.object({ type: z.literal("publication.disable"), publicationId: uuidSchema }).strict(),
+        z
+            .object({
+            type: z.literal("publication.rollback"),
+            publicationId: uuidSchema,
+            versionId: uuidSchema,
+        })
+            .strict(),
+        z.object({ type: z.literal("publication.unpublish"), publicationId: uuidSchema }).strict(),
+    ]),
+})
+    .strict();
+export const assetUploadRequestSchema = z
+    .object({
+    protocolVersion: z.literal(CLOUD_PROTOCOL_VERSION),
+    connectorId: uuidSchema,
+    siteId: uuidSchema,
+    sha256: sha256Schema,
+    byteSize: z.number().int().min(1).max(maximumAssetBytes),
+    contentType: mediaTypeSchema,
+    fileName: z.string().trim().min(1).max(500),
+    idempotencyKey: idempotencyKeySchema,
+})
+    .strict();
+export const assetUploadCreatedSchema = z
+    .object({
+    protocolVersion: z.literal(CLOUD_PROTOCOL_VERSION),
+    assetId: uuidSchema,
+    uploadId: uuidSchema,
+    method: z.literal("PUT"),
+    uploadUrl: z.url().refine((value) => {
+        const parsed = new URL(value);
+        return (parsed.protocol === "https:" ||
+            (parsed.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname)));
+    }, "Upload URL must use HTTPS or loopback HTTP"),
+    requiredHeaders: z
+        .record(z
+        .string()
+        .toLowerCase()
+        .regex(/^[a-z0-9-]{1,100}$/u)
+        .refine((name) => !["authorization", "cookie", "host", "proxy-authorization"].includes(name), "Upload headers cannot carry ambient credentials"), z.string().max(2_000))
+        .refine((headers) => Object.keys(headers).length <= 20),
+    expiresAt: unixSecondsSchema,
+})
+    .strict();
+export const assetUploadCommitSchema = z
+    .object({
+    protocolVersion: z.literal(CLOUD_PROTOCOL_VERSION),
+    assetId: uuidSchema,
+    uploadId: uuidSchema,
+    expectedSha256: sha256Schema,
+    expectedByteSize: z.number().int().min(1).max(maximumAssetBytes),
+    idempotencyKey: idempotencyKeySchema,
+})
+    .strict();
+export const assetUploadResultSchema = z.discriminatedUnion("status", [
+    z
+        .object({
+        status: z.literal("verified"),
+        assetId: uuidSchema,
+        sha256: sha256Schema,
+        byteSize: z.number().int().min(1).max(maximumAssetBytes),
+        verifiedAt: unixSecondsSchema,
+    })
+        .strict(),
+    z
+        .object({
+        status: z.literal("rejected"),
+        assetId: uuidSchema,
+        reason: z.enum(["digest-mismatch", "size-mismatch", "upload-missing"]),
+    })
+        .strict(),
 ]);
 const commandPayloadSchema = z.discriminatedUnion("domain", [
     z.object({ domain: z.literal("anytype"), operation: anytypeOperationSchema }),
@@ -341,25 +559,25 @@ const anytypeOperationResultSchema = z.discriminatedUnion("type", [
     })
         .strict(),
 ]);
-const publicationControlResultSchema = z.discriminatedUnion("type", [
+export const publicationControlResultSchema = z.discriminatedUnion("type", [
     z
         .object({
         type: z.literal("publication.disable"),
-        publicationId: opaqueIdSchema,
+        publicationId: uuidSchema,
         disabledAt: unixSecondsSchema,
     })
         .strict(),
     z
         .object({
         type: z.literal("publication.rollback"),
-        publicationId: opaqueIdSchema,
-        currentVersionId: opaqueIdSchema,
+        publicationId: uuidSchema,
+        currentVersionId: uuidSchema,
     })
         .strict(),
     z
         .object({
         type: z.literal("publication.unpublish"),
-        publicationId: opaqueIdSchema,
+        publicationId: uuidSchema,
         unpublishedAt: unixSecondsSchema,
     })
         .strict(),
@@ -411,6 +629,26 @@ export const commandResultReceiptSchema = z
     state: commandStateSchema,
 })
     .strict();
+export function canonicalJson(value) {
+    return encodeCanonicalJson(value, 0);
+}
+function encodeCanonicalJson(value, depth) {
+    if (depth > 100)
+        throw new TypeError("Canonical JSON exceeds the maximum depth");
+    if (value === null || typeof value === "boolean" || typeof value === "string")
+        return JSON.stringify(value);
+    if (typeof value === "number") {
+        if (!Number.isSafeInteger(value))
+            throw new TypeError("Canonical JSON supports only safe integers");
+        return JSON.stringify(Object.is(value, -0) ? 0 : value);
+    }
+    if (Array.isArray(value))
+        return `[${value.map((entry) => encodeCanonicalJson(entry, depth + 1)).join(",")}]`;
+    const entries = Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries
+        .map(([key, entry]) => `${JSON.stringify(key)}:${encodeCanonicalJson(entry, depth + 1)}`)
+        .join(",")}}`;
+}
 function requiredScope(domain, type) {
     if (domain === "publication")
         return type === "publication.unpublish" ? "publications.unpublish" : "publications.write";

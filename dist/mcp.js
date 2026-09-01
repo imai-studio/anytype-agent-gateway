@@ -11,6 +11,8 @@ import { Store } from "./store.js";
 import { VERSION } from "./version.js";
 import { resolveProductEnvironment } from "./compatibility.js";
 import { principalAllowed, principalFromActorRecord, principalFromParticipantId, } from "./principal.js";
+import { publicationAction } from "./cloud-publication.js";
+import { publicationDocumentSchema } from "./cloud-contract.js";
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const propertyValueFields = [
     "text",
@@ -36,7 +38,7 @@ const reservedPropertyKeys = new Set([
 ]);
 export async function runMcpServer(configPath, context = {}) {
     const config = await loadConfig(configPath);
-    if (!config.tools.anytype.enabled && !config.tools.codex.enabled)
+    if (!config.tools.anytype.enabled && !config.tools.codex.enabled && !config.tools.publish.enabled)
         throw new Error("All Knot tools are disabled in this configuration");
     const anytype = await AnytypeClient.create(config);
     const routeId = context.routeId ?? resolveProductEnvironment("ROUTE_ID");
@@ -265,6 +267,15 @@ export function toolDefinitions(config) {
             ]
             : []),
     ];
+    const publishTools = config.tools.publish.enabled
+        ? [
+            {
+                name: "aag_publish",
+                description: "Publish or control a typed document through this agent's preconfigured Knot Cloud connector. The server, key, sites, slugs, and lifecycle permissions are fixed by local policy.",
+                inputSchema: publicationToolSchema(),
+            },
+        ]
+        : [];
     const codexTools = config.tools.codex.enabled
         ? [
             {
@@ -292,7 +303,7 @@ export function toolDefinitions(config) {
         ]
         : [];
     if (!config.tools.anytype.allowWrite)
-        return [...readTools, ...managementTools, ...codexTools];
+        return [...readTools, ...managementTools, ...publishTools, ...codexTools];
     return [
         ...readTools,
         {
@@ -354,6 +365,7 @@ export function toolDefinitions(config) {
             ]
             : []),
         ...managementTools,
+        ...publishTools,
         ...codexTools,
     ];
 }
@@ -382,12 +394,46 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
                 access_changes: config.management.allowAccessChanges,
                 model_changes: config.management.allowModelChanges,
                 file_roots: config.tools.anytype.allowedFileRoots,
+                publish: config.tools.publish.enabled
+                    ? {
+                        site_ids: config.tools.publish.allowedSiteIds,
+                        slug_prefixes: config.tools.publish.allowedSlugPrefixes,
+                        update: config.tools.publish.allowUpdate,
+                        rollback: config.tools.publish.allowRollback,
+                        disable: config.tools.publish.allowDisable,
+                        unpublish: config.tools.publish.allowUnpublish,
+                    }
+                    : false,
             },
             response_format: "Anytype rich text; use short paragraphs and simple lists, avoid Markdown tables and fenced code blocks",
             object_links: "Use object_ref for a compact clickable mention. Use object_card when the user asks to send, attach, or show the object itself; Knot renders it as a native Anytype card. link is the deep-link fallback",
             object_workflow: "Discover types and properties first, read the target before updating it, preserve unrelated properties, then use the returned native link in the Anytype reply",
             scheduling: schedulingContext(config, effectiveRouteId, typeof input.discussion_root_id === "string" ? input.discussion_root_id : undefined),
         };
+    if (name === "aag_publish") {
+        if (!config.tools.publish.enabled)
+            throw new Error("Knot Cloud publishing is disabled");
+        if (!effectiveRouteId)
+            throw new Error("route_id is required because this MCP process has no bound Anytype route");
+        const principal = verifiedManagementPrincipal(config, effectiveRouteId, "publish", input, boundActorId);
+        if (!principal || !principalAllowed(principal, config.tools.publish.allowedUsers))
+            throw new Error("The current Anytype sender is not allowed to publish");
+        const action = publishActionFromTool(input);
+        return publicationAction({
+            ...action,
+            ...(config.tools.publish.cloudConfigFile
+                ? { configFile: config.tools.publish.cloudConfigFile }
+                : {}),
+            policy: {
+                allowedSiteIds: config.tools.publish.allowedSiteIds,
+                allowedSlugPrefixes: config.tools.publish.allowedSlugPrefixes,
+                allowUpdate: config.tools.publish.allowUpdate,
+                allowRollback: config.tools.publish.allowRollback,
+                allowDisable: config.tools.publish.allowDisable,
+                allowUnpublish: config.tools.publish.allowUnpublish,
+            },
+        });
+    }
     if (name === "aag_list_models" || name === "aag_set_model") {
         if (!config.models.enabled)
             throw new Error("Model selection is disabled");
@@ -734,6 +780,155 @@ function objectSchema(properties, required = []) {
         additionalProperties: false,
         ...(required.length ? { required } : {}),
     };
+}
+function publicationToolSchema() {
+    const textSpan = {
+        type: "object",
+        properties: {
+            text: { type: "string", maxLength: 10_000 },
+            marks: {
+                type: "array",
+                maxItems: 5,
+                items: {
+                    type: "string",
+                    enum: ["bold", "code", "italic", "strikethrough", "underline"],
+                },
+            },
+        },
+        required: ["text"],
+        additionalProperties: false,
+    };
+    const content = { type: "array", maxItems: 1_000, items: textSpan };
+    const block = {
+        oneOf: [
+            {
+                type: "object",
+                properties: {
+                    type: { const: "heading" },
+                    level: { type: "integer", minimum: 1, maximum: 6 },
+                    content,
+                },
+                required: ["type", "level", "content"],
+                additionalProperties: false,
+            },
+            ...["paragraph", "quote"].map((type) => ({
+                type: "object",
+                properties: { type: { const: type }, content },
+                required: ["type", "content"],
+                additionalProperties: false,
+            })),
+            {
+                type: "object",
+                properties: {
+                    type: { const: "code" },
+                    language: { type: "string", pattern: "^[a-z0-9+#.-]{1,30}$" },
+                    code: { type: "string", maxLength: 250_000 },
+                },
+                required: ["type", "code"],
+                additionalProperties: false,
+            },
+            {
+                type: "object",
+                properties: {
+                    type: { const: "list" },
+                    ordered: { type: "boolean" },
+                    items: { type: "array", maxItems: 1_000, items: content },
+                },
+                required: ["type", "ordered", "items"],
+                additionalProperties: false,
+            },
+            {
+                type: "object",
+                properties: {
+                    type: { const: "table" },
+                    rows: {
+                        type: "array",
+                        maxItems: 1_000,
+                        items: { type: "array", maxItems: 100, items: content },
+                    },
+                },
+                required: ["type", "rows"],
+                additionalProperties: false,
+            },
+            {
+                type: "object",
+                properties: {
+                    type: { type: "string", enum: ["file", "image"] },
+                    assetDigest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+                    alt: { type: "string", maxLength: 2_000 },
+                    caption: content,
+                },
+                required: ["type", "assetDigest"],
+                additionalProperties: false,
+            },
+        ],
+    };
+    return objectSchema({
+        action: {
+            type: "string",
+            enum: ["push", "status", "rollback", "disable", "unpublish"],
+        },
+        route_id: stringSchema(),
+        actor_capability: stringSchema("Opaque, single-use capability supplied by Knot for this authenticated turn"),
+        site_id: stringSchema("Preconfigured Cloud site UUID; required for push"),
+        publication_id: stringSchema("Stable publication UUID"),
+        slug: stringSchema("Locally and remotely granted slug; required for push"),
+        operation: { type: "string", enum: ["create", "update"] },
+        version_id: stringSchema("Existing version UUID; required for rollback"),
+        confirmation: stringSchema("Repeat publication_id to confirm destructive unpublish"),
+        document: {
+            type: "object",
+            properties: {
+                schemaVersion: { const: "1.0" },
+                title: { type: "string", minLength: 1, maxLength: 500 },
+                description: { type: "string", maxLength: 5_000 },
+                blocks: { type: "array", maxItems: 10_000, items: block },
+            },
+            required: ["schemaVersion", "title", "blocks"],
+            additionalProperties: false,
+        },
+        asset_manifest_id: stringSchema("Optional pre-approved manifest UUID created by the local Knot CLI; never a file path"),
+    }, ["action", "publication_id"]);
+}
+function publishActionFromTool(input) {
+    const action = required(input, "action");
+    const publicationId = required(input, "publication_id");
+    if (action === "status")
+        return { action, publicationId };
+    if (action === "rollback")
+        return { action, publicationId, versionId: required(input, "version_id") };
+    if (action === "disable")
+        return { action, publicationId };
+    if (action === "unpublish")
+        return { action, publicationId, confirmation: required(input, "confirmation") };
+    if (action !== "push")
+        throw new Error("Unsupported publication action");
+    const operation = required(input, "operation");
+    if (operation !== "create" && operation !== "update")
+        throw new Error("operation must be create or update");
+    const document = publicationDocumentSchema.parse(input.document);
+    if (containsObjectKey(document, "href"))
+        throw new Error("aag_publish does not accept runtime-provided URLs");
+    return {
+        action,
+        publicationId,
+        siteId: required(input, "site_id"),
+        slug: required(input, "slug"),
+        operation,
+        document,
+        ...(typeof input.asset_manifest_id === "string" && input.asset_manifest_id
+            ? { assetManifestId: input.asset_manifest_id }
+            : {}),
+    };
+}
+function containsObjectKey(value, key) {
+    if (Array.isArray(value))
+        return value.some((entry) => containsObjectKey(entry, key));
+    if (!value || typeof value !== "object")
+        return false;
+    const object = value;
+    return (Object.hasOwn(object, key) ||
+        Object.values(object).some((entry) => containsObjectKey(entry, key)));
 }
 function stringSchema(description) {
     return { type: "string", ...(description ? { description } : {}) };

@@ -310,6 +310,17 @@ export declare const configSchema: z.ZodObject<{
                 "workspace-write": "workspace-write";
             }>>;
         }, z.core.$strip>>;
+        publish: z.ZodDefault<z.ZodObject<{
+            enabled: z.ZodDefault<z.ZodBoolean>;
+            cloudConfigFile: z.ZodOptional<z.ZodString>;
+            allowedUsers: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            allowedSiteIds: z.ZodDefault<z.ZodArray<z.ZodUUID>>;
+            allowedSlugPrefixes: z.ZodDefault<z.ZodArray<z.ZodString>>;
+            allowUpdate: z.ZodDefault<z.ZodBoolean>;
+            allowRollback: z.ZodDefault<z.ZodBoolean>;
+            allowDisable: z.ZodDefault<z.ZodBoolean>;
+            allowUnpublish: z.ZodDefault<z.ZodBoolean>;
+        }, z.core.$strip>>;
     }, z.core.$strip>>;
     responses: z.ZodDefault<z.ZodObject<{
         mode: z.ZodDefault<z.ZodEnum<{
