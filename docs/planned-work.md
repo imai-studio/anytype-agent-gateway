@@ -11,10 +11,12 @@ is still disabled. The next work should follow this order.
 
 ### 1. Infrastructure specification
 
-Write and review the process topology before adding an observer or runner. The specification must
-settle queue ownership, leases, crash recovery, timers, cancellation, effect receipts, retention,
-backup restoration, and single-host operation. It must say which state belongs in Anytype, local
-configuration, and SQLite.
+The proposed process and recovery contract is in
+[`workflow-runtime-topology.md`](workflow-runtime-topology.md). It fixes queue ownership, leases,
+fencing, crash recovery, timers, cancellation, effect receipts, retention, backup restoration, and
+single-host operation. Reviewing that design is the gate for the observer and runner work below.
+
+The topology document is a design contract. No workflow observer or runner has shipped.
 
 ### 2. Observation and reconciliation
 
