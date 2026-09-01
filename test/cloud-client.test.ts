@@ -203,6 +203,42 @@ describe("CloudClient", () => {
     });
   });
 
+  it("rejects a claimed command outside the locally recorded connector grant", async () => {
+    const config = await pairedConfig();
+    const now = 1_788_220_800;
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        protocolVersion: "1.0",
+        commands: [
+          {
+            protocolVersion: "1.0",
+            commandId,
+            connectorId: "another-connector",
+            requiredScope: "anytype.objects.read",
+            createdBy: "consumer-api-key",
+            createdAt: now - 10,
+            notBefore: now - 5,
+            expiresAt: now + 300,
+            attempt: 1,
+            leaseToken: "l".repeat(32),
+            leaseExpiresAt: now + 60,
+            payload: {
+              domain: "anytype",
+              operation: { type: "object.read", spaceId: "space", objectId: "object" },
+            },
+          },
+        ],
+        pollAfterSeconds: 1,
+      }),
+    );
+    const client = new CloudClient(config, {
+      fetch: fetchMock as unknown as typeof fetch,
+      now: () => now * 1_000,
+      maximumAttempts: 1,
+    });
+    await expect(client.claimCommands()).rejects.toThrow("different connector");
+  });
+
   it("keeps exponential backoff bounded", () => {
     expect(backoffMilliseconds(0, () => 0)).toBe(375);
     expect(backoffMilliseconds(20, () => 1)).toBe(37_500);
