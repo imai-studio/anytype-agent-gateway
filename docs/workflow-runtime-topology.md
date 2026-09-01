@@ -86,7 +86,7 @@ sender provenance.
 Knot starts the workflow runtime in this order:
 
 1. Parse and validate configuration without resolving secret values into logs.
-2. Acquire the compatible AAG and Knot process locks.
+2. Acquire every compatible legacy and current process lock.
 3. Open SQLite, enable foreign keys and WAL mode, and run additive migrations.
 4. Create and report the pre-migration backup when the schema changes.
 5. Reconcile incomplete attempts, expired leases, due retry timers, current authority, and prior
@@ -379,7 +379,7 @@ mode `0600` before it reports the path.
 
 An operator restore follows this order:
 
-1. Stop Knot and verify that no compatible AAG or Knot process owns the state lock.
+1. Stop Knot and verify that no compatible legacy or current process owns the state lock.
 2. Move the current database plus its `-wal` and `-shm` files aside.
 3. Copy the selected backup to the configured state path and set mode `0600`.
 4. Start the Knot version that supports the backup schema.
