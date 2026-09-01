@@ -455,6 +455,7 @@ export const configSchema = z.object({
         heartHints: false,
         limits: {
             maximumConcurrentRuns: 4,
+            maximumRunsPerHour: 60,
             maximumStepsPerRun: 100,
             maximumEffectsPerRun: 20,
             maximumRunSeconds: 3_600,

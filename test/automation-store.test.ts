@@ -10,6 +10,7 @@ import {
   workflowApprovalHash,
   workflowApprovalMaterial,
   workflowDefinitionSchema,
+  workflowSourceDigest,
   workflowVersionHash,
 } from "../src/automation/workflow.js";
 import { Store } from "../src/store.js";
@@ -52,11 +53,12 @@ function versionRecord(
     schemaVersion: 1,
     canonicalDefinitionJson: canonicalWorkflowDefinition(definition),
     canonicalApprovalJson: canonicalJson(workflowApprovalMaterial(definition)),
-    sourceText: "```yaml\nkind: KnotWorkflow\n```",
+    sourceDigest: workflowSourceDigest(canonicalWorkflowDefinition(definition)),
     riskTier: policy.riskTier,
     requiredCapabilities: policy.requiredCapabilities,
     sourceModifiedAt: overrides.sourceModifiedAt ?? 100,
-    authorPrincipalDigest: "sha256:operator",
+    editorPrincipalDigest: `sha256:${"a".repeat(64)}`,
+    editorProvenance: "anytype-native" as const,
     createdAt: overrides.createdAt ?? 200,
   };
 }
@@ -64,7 +66,7 @@ function versionRecord(
 describe("automation persistence foundation", () => {
   it("retains the v7 automation foundation tables without enabling execution", () => {
     const store = new Store(":memory:");
-    expect(store.schemaVersion()).toBe(8);
+    expect(store.schemaVersion()).toBe(9);
     for (const table of [
       "workflow_definitions",
       "workflow_approval_subjects",
@@ -91,10 +93,10 @@ describe("automation persistence foundation", () => {
 
     const reports: string[] = [];
     const store = new Store(path, (message) => reports.push(message));
-    expect(store.schemaVersion()).toBe(8);
+    expect(store.schemaVersion()).toBe(9);
     expect(store.migrationBackupPath).toBeTruthy();
     expect(store.migrationBackupPath).toContain(".pre-v6.");
-    expect(reports[0]).toContain("from schema 6 to 8");
+    expect(reports[0]).toContain("from schema 6 to 9");
     expect(statSync(store.migrationBackupPath!).mode & 0o777).toBe(0o600);
     const backup = new DatabaseSync(store.migrationBackupPath!, { readOnly: true });
     expect(
@@ -102,6 +104,49 @@ describe("automation persistence foundation", () => {
     ).toBe(6);
     expect(backup.prepare("SELECT value FROM fixture").get()).toEqual({ value: "kept" });
     backup.close();
+    store.close();
+  });
+
+  it("scrubs legacy raw workflow source during the v8 to v9 migration", () => {
+    const directory = mkdtempSync(join(tmpdir(), "knot-v8-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE workflow_versions (
+        workflow_id TEXT NOT NULL,
+        version_hash TEXT NOT NULL,
+        source_text TEXT NOT NULL,
+        author_principal_digest TEXT,
+        PRIMARY KEY(workflow_id,version_hash)
+      );
+      CREATE TABLE normalized_events (event_id TEXT PRIMARY KEY);
+      CREATE TRIGGER workflow_versions_no_update BEFORE UPDATE ON workflow_versions
+        BEGIN SELECT RAISE(ABORT,'workflow versions are append-only'); END;
+      INSERT INTO workflow_versions VALUES(
+        'workflow-1','version-1','secret-bearing source','legacy-unverified-editor'
+      );
+      PRAGMA user_version=8;
+    `);
+    legacy.close();
+
+    const store = new Store(path);
+    expect(
+      store.db
+        .prepare(
+          `SELECT source_text,source_digest,author_principal_digest,editor_provenance
+           FROM workflow_versions`,
+        )
+        .get(),
+    ).toEqual({
+      source_text: "",
+      source_digest: workflowSourceDigest("secret-bearing source"),
+      author_principal_digest: null,
+      editor_provenance: null,
+    });
+    expect(() =>
+      store.db.prepare("UPDATE workflow_versions SET source_text='restored'").run(),
+    ).toThrow("append-only");
     store.close();
   });
 
@@ -113,7 +158,7 @@ describe("automation persistence foundation", () => {
     expect(() =>
       store.saveWorkflowVersion({
         ...input,
-        sourceText: "divergent source text",
+        sourceDigest: workflowSourceDigest("divergent source text"),
       }),
     ).toThrow("divergent immutable version");
     expect(store.workflowVersion(input.workflowId, input.versionHash)).toEqual(input);
@@ -123,7 +168,7 @@ describe("automation persistence foundation", () => {
           "SELECT policy_version FROM workflow_approval_subjects WHERE workflow_id=? AND approval_hash=?",
         )
         .get(input.workflowId, input.approvalHash),
-    ).toEqual({ policy_version: 1 });
+    ).toEqual({ policy_version: 2 });
     store.close();
   });
 
@@ -191,6 +236,42 @@ describe("automation persistence foundation", () => {
       sourceModifiedAt: 100,
     });
     store.close();
+  });
+
+  it("resolves same-timestamp workflow edits by source digest", () => {
+    const firstDefinition = workflowDefinitionSchema.parse({
+      apiVersion: "knot.imai.studio/v1alpha1",
+      kind: "KnotWorkflow",
+      metadata: { name: "Same timestamp A" },
+      spec: {
+        triggers: [{ kind: "manual" }],
+        steps: [{ id: "read", kind: "anytype.read", config: { objectId: "a" } }],
+        capabilities: ["anytype.read"],
+      },
+    });
+    const secondDefinition = workflowDefinitionSchema.parse({
+      ...firstDefinition,
+      metadata: { name: "Same timestamp B" },
+      spec: {
+        ...firstDefinition.spec,
+        steps: [{ id: "read", kind: "anytype.read", config: { objectId: "b" } }],
+      },
+    });
+    const versions = [versionRecord(firstDefinition), versionRecord(secondDefinition)];
+    const expected = [...versions].sort((left, right) =>
+      left.sourceDigest.localeCompare(right.sourceDigest),
+    )[1]!;
+    for (const ordered of [versions, [...versions].reverse()]) {
+      const store = new Store(":memory:");
+      for (const version of ordered)
+        store.saveWorkflowVersion({ ...version, sourceModifiedAt: 500, createdAt: 500 });
+      expect(
+        store.db
+          .prepare("SELECT active_version_hash,name FROM workflow_definitions WHERE workflow_id=?")
+          .get(expected.workflowId),
+      ).toEqual({ active_version_hash: expected.versionHash, name: expected.name });
+      store.close();
+    }
   });
 
   it("keeps an append-only approval ledger tied to the current authority hash", () => {
@@ -287,7 +368,7 @@ describe("automation persistence foundation", () => {
       metadata: { name: "External" },
       spec: {
         triggers: [{ kind: "manual" }],
-        steps: [{ id: "send", kind: "http", config: { url: "https://example.com" } }],
+        steps: [{ id: "send", kind: "http", config: { connectionRef: "example" } }],
         capabilities: ["http.request"],
       },
     });
@@ -325,12 +406,17 @@ describe("automation persistence foundation", () => {
       eventId: "event-1",
       dedupeKey: "anytype:space-1:order-1",
       kind: "object.updated",
-      source: "anytype-poll",
+      source: "poll",
       sourceEventId: "order-1",
       spaceId: "space-1",
       objectId: "object-1",
       observedAt: 100,
-      payloadJson: '{"value":1}',
+      sourceRevision: { modifiedAt: 100, fingerprint: `sha256:${"b".repeat(64)}` },
+      editor: {
+        principalDigest: `sha256:${"c".repeat(64)}`,
+        provenance: "anytype-native",
+      },
+      payload: { value: 1 },
       causalDepth: 0,
       recordedAt: 101,
     });
@@ -339,7 +425,7 @@ describe("automation persistence foundation", () => {
       store.recordNormalizedEvent({
         ...first,
         eventId: "event-2",
-        payloadJson: '{"value":2}',
+        payload: { value: 2 },
         recordedAt: 102,
       }),
     ).toThrow("divergent immutable event");
@@ -350,6 +436,26 @@ describe("automation persistence foundation", () => {
         }
       ).count,
     ).toBe(1);
+    store.close();
+  });
+
+  it("rejects unknown event kinds and unbounded event payloads", () => {
+    const store = new Store(":memory:");
+    const base = {
+      eventId: "event-1",
+      dedupeKey: "manual:event-1",
+      kind: "manual.run" as const,
+      source: "manual" as const,
+      spaceId: "space-1",
+      observedAt: 100,
+      payload: {},
+      causalDepth: 0,
+      recordedAt: 101,
+    };
+    expect(() => store.recordNormalizedEvent({ ...base, kind: "unknown" as never })).toThrow();
+    expect(() => store.recordNormalizedEvent({ ...base, payload: "x".repeat(1_000_001) })).toThrow(
+      "too large",
+    );
     store.close();
   });
 });

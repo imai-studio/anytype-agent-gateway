@@ -2,9 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
-import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalWorkflowDefinition, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 8;
+import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalWorkflowDefinition, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
+const SCHEMA_VERSION = 9;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -57,6 +58,8 @@ export class Store {
                 this.migrateToVersion7();
             if (current < 8)
                 this.migrateToVersion8();
+            if (current < 9)
+                this.migrateToVersion9();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -405,6 +408,35 @@ export class Store {
       );
       CREATE INDEX idx_management_actor_capabilities_route
         ON management_actor_capabilities(route_id,expires_at);
+    `);
+    }
+    migrateToVersion9() {
+        const versionColumns = this.db.prepare("PRAGMA table_info(workflow_versions)").all();
+        if (!versionColumns.some((column) => column.name === "source_digest"))
+            this.db.exec("ALTER TABLE workflow_versions ADD COLUMN source_digest TEXT");
+        if (!versionColumns.some((column) => column.name === "editor_provenance"))
+            this.db.exec("ALTER TABLE workflow_versions ADD COLUMN editor_provenance TEXT");
+        const eventColumns = this.db.prepare("PRAGMA table_info(normalized_events)").all();
+        if (!eventColumns.some((column) => column.name === "source_modified_at"))
+            this.db.exec("ALTER TABLE normalized_events ADD COLUMN source_modified_at INTEGER");
+        if (!eventColumns.some((column) => column.name === "source_fingerprint"))
+            this.db.exec("ALTER TABLE normalized_events ADD COLUMN source_fingerprint TEXT");
+        if (!eventColumns.some((column) => column.name === "editor_principal_digest"))
+            this.db.exec("ALTER TABLE normalized_events ADD COLUMN editor_principal_digest TEXT");
+        if (!eventColumns.some((column) => column.name === "editor_provenance"))
+            this.db.exec("ALTER TABLE normalized_events ADD COLUMN editor_provenance TEXT");
+        this.db.exec("DROP TRIGGER IF EXISTS workflow_versions_no_update");
+        const rows = this.db
+            .prepare("SELECT rowid,source_text,source_digest FROM workflow_versions")
+            .all();
+        const update = this.db.prepare(`UPDATE workflow_versions
+       SET source_text='',source_digest=?,author_principal_digest=NULL,editor_provenance=NULL
+       WHERE rowid=?`);
+        for (const row of rows)
+            update.run(row.source_digest ?? workflowSourceDigest(row.source_text), row.rowid);
+        this.db.exec(`
+      CREATE TRIGGER workflow_versions_no_update BEFORE UPDATE ON workflow_versions
+        BEGIN SELECT RAISE(ABORT,'workflow versions are append-only'); END;
     `);
     }
     isInitialized(routeId) {
@@ -1040,8 +1072,13 @@ export class Store {
                 requiredCapabilitiesJson ||
             policy.missingCapabilities.length > 0)
             throw new Error("Workflow version record does not match its canonical definition and policy");
-        if (input.authorPrincipalDigest !== undefined && input.authorPrincipalDigest.length === 0)
-            throw new Error("Workflow author principal digest must not be empty");
+        if (!/^sha256:[a-f0-9]{64}$/.test(input.sourceDigest))
+            throw new Error("Workflow source digest must be a domain-separated SHA-256 digest");
+        if ((input.editorPrincipalDigest === undefined) !== (input.editorProvenance === undefined))
+            throw new Error("Workflow editor digest and provenance must be recorded together");
+        if (input.editorPrincipalDigest !== undefined &&
+            !/^sha256:[a-f0-9]{64}$/.test(input.editorPrincipalDigest))
+            throw new Error("Workflow editor principal digest must be a SHA-256 digest");
         this.db.exec("BEGIN IMMEDIATE");
         try {
             const existingSource = this.db
@@ -1080,10 +1117,10 @@ export class Store {
             this.db
                 .prepare(`INSERT OR IGNORE INTO workflow_versions(
             workflow_id,space_id,object_id,name,version_hash,approval_hash,schema_version,
-            canonical_definition_json,source_text,risk_tier,required_capabilities_json,source_modified_at,
-            author_principal_digest,created_at
-          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-                .run(input.workflowId, input.spaceId, input.objectId, input.name, input.versionHash, input.approvalHash, input.schemaVersion, canonicalDefinitionJson, input.sourceText, input.riskTier, requiredCapabilitiesJson, input.sourceModifiedAt, input.authorPrincipalDigest ?? null, input.createdAt);
+            canonical_definition_json,source_text,source_digest,risk_tier,required_capabilities_json,
+            source_modified_at,author_principal_digest,editor_provenance,created_at
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+                .run(input.workflowId, input.spaceId, input.objectId, input.name, input.versionHash, input.approvalHash, input.schemaVersion, canonicalDefinitionJson, "", input.sourceDigest, input.riskTier, requiredCapabilitiesJson, input.sourceModifiedAt, input.editorPrincipalDigest ?? null, input.editorProvenance ?? null, input.createdAt);
             const stored = this.workflowVersion(input.workflowId, input.versionHash);
             if (!stored ||
                 stored.spaceId !== input.spaceId ||
@@ -1093,18 +1130,22 @@ export class Store {
                 stored.schemaVersion !== input.schemaVersion ||
                 stored.canonicalDefinitionJson !== canonicalDefinitionJson ||
                 stored.canonicalApprovalJson !== canonicalApprovalJson ||
-                stored.sourceText !== input.sourceText ||
+                stored.sourceDigest !== input.sourceDigest ||
                 stored.riskTier !== input.riskTier ||
                 JSON.stringify(stored.requiredCapabilities) !== requiredCapabilitiesJson ||
                 stored.sourceModifiedAt !== input.sourceModifiedAt ||
-                stored.authorPrincipalDigest !== input.authorPrincipalDigest)
+                stored.editorPrincipalDigest !== input.editorPrincipalDigest ||
+                stored.editorProvenance !== input.editorProvenance)
                 throw new Error("Workflow version hash collision or divergent immutable version");
             this.db
-                .prepare(`UPDATE workflow_definitions SET active_version_hash=?,updated_at=?
-           WHERE workflow_id=? AND (
-             active_version_hash=? OR (active_version_hash IS NULL AND source_modified_at=?)
+                .prepare(`UPDATE workflow_definitions SET active_version_hash=?,name=?,updated_at=?
+           WHERE workflow_id=? AND source_modified_at=? AND (
+             active_version_hash IS NULL OR ? > COALESCE(
+               (SELECT source_digest FROM workflow_versions
+                WHERE workflow_id=? AND version_hash=active_version_hash), ''
+             )
            )`)
-                .run(input.versionHash, input.createdAt, input.workflowId, input.versionHash, input.sourceModifiedAt);
+                .run(input.versionHash, input.name, input.createdAt, input.workflowId, input.sourceModifiedAt, input.sourceDigest, input.workflowId);
             this.db.exec("COMMIT");
             return stored;
         }
@@ -1178,21 +1219,25 @@ export class Store {
         return decision;
     }
     recordNormalizedEvent(input) {
-        assertStoredTimestamp(input.observedAt, "Normalized event observation time");
-        assertStoredTimestamp(input.recordedAt, "Normalized event recording time");
+        const event = normalizedEventSchema.parse(input);
+        assertStoredTimestamp(event.observedAt, "Normalized event observation time");
+        assertStoredTimestamp(event.recordedAt, "Normalized event recording time");
+        const payloadJson = canonicalJson(event.payload);
+        const diffJson = event.diff ? canonicalStructured(event.diff) : undefined;
         this.db
             .prepare(`INSERT OR IGNORE INTO normalized_events(
           event_id,dedupe_key,kind,source,source_event_id,space_id,object_id,observed_at,
-          payload_json,diff_json,causation_run_id,causal_depth,origin_effect_key,recorded_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(input.eventId, input.dedupeKey, input.kind, input.source, input.sourceEventId ?? null, input.spaceId, input.objectId ?? null, input.observedAt, input.payloadJson, input.diffJson ?? null, input.causationRunId ?? null, input.causalDepth, input.originEffectKey ?? null, input.recordedAt);
+          payload_json,diff_json,causation_run_id,causal_depth,origin_effect_key,recorded_at,
+          source_modified_at,source_fingerprint,editor_principal_digest,editor_provenance
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(event.eventId, event.dedupeKey, event.kind, event.source, event.sourceEventId ?? null, event.spaceId, event.objectId ?? null, event.observedAt, payloadJson, diffJson ?? null, event.causationRunId ?? null, event.causalDepth, event.originEffectKey ?? null, event.recordedAt, event.sourceRevision?.modifiedAt ?? null, event.sourceRevision?.fingerprint ?? null, event.editor?.principalDigest ?? null, event.editor?.provenance ?? null);
         const row = this.db
             .prepare("SELECT * FROM normalized_events WHERE dedupe_key=?")
-            .get(input.dedupeKey);
+            .get(event.dedupeKey);
         if (!row)
             throw new Error("Normalized event ID collision or divergent dedupe key");
         const stored = mapNormalizedEvent(row);
-        if (!sameNormalizedEvent(stored, input))
+        if (!sameNormalizedEvent(stored, event))
             throw new Error("Normalized event dedupe key collision or divergent immutable event");
         return stored;
     }
@@ -1335,13 +1380,14 @@ function mapWorkflowVersion(row) {
         schemaVersion: Number(row.schema_version),
         canonicalDefinitionJson: row.canonical_definition_json,
         canonicalApprovalJson: row.canonical_approval_json,
-        sourceText: row.source_text,
+        sourceDigest: row.source_digest,
         riskTier: row.risk_tier,
         requiredCapabilities: parseJson(row.required_capabilities_json),
         sourceModifiedAt: Number(row.source_modified_at),
         ...(row.author_principal_digest === null
             ? {}
-            : { authorPrincipalDigest: row.author_principal_digest }),
+            : { editorPrincipalDigest: row.author_principal_digest }),
+        ...(row.editor_provenance === null ? {} : { editorProvenance: row.editor_provenance }),
         createdAt: Number(row.created_at),
     };
 }
@@ -1370,11 +1416,29 @@ function mapNormalizedEvent(row) {
         kind: row.kind,
         source: row.source,
         ...(row.source_event_id === null ? {} : { sourceEventId: row.source_event_id }),
+        ...(row.source_modified_at === null || row.source_fingerprint === null
+            ? {}
+            : {
+                sourceRevision: {
+                    modifiedAt: Number(row.source_modified_at),
+                    fingerprint: row.source_fingerprint,
+                },
+            }),
         spaceId: row.space_id,
         ...(row.object_id === null ? {} : { objectId: row.object_id }),
+        ...(row.editor_principal_digest === null || row.editor_provenance === null
+            ? {}
+            : {
+                editor: {
+                    principalDigest: row.editor_principal_digest,
+                    provenance: row.editor_provenance,
+                },
+            }),
         observedAt: Number(row.observed_at),
-        payloadJson: row.payload_json,
-        ...(row.diff_json === null ? {} : { diffJson: row.diff_json }),
+        payload: parseJson(row.payload_json),
+        ...(row.diff_json === null
+            ? {}
+            : { diff: parseJson(row.diff_json) }),
         ...(row.causation_run_id === null ? {} : { causationRunId: row.causation_run_id }),
         causalDepth: Number(row.causal_depth),
         ...(row.origin_effect_key === null ? {} : { originEffectKey: row.origin_effect_key }),
@@ -1387,15 +1451,21 @@ function sameNormalizedEvent(left, right) {
         left.kind === right.kind &&
         left.source === right.source &&
         left.sourceEventId === right.sourceEventId &&
+        canonicalStructured(left.sourceRevision ?? null) ===
+            canonicalStructured(right.sourceRevision ?? null) &&
         left.spaceId === right.spaceId &&
         left.objectId === right.objectId &&
+        canonicalStructured(left.editor ?? null) === canonicalStructured(right.editor ?? null) &&
         left.observedAt === right.observedAt &&
-        left.payloadJson === right.payloadJson &&
-        left.diffJson === right.diffJson &&
+        canonicalJson(left.payload) === canonicalJson(right.payload) &&
+        canonicalStructured(left.diff ?? null) === canonicalStructured(right.diff ?? null) &&
         left.causationRunId === right.causationRunId &&
         left.causalDepth === right.causalDepth &&
         left.originEffectKey === right.originEffectKey);
 }
 function parseJson(value) {
     return JSON.parse(value);
+}
+function canonicalStructured(value) {
+    return canonicalJson(JSON.parse(JSON.stringify(value)));
 }

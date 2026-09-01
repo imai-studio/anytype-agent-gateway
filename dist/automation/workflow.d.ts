@@ -1,4 +1,5 @@
 import { z } from "zod";
+export declare const jsonValueSchema: z.ZodType<JsonValue>;
 export type JsonValue = string | number | boolean | null | JsonValue[] | {
     [key: string]: JsonValue;
 };
@@ -15,7 +16,7 @@ export declare const workflowCapabilitySchema: z.ZodEnum<{
     notify: "notify";
 }>;
 export type WorkflowCapability = z.infer<typeof workflowCapabilitySchema>;
-export declare const WORKFLOW_POLICY_VERSION = 1;
+export declare const WORKFLOW_POLICY_VERSION = 2;
 export declare const workflowStepKindSchema: z.ZodEnum<{
     transform: "transform";
     "anytype.materialize": "anytype.materialize";
@@ -116,7 +117,6 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
                     create: "create";
                     update: "update";
                     archive: "archive";
-                    delete: "delete";
                 }>>;
                 bulk: z.ZodDefault<z.ZodBoolean>;
                 values: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodType<JsonValue, unknown, z.core.$ZodTypeInternals<JsonValue, unknown>>>>;
@@ -182,7 +182,7 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
             kind: z.ZodLiteral<"http">;
             dependsOn: z.ZodDefault<z.ZodArray<z.ZodString>>;
             config: z.ZodOptional<z.ZodObject<{
-                url: z.ZodOptional<z.ZodString>;
+                path: z.ZodOptional<z.ZodString>;
                 method: z.ZodDefault<z.ZodEnum<{
                     GET: "GET";
                     POST: "POST";
@@ -190,7 +190,7 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
                     PATCH: "PATCH";
                     DELETE: "DELETE";
                 }>>;
-                connectionRef: z.ZodOptional<z.ZodString>;
+                connectionRef: z.ZodString;
                 secretRefs: z.ZodDefault<z.ZodArray<z.ZodString>>;
             }, z.core.$strict>>;
             retry: z.ZodOptional<z.ZodObject<{
@@ -221,7 +221,7 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
             config: z.ZodOptional<z.ZodObject<{
                 destination: z.ZodOptional<z.ZodString>;
                 message: z.ZodOptional<z.ZodString>;
-                connectionRef: z.ZodOptional<z.ZodString>;
+                connectionRef: z.ZodString;
                 secretRefs: z.ZodDefault<z.ZodArray<z.ZodString>>;
             }, z.core.$strict>>;
             retry: z.ZodOptional<z.ZodObject<{
@@ -274,9 +274,11 @@ export declare const workflowDefinitionSchema: z.ZodPipe<z.ZodTransform<unknown,
         concurrency: z.ZodDefault<z.ZodNumber>;
     }, z.core.$strict>;
 }, z.core.$strict>>;
+export declare function unsafeObjectKey(value: unknown, seen?: WeakSet<object>): string | undefined;
 export type WorkflowDefinition = z.infer<typeof workflowDefinitionSchema>;
 export declare function canonicalJson(value: JsonValue): string;
 export declare function workflowApprovalMaterial(workflow: WorkflowDefinition): JsonValue;
 export declare function workflowApprovalHash(workflow: WorkflowDefinition): string;
 export declare function canonicalWorkflowDefinition(workflow: WorkflowDefinition): string;
 export declare function workflowVersionHash(workflow: WorkflowDefinition): string;
+export declare function workflowSourceDigest(source: string): string;

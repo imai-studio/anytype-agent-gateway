@@ -143,7 +143,12 @@ occurred.
 
 Every event source uses one versioned schema. Event kinds and source names come from closed enums.
 The parser rejects unknown fields, unsafe object keys, oversized payloads, invalid timestamps, and
-causal depth above the local limit.
+causal depth above the local limit. It records verified editor provenance and a native source
+revision when the source supplies them. Display metadata is not a fallback identity.
+
+If two workflow observations have the same Anytype modification timestamp, the observer compares
+their domain-separated source digests. The lexicographically greater digest becomes active. This
+tie-breaker gives every observation order the same result without treating a timestamp as unique.
 
 The observer computes two identities:
 

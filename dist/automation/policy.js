@@ -20,12 +20,12 @@ const t2Capabilities = new Set([
     "anytype.bulk",
     "anytype.cross-space",
     "http.request",
+    "notify",
 ]);
 const t1Capabilities = new Set([
     "agent.invoke",
     "anytype.materialize",
     "anytype.write",
-    "notify",
 ]);
 export const workflowAuthorityFields = {
     allowedAuthorIds: z.array(z.string().min(1)).default([]),
@@ -38,6 +38,7 @@ export const workflowAuthorityFields = {
     limits: z
         .object({
         maximumConcurrentRuns: z.number().int().min(1).max(100).default(4),
+        maximumRunsPerHour: z.number().int().min(1).max(10_000).default(60),
         maximumStepsPerRun: z.number().int().min(1).max(1_000).default(100),
         maximumEffectsPerRun: z.number().int().min(0).max(1_000).default(20),
         maximumRunSeconds: z.number().int().min(1).max(604_800).default(3_600),
@@ -46,6 +47,7 @@ export const workflowAuthorityFields = {
         .strict()
         .default({
         maximumConcurrentRuns: 4,
+        maximumRunsPerHour: 60,
         maximumStepsPerRun: 100,
         maximumEffectsPerRun: 20,
         maximumRunSeconds: 3_600,
@@ -88,7 +90,7 @@ function deriveConfiguredRiskCapabilities(workflow, context, required) {
             configuredSpaces.add(config.spaceId);
         if ("bulk" in config && config.bulk)
             required.add("anytype.bulk");
-        if ("operation" in config && (config.operation === "archive" || config.operation === "delete"))
+        if ("operation" in config && config.operation === "archive")
             required.add("anytype.archive");
     }
     if (configuredSpaces.size > 1 ||
@@ -120,8 +122,10 @@ export function evaluateWorkflowAuthority(workflow, authority, context = {}) {
     for (const spaceId of spaces)
         if (!authority.allowedSpaceIds.includes(spaceId))
             violations.push(`Space is not locally authorized: ${spaceId}`);
-    if (context.authorId && !authority.allowedAuthorIds.includes(context.authorId))
-        violations.push(`Author is not locally authorized: ${context.authorId}`);
+    if (!context.editor)
+        violations.push("Workflow editor identity is not verified");
+    else if (!authority.allowedAuthorIds.includes(context.editor.principalId))
+        violations.push(`Editor is not locally authorized: ${context.editor.principalId}`);
     for (const step of workflow.spec.steps) {
         const config = step.config ?? {};
         if (step.kind === "agent" && "project" in config && config.project)
@@ -137,11 +141,27 @@ export function evaluateWorkflowAuthority(workflow, authority, context = {}) {
             if (!authority.allowedSecretNames.includes(secretRef))
                 violations.push(`Secret is not locally authorized: ${secretRef}`);
     }
+    const definitionLimits = {
+        maximumConcurrentRuns: workflow.spec.concurrency,
+        maximumRunsPerHour: workflow.spec.budget.maximumRunsPerHour,
+        maximumStepsPerRun: workflow.spec.budget.maximumStepsPerRun,
+        maximumEffectsPerRun: workflow.spec.budget.maximumEffectsPerRun,
+        maximumRunSeconds: workflow.spec.budget.maximumRunSeconds,
+        maximumCausalDepth: workflow.spec.behavior.maximumCausalDepth,
+    };
+    for (const key of Object.keys(definitionLimits))
+        if (definitionLimits[key] > authority.limits[key])
+            violations.push(`Workflow ${key} ${definitionLimits[key]} exceeds local maximum ${authority.limits[key]}`);
+    const effectiveLimits = Object.fromEntries(Object.keys(definitionLimits).map((key) => [
+        key,
+        Math.min(definitionLimits[key], authority.limits[key]),
+    ]));
     return {
         ...policy,
         allowed: violations.length === 0,
         violations,
         authorityHash: workflowAuthorityHash(authority),
+        effectiveLimits,
     };
 }
 export function riskTierAllows(maximum, actual) {
