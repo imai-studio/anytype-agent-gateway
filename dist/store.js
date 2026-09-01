@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalWorkflowDefinition, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -60,6 +60,8 @@ export class Store {
                 this.migrateToVersion8();
             if (current < 9)
                 this.migrateToVersion9();
+            if (current < 10)
+                this.migrateToVersion10();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -437,6 +439,31 @@ export class Store {
         this.db.exec(`
       CREATE TRIGGER workflow_versions_no_update BEFORE UPDATE ON workflow_versions
         BEGIN SELECT RAISE(ABORT,'workflow versions are append-only'); END;
+    `);
+    }
+    migrateToVersion10() {
+        const definitionColumns = this.db
+            .prepare("PRAGMA table_info(workflow_definitions)")
+            .all();
+        if (definitionColumns.length &&
+            !definitionColumns.some((column) => column.name === "observed_source_digest"))
+            this.db.exec("ALTER TABLE workflow_definitions ADD COLUMN observed_source_digest TEXT NOT NULL DEFAULT ''");
+        this.db.exec(`
+      CREATE TABLE workflow_observer_spaces (
+        space_id TEXT PRIMARY KEY,
+        page_offset INTEGER NOT NULL DEFAULT 0 CHECK(page_offset >= 0),
+        reconcile_started_at INTEGER NOT NULL CHECK(reconcile_started_at >= 0),
+        watermark_modified_at INTEGER NOT NULL DEFAULT 0 CHECK(watermark_modified_at >= 0),
+        watermark_fingerprint TEXT NOT NULL DEFAULT '',
+        poll_interval_ms INTEGER NOT NULL CHECK(poll_interval_ms > 0),
+        consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK(consecutive_failures >= 0),
+        next_scan_at INTEGER NOT NULL CHECK(next_scan_at >= 0),
+        last_scan_at INTEGER,
+        last_success_at INTEGER,
+        last_error TEXT
+      );
+      CREATE INDEX idx_workflow_observer_due
+        ON workflow_observer_spaces(next_scan_at,space_id);
     `);
     }
     isInitialized(routeId) {
@@ -1052,6 +1079,60 @@ export class Store {
     `)
             .run(bridgeId, streamKey, cursor, now);
     }
+    workflowDefinition(spaceId, objectId) {
+        const row = this.db
+            .prepare("SELECT * FROM workflow_definitions WHERE space_id=? AND object_id=?")
+            .get(spaceId, objectId);
+        return row ? mapWorkflowDefinition(row) : undefined;
+    }
+    recordWorkflowDefinitionStatus(input) {
+        assertStoredTimestamp(input.sourceModifiedAt, "Workflow source modification time");
+        assertStoredTimestamp(input.seenAt, "Workflow observation time");
+        const validationErrorsJson = JSON.stringify(input.validationErrors ?? []);
+        this.db
+            .prepare(`INSERT INTO workflow_definitions(
+          workflow_id,space_id,object_id,name,state,active_version_hash,source_modified_at,
+          last_seen_at,validation_errors_json,observed_source_digest,created_at,updated_at
+        ) VALUES(?,?,?,?,?,NULL,?,?,?,?,?,?)
+        ON CONFLICT(workflow_id) DO UPDATE SET
+          space_id=excluded.space_id,object_id=excluded.object_id,name=excluded.name,
+          state=excluded.state,source_modified_at=MAX(workflow_definitions.source_modified_at,
+          excluded.source_modified_at),last_seen_at=excluded.last_seen_at,
+          validation_errors_json=excluded.validation_errors_json,
+          observed_source_digest=excluded.observed_source_digest,updated_at=excluded.updated_at`)
+            .run(input.workflowId, input.spaceId, input.objectId, input.name, input.state, input.sourceModifiedAt, input.seenAt, validationErrorsJson, input.sourceDigest, input.seenAt, input.seenAt);
+        return this.workflowDefinition(input.spaceId, input.objectId);
+    }
+    workflowDefinitionsMissingSince(spaceId, reconcileStartedAt) {
+        const rows = this.db
+            .prepare(`SELECT * FROM workflow_definitions
+         WHERE space_id=? AND state!='archived' AND last_seen_at<?`)
+            .all(spaceId, reconcileStartedAt);
+        return rows.map(mapWorkflowDefinition);
+    }
+    workflowObserverState(spaceId) {
+        const row = this.db
+            .prepare("SELECT * FROM workflow_observer_spaces WHERE space_id=?")
+            .get(spaceId);
+        return row ? mapWorkflowObserverState(row) : undefined;
+    }
+    saveWorkflowObserverState(input) {
+        this.db
+            .prepare(`INSERT INTO workflow_observer_spaces(
+          space_id,page_offset,reconcile_started_at,watermark_modified_at,watermark_fingerprint,
+          poll_interval_ms,consecutive_failures,next_scan_at,last_scan_at,last_success_at,last_error
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(space_id) DO UPDATE SET
+          page_offset=excluded.page_offset,reconcile_started_at=excluded.reconcile_started_at,
+          watermark_modified_at=excluded.watermark_modified_at,
+          watermark_fingerprint=excluded.watermark_fingerprint,
+          poll_interval_ms=excluded.poll_interval_ms,
+          consecutive_failures=excluded.consecutive_failures,next_scan_at=excluded.next_scan_at,
+          last_scan_at=excluded.last_scan_at,last_success_at=excluded.last_success_at,
+          last_error=excluded.last_error`)
+            .run(input.spaceId, input.pageOffset, input.reconcileStartedAt, input.watermarkModifiedAt, input.watermarkFingerprint, input.pollIntervalMilliseconds, input.consecutiveFailures, input.nextScanAt, input.lastScanAt ?? null, input.lastSuccessAt ?? null, input.lastError ?? null);
+        return this.workflowObserverState(input.spaceId);
+    }
     saveWorkflowVersion(input) {
         assertStoredTimestamp(input.sourceModifiedAt, "Workflow source modification time");
         assertStoredTimestamp(input.createdAt, "Workflow creation time");
@@ -1241,6 +1322,22 @@ export class Store {
             throw new Error("Normalized event dedupe key collision or divergent immutable event");
         return stored;
     }
+    hasNormalizedEvent(dedupeKey) {
+        return Boolean(this.db.prepare("SELECT 1 FROM normalized_events WHERE dedupe_key=?").get(dedupeKey));
+    }
+    hasNormalizedObjectEvent(spaceId, objectId) {
+        return Boolean(this.db
+            .prepare(`SELECT 1 FROM normalized_events
+           WHERE space_id=? AND object_id=? AND kind IN ('object.created','object.updated') LIMIT 1`)
+            .get(spaceId, objectId));
+    }
+    hasNormalizedDefinitionRevision(spaceId, objectId, modifiedAt, fingerprint) {
+        return Boolean(this.db
+            .prepare(`SELECT 1 FROM normalized_events
+           WHERE space_id=? AND object_id=? AND source_modified_at=? AND source_fingerprint=?
+             AND kind IN ('object.created','object.updated') LIMIT 1`)
+            .get(spaceId, objectId, modifiedAt, fingerprint));
+    }
     workflowApprovalBySequence(sequence) {
         const row = this.db
             .prepare("SELECT * FROM workflow_approval_decisions WHERE decision_sequence=?")
@@ -1389,6 +1486,35 @@ function mapWorkflowVersion(row) {
             : { editorPrincipalDigest: row.author_principal_digest }),
         ...(row.editor_provenance === null ? {} : { editorProvenance: row.editor_provenance }),
         createdAt: Number(row.created_at),
+    };
+}
+function mapWorkflowDefinition(row) {
+    return {
+        workflowId: row.workflow_id,
+        spaceId: row.space_id,
+        objectId: row.object_id,
+        name: row.name,
+        state: row.state,
+        ...(row.active_version_hash ? { activeVersionHash: row.active_version_hash } : {}),
+        sourceModifiedAt: Number(row.source_modified_at),
+        sourceDigest: row.observed_source_digest,
+        lastSeenAt: Number(row.last_seen_at),
+        validationErrors: parseJson(row.validation_errors_json),
+    };
+}
+function mapWorkflowObserverState(row) {
+    return {
+        spaceId: row.space_id,
+        pageOffset: Number(row.page_offset),
+        reconcileStartedAt: Number(row.reconcile_started_at),
+        watermarkModifiedAt: Number(row.watermark_modified_at),
+        watermarkFingerprint: row.watermark_fingerprint,
+        pollIntervalMilliseconds: Number(row.poll_interval_ms),
+        consecutiveFailures: Number(row.consecutive_failures),
+        nextScanAt: Number(row.next_scan_at),
+        ...(row.last_scan_at === null ? {} : { lastScanAt: Number(row.last_scan_at) }),
+        ...(row.last_success_at === null ? {} : { lastSuccessAt: Number(row.last_success_at) }),
+        ...(row.last_error === null ? {} : { lastError: row.last_error }),
     };
 }
 function mapWorkflowApprovalDecision(row) {

@@ -5,6 +5,7 @@ import type {
   AnytypePort,
   AnytypeSpace,
   AnytypeTag,
+  AnytypeWorkflowObject,
   ChatAttachment,
   ChatMessage,
   RuntimeDriver,
@@ -22,6 +23,8 @@ export class FakeAnytype implements AnytypePort {
   reactions: Array<{ id: string; emoji: string; present: boolean }> = [];
   reactionParticipants: Array<string | undefined> = [];
   objects = new Map<string, Record<string, unknown>>();
+  workflowObjects: AnytypeWorkflowObject[] = [];
+  workflowSearchFailures = 0;
   properties: Record<string, unknown>[] = [];
   propertyTags: AnytypeTag[] = [];
   private nextId = 1;
@@ -155,6 +158,20 @@ export class FakeAnytype implements AnytypePort {
   }
   async searchObjects(): Promise<Array<{ id: string; name?: string; type?: string }>> {
     return [];
+  }
+  async searchWorkflowObjects(
+    _spaceId: string,
+    typeKeys: string[],
+    offset: number,
+    limit: number,
+  ): Promise<AnytypeWorkflowObject[]> {
+    if (this.workflowSearchFailures > 0) {
+      this.workflowSearchFailures -= 1;
+      throw new Error("workflow search unavailable");
+    }
+    return this.workflowObjects
+      .filter((object) => typeKeys.includes(object.typeKey))
+      .slice(offset, offset + limit);
   }
 }
 

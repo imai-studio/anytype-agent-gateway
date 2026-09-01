@@ -4,6 +4,35 @@ export type { NormalizedEventRecord } from "./event.js";
 
 export type WorkflowEditorProvenance = "anytype-native" | "authenticated-chat" | "operator-cli";
 
+export type WorkflowDefinitionState = "discovered" | "valid" | "invalid" | "archived";
+
+export interface WorkflowDefinitionObservation {
+  workflowId: string;
+  spaceId: string;
+  objectId: string;
+  name: string;
+  state: WorkflowDefinitionState;
+  activeVersionHash?: string;
+  sourceModifiedAt: number;
+  sourceDigest: string;
+  lastSeenAt: number;
+  validationErrors: string[];
+}
+
+export interface WorkflowObserverState {
+  spaceId: string;
+  pageOffset: number;
+  reconcileStartedAt: number;
+  watermarkModifiedAt: number;
+  watermarkFingerprint: string;
+  pollIntervalMilliseconds: number;
+  consecutiveFailures: number;
+  nextScanAt: number;
+  lastScanAt?: number;
+  lastSuccessAt?: number;
+  lastError?: string;
+}
+
 export interface WorkflowVersionRecord {
   workflowId: string;
   spaceId: string;

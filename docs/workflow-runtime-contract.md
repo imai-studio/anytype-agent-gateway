@@ -1,7 +1,7 @@
 # Workflow runtime foundation
 
-This document freezes the Phase 2 foundation contract. It does not enable workflow observation or
-execution. Those paths remain unavailable unless their local feature gates are enabled in order.
+This document freezes the Phase 2 foundation contract. Knot now has a read-only observer for
+workflow definition objects. It does not observe workflow target data or execute workflow steps.
 
 The companion [process topology](workflow-runtime-topology.md) defines ownership, leases, crash
 recovery, timers, cancellation, effects, shutdown, retention, and restore behavior for the code that
@@ -27,10 +27,16 @@ exceeds the matching local cap. The effective value is the lower of the two limi
 
 ## Feature gates
 
-`automation.enabled` is false by default. Observation, execution, authoring, and data products have
-separate gates. Execution requires observation; authoring and data products require execution. The
-first foundation release provides contracts and durable storage only, so enabling a flag cannot
-silently route work through the existing chat gateway.
+`automation.enabled` is false by default. Set `automation.observation` to start the read-only
+definition observer. The configuration must also name allowed spaces, allowed native editor IDs,
+allowed capabilities, and one or more workflow object type keys. `automation.execution` is rejected
+because the runner is not available. Authoring and data-product gates remain unavailable with it.
+
+The observer polls every allowed space through the public Anytype API. It stores one durable page
+cursor, reconciliation boundary, revision watermark, failure count, and next-scan time per space.
+`minimumIntervalSeconds`, `maximumIntervalSeconds`, and `pageSize` bound that work. A quiet space
+backs off to the maximum. A change, incomplete page, or recovery returns to the minimum. Run
+`knot doctor` to verify that the configured type keys are searchable before starting the service.
 
 ## Definition and approval integrity
 
@@ -84,8 +90,21 @@ authorized.
 
 ## Observation correctness boundary
 
-Polling plus reconciliation is the correctness mechanism. Heart or streaming events may lower
-latency but never replace reconciliation. First activation does not backfill unless requested.
+Polling plus reconciliation is the correctness mechanism. The shipped observer applies this rule
+to workflow definition objects. Heart and streaming hints are not connected to this loop. The
+observer pages fairly across configured spaces and performs a complete pass before it marks a
+missing definition archived.
+
+Each definition must contain one fenced YAML block. Knot reads the native modification timestamp
+and explicit native editor participant ID from the full object response. A display name, creator
+fallback, or editable property does not authorize the definition. Missing or unauthorized editor
+identity leaves the definition invalid. Knot stores a source digest, bounded validation errors, and
+an immutable normalized definition event. It stores the canonical parsed version only after schema
+and local authority checks pass. It never stores the raw source body in workflow tables or event
+payloads.
+
+The remaining object, collection, schedule, and manual observation work will use the same event
+contract. First activation does not backfill unless requested.
 Normalized event kinds and sources use closed enums. Payloads and property diffs have bounded,
 strict schemas. Native editor provenance and the source revision fingerprint remain attached to the
 immutable event. Event IDs and dedupe keys provide immutable input facts; later runner delivery is
@@ -114,3 +133,8 @@ The schema 9 migration replaces legacy `workflow_versions.source_text` values wi
 stores their digests. The pre-migration backup still contains the old text by design. Protect that
 backup like the live database and remove it only after the operator has verified the migration and
 accepted the loss of that rollback point.
+
+Schema 10 adds definition source digests and durable per-space observer state. A restart resumes the
+saved page and reconciliation boundary. Repeated pages and repeated revisions reuse the same event
+dedupe key. An interrupted observation repairs a missing event on the next pass before it advances
+past that source revision.

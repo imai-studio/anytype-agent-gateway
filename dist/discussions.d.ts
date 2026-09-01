@@ -1,5 +1,5 @@
 import type { AgentConfig } from "./config.js";
-import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, AnytypeTag, ChatAttachment, ChatMessage, TextMark } from "./types.js";
+import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, AnytypeTag, AnytypeWorkflowObject, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 export type DiscussionResolution = {
     objectId: string;
     discussionId?: string;
@@ -89,4 +89,5 @@ export declare class DiscussionAnytypePort implements AnytypePort {
         name?: string;
         type?: string;
     }>>;
+    searchWorkflowObjects(spaceId: string, typeKeys: string[], offset: number, limit: number): Promise<AnytypeWorkflowObject[]>;
 }

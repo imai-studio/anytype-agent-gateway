@@ -391,6 +391,12 @@ export declare const configSchema: z.ZodObject<{
         execution: z.ZodDefault<z.ZodBoolean>;
         authoring: z.ZodDefault<z.ZodBoolean>;
         dataProducts: z.ZodDefault<z.ZodBoolean>;
+        definitionTypeKeys: z.ZodDefault<z.ZodArray<z.ZodString>>;
+        polling: z.ZodDefault<z.ZodObject<{
+            minimumIntervalSeconds: z.ZodDefault<z.ZodNumber>;
+            maximumIntervalSeconds: z.ZodDefault<z.ZodNumber>;
+            pageSize: z.ZodDefault<z.ZodNumber>;
+        }, z.core.$strict>>;
     }, z.core.$strict>>;
     state: z.ZodDefault<z.ZodObject<{
         path: z.ZodDefault<z.ZodString>;

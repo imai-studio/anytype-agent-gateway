@@ -178,4 +178,7 @@ export class DiscussionAnytypePort {
     async searchObjects(spaceId, offset, limit) {
         return this.base.searchObjects(spaceId, offset, limit);
     }
+    async searchWorkflowObjects(spaceId, typeKeys, offset, limit) {
+        return this.base.searchWorkflowObjects(spaceId, typeKeys, offset, limit);
+    }
 }

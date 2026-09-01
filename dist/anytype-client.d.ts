@@ -1,5 +1,5 @@
 import type { AgentConfig } from "./config.js";
-import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, AnytypeTag, ChatAttachment, ChatMessage, TextMark } from "./types.js";
+import type { AnytypeEvent, AnytypeMember, AnytypePort, AnytypeSpace, AnytypeTag, AnytypeWorkflowObject, ChatAttachment, ChatMessage, TextMark } from "./types.js";
 type JsonRecord = Record<string, any>;
 export declare class AnytypeClient implements AnytypePort {
     private readonly base;
@@ -75,6 +75,7 @@ export declare class AnytypeClient implements AnytypePort {
         name?: string;
         type?: string;
     }>>;
+    searchWorkflowObjects(spaceId: string, typeKeys: string[], offset: number, limit: number): Promise<AnytypeWorkflowObject[]>;
     searchSpace(spaceId: string, input: {
         query?: string;
         types?: string[];

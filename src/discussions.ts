@@ -6,6 +6,7 @@ import type {
   AnytypePort,
   AnytypeSpace,
   AnytypeTag,
+  AnytypeWorkflowObject,
   ChatAttachment,
   ChatMessage,
   TextMark,
@@ -274,5 +275,13 @@ export class DiscussionAnytypePort implements AnytypePort {
     limit: number,
   ): Promise<Array<{ id: string; name?: string; type?: string }>> {
     return this.base.searchObjects(spaceId, offset, limit);
+  }
+  async searchWorkflowObjects(
+    spaceId: string,
+    typeKeys: string[],
+    offset: number,
+    limit: number,
+  ): Promise<AnytypeWorkflowObject[]> {
+    return this.base.searchWorkflowObjects(spaceId, typeKeys, offset, limit);
   }
 }

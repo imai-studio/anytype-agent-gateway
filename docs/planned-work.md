@@ -6,13 +6,16 @@ promise.
 
 ## Phase 2 workflow runtime
 
-The repository contains the Phase 2 contracts and additive SQLite foundation. Workflow execution
-is still disabled. The next work should follow this order.
+The repository contains the Phase 2 contracts, additive SQLite foundation, and read-only workflow
+definition observer. Workflow execution is not available. The remaining work should follow this
+order.
 
 The foundation rejects hard-delete and raw external URL steps, requires named local connections,
 checks verified editor identity, intersects definition budgets with local caps, and stores source
 digests instead of raw definition text. Normalized events use closed enums and bounded payloads.
-These checks prepare the observer and runner; they do not implement either loop.
+The definition observer discovers configured workflow objects, checks native editor identity and
+local authority, stores immutable versions, and emits deduplicated definition events. It does not
+observe workflow target objects or create runs and effects.
 
 ### 1. Infrastructure specification
 
@@ -21,15 +24,16 @@ The proposed process and recovery contract is in
 fencing, crash recovery, timers, cancellation, effect receipts, retention, backup restoration, and
 single-host operation. Reviewing that design is the gate for the observer and runner work below.
 
-The topology document is a design contract. No workflow observer or runner has shipped.
+The topology document is the design contract for the shipped definition observer and the proposed
+runner. The observer currently implements only the definition-discovery subset.
 
-### 2. Observation and reconciliation
+### 2. Remaining observation and reconciliation
 
-- Normalize object, chat, schedule, and manual events into one immutable record format.
-- Treat polling and reconciliation as the correctness path.
+- Extend the normalized event path from workflow definitions to target objects, collection
+  membership, authorized chat messages, schedules, and manual requests.
 - Use Heart events or streams only to reduce latency.
 - Add first-activation baselines, optional backfill, coalescing, and self-write suppression.
-- Partition polling fairly across configured spaces and enforce API budgets.
+- Add global and per-space API budgets to the existing fair, bounded definition polling.
 
 ### 3. Durable runner
 
@@ -51,7 +55,6 @@ The topology document is a design contract. No workflow observer or runner has s
 ### 5. Anytype authoring
 
 - Bootstrap the Knot workflow, approval, run, and connection-reference types.
-- Discover and validate workflow objects without executing unapproved definitions.
 - Add approval, disable, retry, and cancel commands.
 - Project bounded run status into Anytype without creating self-trigger loops.
 

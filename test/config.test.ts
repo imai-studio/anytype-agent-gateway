@@ -40,6 +40,12 @@ describe("loadConfig", () => {
     expect(config.automation.enabled).toBe(false);
     expect(config.automation.execution).toBe(false);
     expect(config.automation.maximumRiskTier).toBe("T0");
+    expect(config.automation.definitionTypeKeys).toEqual(["knot-workflow"]);
+    expect(config.automation.polling).toEqual({
+      minimumIntervalSeconds: 10,
+      maximumIntervalSeconds: 300,
+      pageSize: 100,
+    });
   });
 
   it("requires explicit workflow authors and spaces before enabling automation", () => {
@@ -76,11 +82,31 @@ describe("loadConfig", () => {
       }),
     ).toThrow("observation");
     expect(() =>
+      configSchema.parse({
+        ...base,
+        automation: {
+          enabled: true,
+          observation: true,
+          execution: true,
+          allowedAuthorIds: ["operator"],
+          allowedSpaceIds: ["space"],
+        },
+      }),
+    ).toThrow("not available in this release");
+    expect(() =>
       configSchema.parse({ ...base, automation: { allowedCapabilties: ["anytype.read"] } }),
     ).toThrow("Unrecognized key");
     expect(() => configSchema.parse({ ...base, automation: { heartHints: true } })).toThrow(
       "Heart hints",
     );
+    expect(() =>
+      configSchema.parse({
+        ...base,
+        automation: {
+          polling: { minimumIntervalSeconds: 30, maximumIntervalSeconds: 10 },
+        },
+      }),
+    ).toThrow("must not be below the minimum");
   });
 
   it("accepts workspace-owned stable prompt instructions", () => {

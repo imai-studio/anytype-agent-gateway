@@ -156,6 +156,16 @@ export type AnytypeMember = {
 
 export type AnytypeTag = { id: string; name: string; key?: string; color?: string };
 
+export type AnytypeWorkflowObject = {
+  id: string;
+  name: string;
+  typeKey: string;
+  source?: string;
+  modifiedAt: number;
+  editorParticipantId?: string;
+  archived: boolean;
+};
+
 export interface AnytypePort {
   getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage>;
   listMessages(
@@ -221,6 +231,12 @@ export interface AnytypePort {
     offset: number,
     limit: number,
   ): Promise<Array<{ id: string; name?: string; type?: string }>>;
+  searchWorkflowObjects(
+    spaceId: string,
+    typeKeys: string[],
+    offset: number,
+    limit: number,
+  ): Promise<AnytypeWorkflowObject[]>;
   downloadFile?(
     spaceId: string,
     fileId: string,

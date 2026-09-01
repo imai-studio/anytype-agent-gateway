@@ -420,6 +420,15 @@ export const configSchema = z.object({
       execution: z.boolean().default(false),
       authoring: z.boolean().default(false),
       dataProducts: z.boolean().default(false),
+      definitionTypeKeys: z.array(z.string().trim().min(1)).min(1).default(["knot-workflow"]),
+      polling: z
+        .object({
+          minimumIntervalSeconds: z.number().int().min(1).max(3_600).default(10),
+          maximumIntervalSeconds: z.number().int().min(1).max(86_400).default(300),
+          pageSize: z.number().int().min(1).max(250).default(100),
+        })
+        .strict()
+        .default({ minimumIntervalSeconds: 10, maximumIntervalSeconds: 300, pageSize: 100 }),
       ...workflowAuthorityFields,
       heartHints: z.boolean().default(false),
     })
@@ -452,6 +461,12 @@ export const configSchema = z.object({
           path: ["observation"],
           message: "automation.observation is required before execution",
         });
+      else if (value.execution)
+        context.addIssue({
+          code: "custom",
+          path: ["execution"],
+          message: "automation.execution is not available in this release",
+        });
       if (value.heartHints && !value.observation)
         context.addIssue({
           code: "custom",
@@ -464,6 +479,12 @@ export const configSchema = z.object({
           path: ["execution"],
           message: "automation.execution is required before authoring or data products",
         });
+      if (value.polling.maximumIntervalSeconds < value.polling.minimumIntervalSeconds)
+        context.addIssue({
+          code: "custom",
+          path: ["polling", "maximumIntervalSeconds"],
+          message: "automation.polling.maximumIntervalSeconds must not be below the minimum",
+        });
     })
     .default({
       enabled: false,
@@ -471,6 +492,8 @@ export const configSchema = z.object({
       execution: false,
       authoring: false,
       dataProducts: false,
+      definitionTypeKeys: ["knot-workflow"],
+      polling: { minimumIntervalSeconds: 10, maximumIntervalSeconds: 300, pageSize: 100 },
       allowedAuthorIds: [],
       allowedSpaceIds: [],
       allowedCapabilities: [],

@@ -42,6 +42,7 @@ capable agent runtimes. Knot connects them without replacing either side:
 | Media         | Message attachments and media embedded in referenced Anytype objects                    |
 | Recovery      | REST catch-up, event streaming, SQLite state, deduplication, and outbound retries       |
 | Runtimes      | Codex over ACP and OpenClaw through its Gateway plus native Anytype channel             |
+| Automation    | Opt-in read-only workflow definition discovery and validation; no workflow runner       |
 
 Claude Code is not supported in the current release.
 
@@ -308,7 +309,7 @@ vulnerabilities through GitHub's private vulnerability reporting flow, not a pub
 | [Live regression runbook](docs/live-regression.md)             | Real Anytype tests for Codex and OpenClaw changes          |
 | [Roadmap](docs/knot-roadmap.md)                                | Product direction and completed migration phases           |
 | [Planned work](docs/planned-work.md)                           | Work that has not shipped                                  |
-| [Workflow runtime topology](docs/workflow-runtime-topology.md) | Proposed Phase 2 process and recovery contract             |
+| [Workflow runtime topology](docs/workflow-runtime-topology.md) | Phase 2 observer and proposed runner process contract      |
 | [Knot Cloud proposal](docs/publish-architecture.md)            | Hosted and self-hostable Cloud and Publish design          |
 
 Proposals are marked as proposals. A document in planned work does not make its commands, service,

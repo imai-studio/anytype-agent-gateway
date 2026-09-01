@@ -17,6 +17,81 @@ afterEach(async () => {
 });
 
 describe("Anytype object REST client", () => {
+  it("loads workflow definitions with native revision and editor fields", async () => {
+    const calls: Array<{ method: string; path: string; body: string }> = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const url = new URL(request.url ?? "/", "http://localhost");
+      calls.push({
+        method: request.method ?? "GET",
+        path: `${url.pathname}${url.search}`,
+        body: Buffer.concat(chunks).toString("utf8"),
+      });
+      response.setHeader("content-type", "application/json");
+      if (request.method === "POST")
+        response.end(
+          JSON.stringify({ data: [{ id: "workflow-1", type: { key: "knot-workflow" } }] }),
+        );
+      else
+        response.end(
+          JSON.stringify({
+            object: {
+              id: "workflow-1",
+              name: "Daily digest",
+              type: { key: "knot-workflow" },
+              markdown: "```yaml\nkind: KnotWorkflow\n```",
+              modified_at: 1_700_000_000,
+              last_modified_by: { participant_id: "participant-1" },
+              archived: false,
+            },
+          }),
+        );
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing server address");
+    const dir = await mkdtemp(join(tmpdir(), "knot-workflow-search-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "secret-key\n");
+    const client = await AnytypeClient.create(
+      configSchema.parse({
+        version: 1,
+        agent: { name: "Knot", participantId: "bot" },
+        anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "codex" },
+      }),
+    );
+
+    await expect(client.searchWorkflowObjects("space", ["knot-workflow"], 50, 25)).resolves.toEqual(
+      [
+        {
+          id: "workflow-1",
+          name: "Daily digest",
+          typeKey: "knot-workflow",
+          source: "```yaml\nkind: KnotWorkflow\n```",
+          modifiedAt: 1_700_000_000_000,
+          editorParticipantId: "participant-1",
+          archived: false,
+        },
+      ],
+    );
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        path: "/v1/spaces/space/search?offset=50&limit=25",
+        body: JSON.stringify({ query: "", types: ["knot-workflow"] }),
+      },
+      {
+        method: "GET",
+        path: "/v1/spaces/space/objects/workflow-1",
+        body: "",
+      },
+    ]);
+  });
+
   it("downloads file bytes without treating media as JSON", async () => {
     const server = createServer((request, response) => {
       expect(request.url).toBe("/v1/spaces/space/files/video%2Fid");

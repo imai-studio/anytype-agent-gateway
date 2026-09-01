@@ -66,17 +66,23 @@ function versionRecord(
 describe("automation persistence foundation", () => {
   it("retains the v7 automation foundation tables without enabling execution", () => {
     const store = new Store(":memory:");
-    expect(store.schemaVersion()).toBe(9);
+    expect(store.schemaVersion()).toBe(10);
     for (const table of [
       "workflow_definitions",
       "workflow_approval_subjects",
       "workflow_versions",
       "workflow_approval_decisions",
       "normalized_events",
+      "workflow_observer_spaces",
     ])
       expect(
         store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table),
       ).toBeDefined();
+    expect(
+      store.db
+        .prepare("SELECT 1 FROM pragma_table_info('workflow_definitions') WHERE name=?")
+        .get("observed_source_digest"),
+    ).toBeDefined();
     expect(store.migrationBackupPath).toBeUndefined();
     store.close();
   });
@@ -93,10 +99,10 @@ describe("automation persistence foundation", () => {
 
     const reports: string[] = [];
     const store = new Store(path, (message) => reports.push(message));
-    expect(store.schemaVersion()).toBe(9);
+    expect(store.schemaVersion()).toBe(10);
     expect(store.migrationBackupPath).toBeTruthy();
     expect(store.migrationBackupPath).toContain(".pre-v6.");
-    expect(reports[0]).toContain("from schema 6 to 9");
+    expect(reports[0]).toContain("from schema 6 to 10");
     expect(statSync(store.migrationBackupPath!).mode & 0o777).toBe(0o600);
     const backup = new DatabaseSync(store.migrationBackupPath!, { readOnly: true });
     expect(

@@ -10,6 +10,7 @@ import type {
   AnytypePort,
   AnytypeSpace,
   AnytypeTag,
+  AnytypeWorkflowObject,
   ChatAttachment,
   ChatMessage,
   TextMark,
@@ -437,6 +438,39 @@ export class AnytypeClient implements AnytypePort {
     }));
   }
 
+  async searchWorkflowObjects(
+    spaceId: string,
+    typeKeys: string[],
+    offset: number,
+    limit: number,
+  ): Promise<AnytypeWorkflowObject[]> {
+    const summaries = await this.searchSpace(spaceId, { types: typeKeys, offset, limit });
+    return Promise.all(
+      summaries.map(async (summary) => {
+        const raw = await this.getObject(spaceId, String(summary.id));
+        const typeKey = objectTypeKey(raw) ?? objectTypeKey(summary);
+        if (!typeKey || !typeKeys.includes(typeKey))
+          throw new Error(
+            `Anytype workflow object ${String(summary.id)} has no configured type key`,
+          );
+        const modifiedAt = objectModifiedAt(raw);
+        if (modifiedAt === undefined)
+          throw new Error(`Anytype workflow object ${String(summary.id)} has no native revision`);
+        const source = objectSource(raw);
+        const editorParticipantId = objectEditorParticipantId(raw);
+        return {
+          id: String(raw.id ?? summary.id),
+          name: String(raw.name ?? summary.name ?? raw.id ?? summary.id),
+          typeKey,
+          ...(source === undefined ? {} : { source }),
+          modifiedAt,
+          ...(editorParticipantId ? { editorParticipantId } : {}),
+          archived: raw.archived === true || raw.is_archived === true,
+        };
+      }),
+    );
+  }
+
   async searchSpace(
     spaceId: string,
     input: { query?: string; types?: string[]; offset?: number; limit?: number },
@@ -591,6 +625,42 @@ export class AnytypeClient implements AnytypePort {
     }
     return items;
   }
+}
+
+function objectTypeKey(value: JsonRecord): string | undefined {
+  const candidate = value.type?.key ?? value.type_key ?? value.typeKey;
+  return typeof candidate === "string" && candidate ? candidate : undefined;
+}
+
+function objectSource(value: JsonRecord): string | undefined {
+  const candidate = value.markdown ?? value.body;
+  return typeof candidate === "string" ? candidate : undefined;
+}
+
+function objectModifiedAt(value: JsonRecord): number | undefined {
+  const candidate =
+    value.modified_at ?? value.modifiedAt ?? value.updated_at ?? value.details?.lastModifiedDate;
+  const parsed =
+    typeof candidate === "number"
+      ? candidate
+      : typeof candidate === "string" && /^\d+$/.test(candidate)
+        ? Number(candidate)
+        : typeof candidate === "string"
+          ? Date.parse(candidate)
+          : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return undefined;
+  return parsed < 100_000_000_000 ? parsed * 1_000 : parsed;
+}
+
+function objectEditorParticipantId(value: JsonRecord): string | undefined {
+  const candidate =
+    value.last_modified_by?.participant_id ??
+    value.last_modified_by?.id ??
+    value.updated_by?.participant_id ??
+    value.updated_by?.id ??
+    value.editor?.participant_id ??
+    value.editor?.id;
+  return typeof candidate === "string" ? candidate : undefined;
 }
 
 function retryAfterMs(value: string | null): number | undefined {

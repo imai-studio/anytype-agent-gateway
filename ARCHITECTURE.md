@@ -35,6 +35,14 @@ Anytype SSE message event
 
 The public Anytype API is the primary transport. Knot uses it to resolve routes, list and retrieve messages, subscribe to server-sent events, create/edit/delete replies, toggle reactions, search objects, and fetch referenced-object summaries.
 
+When the local automation gates enable observation, a separate read-only loop searches configured
+workflow object type keys in explicitly allowed spaces. It fetches each full object, requires a
+native modification timestamp and explicit native editor participant ID, validates the fenced YAML
+definition against local authority, and stores a source digest plus immutable normalized event. A
+durable per-space page cursor and reconciliation boundary survive restarts. The loop never invokes a
+runtime, writes Anytype, or performs external effects. Workflow execution is rejected because the
+runner has not shipped.
+
 Every route has a stable key:
 
 ```text
@@ -148,8 +156,11 @@ The SQLite database uses WAL mode and contains:
 - `workflow_approval_decisions`: an append-only, authority-bound approval ledger.
 - `normalized_events`: immutable, deduplicated Phase 2 observation facts. Runner delivery state uses
   separate tables in the runner phase.
+- `workflow_observer_spaces`: durable definition-search pages, reconciliation boundaries, revision
+  watermarks, adaptive intervals, and failure state.
 
-The Phase 2 tables are inert while automation feature gates are disabled. Before an on-disk schema
+The workflow tables remain inert while automation gates are disabled. Read-only definition
+observation uses them when `automation.observation` is enabled. Before an on-disk schema
 upgrade, Knot creates a consistent mode-`0600` SQLite snapshot beside the database using `VACUUM
 INTO`; it never copies only the main file of a live WAL database.
 
