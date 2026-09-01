@@ -1712,13 +1712,17 @@ export class Store {
   workflowDefinitionsMissingSince(
     spaceId: string,
     reconcileStartedAt: number,
+    limit = 100,
   ): WorkflowDefinitionObservation[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1_000)
+      throw new Error("Workflow reconciliation limit must be between 1 and 1000");
     const rows = this.db
       .prepare(
         `SELECT * FROM workflow_definitions
-         WHERE space_id=? AND state!='archived' AND last_seen_at<?`,
+         WHERE space_id=? AND state!='archived' AND last_seen_at<?
+         ORDER BY last_seen_at,workflow_id LIMIT ?`,
       )
-      .all(spaceId, reconcileStartedAt) as unknown as WorkflowDefinitionRow[];
+      .all(spaceId, reconcileStartedAt, limit) as unknown as WorkflowDefinitionRow[];
     return rows.map(mapWorkflowDefinition);
   }
 
@@ -1761,7 +1765,10 @@ export class Store {
     return this.workflowObserverState(input.spaceId)!;
   }
 
-  saveWorkflowVersion(input: WorkflowVersionRecord): WorkflowVersionRecord {
+  saveWorkflowVersion(
+    input: WorkflowVersionRecord,
+    observationDigest = input.sourceDigest,
+  ): WorkflowVersionRecord {
     assertStoredTimestamp(input.sourceModifiedAt, "Workflow source modification time");
     assertStoredTimestamp(input.createdAt, "Workflow creation time");
     if (input.sourceModifiedAt > Date.now() + MAX_FUTURE_CLOCK_SKEW_MS)
@@ -1787,6 +1794,8 @@ export class Store {
       throw new Error("Workflow version record does not match its canonical definition and policy");
     if (!/^sha256:[a-f0-9]{64}$/.test(input.sourceDigest))
       throw new Error("Workflow source digest must be a domain-separated SHA-256 digest");
+    if (!/^sha256:[a-f0-9]{64}$/.test(observationDigest))
+      throw new Error("Workflow observation digest must be a domain-separated SHA-256 digest");
     if ((input.editorPrincipalDigest === undefined) !== (input.editorProvenance === undefined))
       throw new Error("Workflow editor digest and provenance must be recorded together");
     if (
@@ -1897,7 +1906,7 @@ export class Store {
         JSON.stringify(stored.requiredCapabilities) !== requiredCapabilitiesJson
       )
         throw new Error("Workflow version hash collision or divergent immutable version");
-      this.activateWorkflowVersionObservation(input);
+      this.activateWorkflowVersionObservation(input, observationDigest);
       this.db.exec("COMMIT");
       return stored;
     } catch (error) {
@@ -1911,6 +1920,7 @@ export class Store {
       WorkflowVersionRecord,
       "workflowId" | "versionHash" | "name" | "sourceModifiedAt" | "sourceDigest" | "createdAt"
     >,
+    observationDigest = input.sourceDigest,
   ): void {
     const version = this.db
       .prepare("SELECT 1 FROM workflow_versions WHERE workflow_id=? AND version_hash=?")
@@ -1929,12 +1939,12 @@ export class Store {
         input.versionHash,
         input.name,
         input.sourceModifiedAt,
-        input.sourceDigest,
+        observationDigest,
         input.createdAt,
         input.workflowId,
         input.sourceModifiedAt,
         input.sourceModifiedAt,
-        input.sourceDigest,
+        observationDigest,
       );
   }
 

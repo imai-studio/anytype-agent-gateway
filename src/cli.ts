@@ -167,6 +167,7 @@ program
     if (config.automation.enabled && config.automation.observation) {
       let visible = 0;
       let verifiedEditors = 0;
+      let authorizedEditors = 0;
       for (const spaceId of config.automation.allowedSpaceIds) {
         const definitions = await anytype.searchWorkflowObjects(
           spaceId,
@@ -178,6 +179,12 @@ program
         verifiedEditors += definitions.filter(
           (definition) => !definition.observationError && definition.editorParticipantId,
         ).length;
+        authorizedEditors += definitions.filter(
+          (definition) =>
+            !definition.observationError &&
+            definition.editorParticipantId &&
+            config.automation.allowedAuthorIds.includes(definition.editorParticipantId),
+        ).length;
       }
       console.log(
         `ok: read-only workflow observer (${config.automation.allowedSpaceIds.length} spaces, ${config.automation.definitionTypeKeys.length} type keys, ${visible} visible sample definitions, ${verifiedEditors} with native editor identity; runner unavailable)`,
@@ -185,6 +192,10 @@ program
       if (visible > 0 && verifiedEditors === 0)
         console.warn(
           "warning: Anytype did not expose the last_modified_by system object property; workflow definitions will remain invalid",
+        );
+      else if (visible > 0 && authorizedEditors === 0)
+        console.warn(
+          "warning: visible workflow definitions have verified editors, but none match automation.allowedAuthorIds",
         );
     }
     const runtime = makeRuntime(config, undefined, configPath);

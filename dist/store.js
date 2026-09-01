@@ -1181,11 +1181,14 @@ export class Store {
             .run(input.workflowId, input.spaceId, input.objectId, input.name, input.seenAt, JSON.stringify([input.errorCode]), input.sourceDigest, input.seenAt, input.seenAt);
         return this.workflowDefinition(input.spaceId, input.objectId);
     }
-    workflowDefinitionsMissingSince(spaceId, reconcileStartedAt) {
+    workflowDefinitionsMissingSince(spaceId, reconcileStartedAt, limit = 100) {
+        if (!Number.isInteger(limit) || limit < 1 || limit > 1_000)
+            throw new Error("Workflow reconciliation limit must be between 1 and 1000");
         const rows = this.db
             .prepare(`SELECT * FROM workflow_definitions
-         WHERE space_id=? AND state!='archived' AND last_seen_at<?`)
-            .all(spaceId, reconcileStartedAt);
+         WHERE space_id=? AND state!='archived' AND last_seen_at<?
+         ORDER BY last_seen_at,workflow_id LIMIT ?`)
+            .all(spaceId, reconcileStartedAt, limit);
         return rows.map(mapWorkflowDefinition);
     }
     workflowObserverState(spaceId) {
@@ -1211,7 +1214,7 @@ export class Store {
             .run(input.spaceId, input.pageOffset, input.reconcileStartedAt, input.watermarkModifiedAt, input.watermarkFingerprint, input.pollIntervalMilliseconds, input.consecutiveFailures, input.nextScanAt, input.lastScanAt ?? null, input.lastSuccessAt ?? null, input.lastError ?? null);
         return this.workflowObserverState(input.spaceId);
     }
-    saveWorkflowVersion(input) {
+    saveWorkflowVersion(input, observationDigest = input.sourceDigest) {
         assertStoredTimestamp(input.sourceModifiedAt, "Workflow source modification time");
         assertStoredTimestamp(input.createdAt, "Workflow creation time");
         if (input.sourceModifiedAt > Date.now() + MAX_FUTURE_CLOCK_SKEW_MS)
@@ -1235,6 +1238,8 @@ export class Store {
             throw new Error("Workflow version record does not match its canonical definition and policy");
         if (!/^sha256:[a-f0-9]{64}$/.test(input.sourceDigest))
             throw new Error("Workflow source digest must be a domain-separated SHA-256 digest");
+        if (!/^sha256:[a-f0-9]{64}$/.test(observationDigest))
+            throw new Error("Workflow observation digest must be a domain-separated SHA-256 digest");
         if ((input.editorPrincipalDigest === undefined) !== (input.editorProvenance === undefined))
             throw new Error("Workflow editor digest and provenance must be recorded together");
         if (input.editorPrincipalDigest !== undefined &&
@@ -1290,7 +1295,7 @@ export class Store {
                 stored.riskTier !== input.riskTier ||
                 JSON.stringify(stored.requiredCapabilities) !== requiredCapabilitiesJson)
                 throw new Error("Workflow version hash collision or divergent immutable version");
-            this.activateWorkflowVersionObservation(input);
+            this.activateWorkflowVersionObservation(input, observationDigest);
             this.db.exec("COMMIT");
             return stored;
         }
@@ -1299,7 +1304,7 @@ export class Store {
             throw error;
         }
     }
-    activateWorkflowVersionObservation(input) {
+    activateWorkflowVersionObservation(input, observationDigest = input.sourceDigest) {
         const version = this.db
             .prepare("SELECT 1 FROM workflow_versions WHERE workflow_id=? AND version_hash=?")
             .get(input.workflowId, input.versionHash);
@@ -1312,7 +1317,7 @@ export class Store {
            ? > source_modified_at OR
            (? = source_modified_at AND ? >= observed_source_digest)
          )`)
-            .run(input.versionHash, input.name, input.sourceModifiedAt, input.sourceDigest, input.createdAt, input.workflowId, input.sourceModifiedAt, input.sourceModifiedAt, input.sourceDigest);
+            .run(input.versionHash, input.name, input.sourceModifiedAt, observationDigest, input.createdAt, input.workflowId, input.sourceModifiedAt, input.sourceModifiedAt, observationDigest);
     }
     workflowVersion(workflowId, versionHash) {
         const row = this.db

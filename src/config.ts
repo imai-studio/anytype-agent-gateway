@@ -425,7 +425,7 @@ export const configSchema = z.object({
         .object({
           minimumIntervalSeconds: z.number().int().min(1).max(3_600).default(10),
           maximumIntervalSeconds: z.number().int().min(1).max(86_400).default(300),
-          pageSize: z.number().int().min(1).max(250).default(100),
+          pageSize: z.number().int().min(1).max(100).default(100),
         })
         .strict()
         .default({ minimumIntervalSeconds: 10, maximumIntervalSeconds: 300, pageSize: 100 }),

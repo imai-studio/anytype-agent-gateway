@@ -186,11 +186,11 @@ export declare class Store {
         seenAt: number;
         errorCode: WorkflowValidationErrorCode;
     }): WorkflowDefinitionObservation;
-    workflowDefinitionsMissingSince(spaceId: string, reconcileStartedAt: number): WorkflowDefinitionObservation[];
+    workflowDefinitionsMissingSince(spaceId: string, reconcileStartedAt: number, limit?: number): WorkflowDefinitionObservation[];
     workflowObserverState(spaceId: string): WorkflowObserverState | undefined;
     saveWorkflowObserverState(input: WorkflowObserverState): WorkflowObserverState;
-    saveWorkflowVersion(input: WorkflowVersionRecord): WorkflowVersionRecord;
-    activateWorkflowVersionObservation(input: Pick<WorkflowVersionRecord, "workflowId" | "versionHash" | "name" | "sourceModifiedAt" | "sourceDigest" | "createdAt">): void;
+    saveWorkflowVersion(input: WorkflowVersionRecord, observationDigest?: string): WorkflowVersionRecord;
+    activateWorkflowVersionObservation(input: Pick<WorkflowVersionRecord, "workflowId" | "versionHash" | "name" | "sourceModifiedAt" | "sourceDigest" | "createdAt">, observationDigest?: string): void;
     workflowVersion(workflowId: string, versionHash: string): WorkflowVersionRecord | undefined;
     recordWorkflowApproval(input: Omit<WorkflowApprovalDecision, "sequence">): WorkflowApprovalDecision;
     currentWorkflowApproval(workflowId: string, approvalHash: string, authorityHash: string, now?: number): WorkflowApprovalDecision | undefined;

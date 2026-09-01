@@ -125,7 +125,7 @@ The current scheduler keeps durable per-space page cursors, reconciliation bound
 watermarks, failure counts, and next-scan times. Each cycle:
 
 1. selects spaces fairly from the durable next-scan state;
-2. fetches a bounded page of configured workflow definition objects;
+2. fetches a bounded page of at most 100 configured workflow definition objects;
 3. validates the source and native editor identity, then stores immutable versions and definition
    state;
 4. inserts one deduplicated normalized event per source revision;
@@ -133,8 +133,9 @@ watermarks, failure counts, and next-scan times. Each cycle:
 6. records the next scan time with bounded backoff and jitter.
 
 A complete definition pass finds missed updates. A search miss alone never archives a definition;
-Knot requires a direct read to confirm the archive or native 404/410 response. A restart resumes the
-saved page. Re-reading a page is safe, and an
+Knot requires a direct read to confirm the archive or native 404/410 response. Those confirmation
+reads use bounded batches, and the reconciliation boundary advances only after all batches finish.
+A restart resumes the saved page. Re-reading a page is safe, and an
 interrupted write is repaired by the event dedupe key on the next pass. Heart-assisted target fetch,
 property-level snapshot diffs, collection reconciliation, and self-write suppression remain planned.
 
@@ -156,8 +157,9 @@ causal depth above the local limit. It records verified editor provenance and a 
 revision when the source supplies them. Display metadata is not a fallback identity.
 
 If two workflow observations have the same Anytype modification timestamp, the observer compares
-their domain-separated source digests. The lexicographically greater digest becomes active. This
-tie-breaker gives every observation order the same result without treating a timestamp as unique.
+their domain-separated raw object-body digests byte by byte. The greater digest becomes active. A
+separate fenced-YAML digest identifies an accepted immutable version. This tie-breaker gives every
+observation order the same result without treating a timestamp as unique.
 
 The observer computes two identities:
 
@@ -400,8 +402,11 @@ An operator restore follows this order:
 5. Let startup recovery reconcile events, leases, effects, timers, and projections.
 6. Keep the displaced files until the restored service passes `knot doctor` and live checks.
 
-A backup contains workflow definitions, local execution history, and actor digests. Operators must
-protect it like the live state database. It must never contain API keys or connection secret values.
+A backup contains workflow definitions, local execution history, and actor digests. A backup made
+before the schema 11 redaction migration can also contain plaintext workflow prompt and message
+fields. Operators must protect backups like the live state database and delete superseded plaintext
+backups after verifying the migration and rollback window. Backups must never contain API keys or
+connection secret values.
 
 ## Failure policy
 

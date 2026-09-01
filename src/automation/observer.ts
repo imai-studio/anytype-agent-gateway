@@ -106,11 +106,18 @@ export class WorkflowObserver {
           watermarkFingerprint = observed.sourceDigest;
         }
       }
-      const complete = objects.length < this.config.polling.pageSize;
+      const pageComplete = objects.length < this.config.polling.pageSize;
       if (objectFailures) throw new ObserverScanError("object_persistence_failed");
-      const archived = complete
-        ? await this.archiveMissing(spaceId, state.reconcileStartedAt, startedAt)
-        : 0;
+      const archiveResult = pageComplete
+        ? await this.archiveMissing(
+            spaceId,
+            state.reconcileStartedAt,
+            startedAt,
+            this.config.polling.pageSize,
+          )
+        : { changed: 0, complete: false };
+      const archived = archiveResult.changed;
+      const complete = pageComplete && archiveResult.complete;
       changes += archived;
       const minimum = this.config.polling.minimumIntervalSeconds * 1_000;
       const maximum = this.config.polling.maximumIntervalSeconds * 1_000;
@@ -185,7 +192,7 @@ export class WorkflowObserver {
   ): { changed: boolean; sourceDigest: string } {
     const previous = this.store.workflowDefinition(spaceId, object.id);
     const workflowId = stableId("workflow", spaceId, object.id);
-    let sourceDigest = workflowSourceDigest(object.source ?? "");
+    const sourceDigest = workflowSourceDigest(object.source ?? "");
     if (object.observationError) {
       const current = this.store.recordWorkflowDefinitionReadFailure({
         workflowId,
@@ -240,10 +247,11 @@ export class WorkflowObserver {
     }
 
     let definition: ReturnType<typeof workflowDefinitionSchema.parse> | undefined;
+    let definitionSourceDigest: string | undefined;
     const errors: WorkflowValidationErrorCode[] = [];
     try {
       const definitionSource = extractWorkflowSource(object.source);
-      sourceDigest = workflowSourceDigest(definitionSource);
+      definitionSourceDigest = workflowSourceDigest(definitionSource);
       let parsed: unknown;
       try {
         parsed = YAML.parse(definitionSource, { maxAliasCount: 0 });
@@ -261,7 +269,7 @@ export class WorkflowObserver {
     const principal = principalFromParticipantId(object.editorParticipantId);
     if (!principal) errors.push("editor_unverified");
     let version: WorkflowVersionRecord | undefined;
-    if (definition) {
+    if (definition && definitionSourceDigest) {
       const policy = evaluateWorkflowPolicy(definition, { sourceSpaceId: spaceId });
       if (policy.missingCapabilities.length) errors.push("capabilities_missing");
       const authority = evaluateWorkflowAuthority(definition, this.config, {
@@ -287,7 +295,7 @@ export class WorkflowObserver {
           schemaVersion: 1,
           canonicalDefinitionJson: canonicalWorkflowDefinition(definition),
           canonicalApprovalJson: canonicalJson(workflowApprovalMaterial(definition)),
-          sourceDigest,
+          sourceDigest: definitionSourceDigest,
           riskTier: policy.riskTier,
           requiredCapabilities: policy.requiredCapabilities,
           sourceModifiedAt: object.modifiedAt,
@@ -299,7 +307,7 @@ export class WorkflowObserver {
             : {}),
           createdAt: observedAt,
         };
-        version = this.store.saveWorkflowVersion(candidate);
+        version = this.store.saveWorkflowVersion(candidate, sourceDigest);
       }
     }
     const state = errors.length ? "invalid" : "valid";
@@ -353,10 +361,12 @@ export class WorkflowObserver {
     spaceId: string,
     startedAt: number,
     observedAt: number,
-  ): Promise<number> {
-    const candidates = this.store.workflowDefinitionsMissingSince(spaceId, startedAt);
+    limit: number,
+  ): Promise<{ changed: number; complete: boolean }> {
+    const candidates = this.store.workflowDefinitionsMissingSince(spaceId, startedAt, limit + 1);
+    const batch = candidates.slice(0, limit);
     let changed = 0;
-    for (const definition of candidates) {
+    for (const definition of batch) {
       let confirmed = false;
       try {
         const object = await this.anytype.getObject(spaceId, definition.objectId);
@@ -399,7 +409,7 @@ export class WorkflowObserver {
       });
       if (inserted || definition.state !== "archived") changed += 1;
     }
-    return changed;
+    return { changed, complete: candidates.length <= limit };
   }
 
   private recordEvent(
@@ -443,9 +453,29 @@ export class WorkflowObserver {
 function extractWorkflowSource(source: string | undefined): string {
   if (!source) throw new ObserverValidationError("source_missing");
   if (source.length > 1_000_000) throw new ObserverValidationError("source_too_large");
-  const matches = [...source.matchAll(/```(?:yaml|yml)\s*\n([\s\S]*?)\n```/gi)];
-  if (matches.length !== 1) throw new ObserverValidationError("source_fence_invalid");
-  return matches[0]![1]!;
+  let cursor = 0;
+  let match: string | undefined;
+  while (cursor < source.length) {
+    const fenceStart = source.indexOf("```", cursor);
+    if (fenceStart < 0) break;
+    const headerEnd = source.indexOf("\n", fenceStart + 3);
+    if (headerEnd < 0) break;
+    const language = source
+      .slice(fenceStart + 3, headerEnd)
+      .trim()
+      .toLowerCase();
+    if (language !== "yaml" && language !== "yml") {
+      cursor = headerEnd + 1;
+      continue;
+    }
+    const fenceEnd = source.indexOf("\n```", headerEnd + 1);
+    if (fenceEnd < 0) throw new ObserverValidationError("source_fence_invalid");
+    if (match !== undefined) throw new ObserverValidationError("source_fence_invalid");
+    match = source.slice(headerEnd + 1, fenceEnd);
+    cursor = fenceEnd + 4;
+  }
+  if (match === undefined) throw new ObserverValidationError("source_fence_invalid");
+  return match;
 }
 
 class ObserverValidationError extends Error {
@@ -509,9 +539,9 @@ function compareRevision(
   otherModifiedAt: number,
   otherFingerprint: string,
 ): number {
-  return modifiedAt === otherModifiedAt
-    ? fingerprint.localeCompare(otherFingerprint)
-    : modifiedAt - otherModifiedAt;
+  if (modifiedAt !== otherModifiedAt) return modifiedAt - otherModifiedAt;
+  if (fingerprint === otherFingerprint) return 0;
+  return fingerprint > otherFingerprint ? 1 : -1;
 }
 
 function jitter(milliseconds: number, random: () => number): number {

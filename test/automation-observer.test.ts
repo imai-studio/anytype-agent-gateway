@@ -80,6 +80,10 @@ function definitionDigest(markdown: string): string {
   return workflowSourceDigest(body);
 }
 
+function observationDigest(markdown: string): string {
+  return workflowSourceDigest(markdown);
+}
+
 function eventRows(store: Store): Array<Record<string, unknown>> {
   return store.db
     .prepare(
@@ -110,11 +114,14 @@ describe("read-only workflow observer", () => {
       name: "Disabled workflow",
       state: "valid",
       sourceModifiedAt: 100,
-      sourceDigest: definitionDigest(object.source!),
+      sourceDigest: observationDigest(object.source!),
       lastSeenAt: 200,
     });
     expect(store.db.prepare("SELECT source_text FROM workflow_versions").get()).toEqual({
       source_text: "",
+    });
+    expect(store.db.prepare("SELECT source_digest FROM workflow_versions").get()).toEqual({
+      source_digest: definitionDigest(object.source!),
     });
     expect(eventRows(store)).toHaveLength(1);
     expect(JSON.parse(String(eventRows(store)[0]!.payload_json))).toMatchObject({
@@ -219,8 +226,8 @@ describe("read-only workflow observer", () => {
     expect(result.changes).toBe(1);
     expect(eventRows(store)).toHaveLength(2);
     const expectedWatermark = [
-      definitionDigest(first.source!),
-      definitionDigest(second.source!),
+      observationDigest(first.source!),
+      observationDigest(second.source!),
     ].sort()[1];
     expect(store.workflowObserverState("space-1")?.watermarkFingerprint).toBe(expectedWatermark);
     store.close();
@@ -366,6 +373,70 @@ describe("read-only workflow observer", () => {
     store.close();
   });
 
+  it("rejects many unterminated workflow fences without regex backtracking", async () => {
+    const anytype = new FakeAnytype();
+    anytype.workflowObjects = [
+      workflowObject({
+        source: Array.from({ length: 20_000 }, (_, index) => `\`\`\`yaml ${index}`).join("\n"),
+      }),
+    ];
+    const store = new Store(":memory:");
+
+    const result = await new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => 200,
+    ).scanSpaceOnce("space-1");
+
+    expect(result.failed).toBe(false);
+    expect(store.workflowDefinition("space-1", "definition-1")).toMatchObject({
+      state: "invalid",
+      validationErrors: ["source_fence_invalid"],
+    });
+    store.close();
+  });
+
+  it("uses the raw object digest to resolve valid and invalid same-timestamp revisions", async () => {
+    const anytype = new FakeAnytype();
+    const store = new Store(":memory:");
+    let now = 200;
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(),
+      () => {},
+      () => now,
+    );
+    let validSource = source("Valid revision");
+    const fencedDigest = definitionDigest(validSource);
+    let invalidSource = "";
+    for (let index = 0; index < 50_000; index += 1) {
+      const candidate = `malformed workflow revision ${index}`;
+      const candidateDigest = observationDigest(candidate);
+      if (observationDigest(validSource) < candidateDigest && candidateDigest < fencedDigest) {
+        invalidSource = candidate;
+        break;
+      }
+      validSource = `wrapper ${index}\n${source("Valid revision")}`;
+    }
+    expect(invalidSource).not.toBe("");
+    anytype.workflowObjects = [workflowObject({ source: validSource, modifiedAt: 100 })];
+    await observer.scanSpaceOnce("space-1");
+    now = 300;
+    anytype.workflowObjects = [workflowObject({ source: invalidSource, modifiedAt: 100 })];
+
+    await observer.scanSpaceOnce("space-1");
+
+    expect(store.workflowDefinition("space-1", "definition-1")).toMatchObject({
+      state: "invalid",
+      sourceDigest: observationDigest(invalidSource),
+      validationErrors: ["source_fence_invalid"],
+    });
+    store.close();
+  });
+
   it("backs off after failure and returns to a successful persisted scan", async () => {
     const anytype = new FakeAnytype();
     anytype.workflowSearchFailures = 1;
@@ -419,6 +490,44 @@ describe("read-only workflow observer", () => {
     expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ objects: 0, archived: 0 });
     expect(store.workflowDefinition("space-1", "definition-1")?.state).toBe("valid");
     expect(store.workflowDefinition("space-1", "definition-2")?.state).toBe("valid");
+    store.close();
+  });
+
+  it("bounds missing-object reconciliation to one configured page per scan", async () => {
+    const anytype = new FakeAnytype();
+    const store = new Store(":memory:");
+    for (let index = 1; index <= 3; index += 1) {
+      const objectId = `missing-${index}`;
+      store.recordWorkflowDefinitionStatus({
+        workflowId: `workflow-${index}`,
+        spaceId: "space-1",
+        objectId,
+        name: `Missing ${index}`,
+        state: "invalid",
+        sourceModifiedAt: 1,
+        sourceDigest: workflowSourceDigest(objectId),
+        seenAt: 1,
+        validationErrors: ["source_missing"],
+      });
+      anytype.missingObjectIds.add(objectId);
+    }
+    let now = 100;
+    const observer = new WorkflowObserver(
+      anytype,
+      store,
+      automationConfig(1),
+      () => {},
+      () => now++,
+    );
+
+    expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ archived: 1 });
+    expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ archived: 1 });
+    expect(await observer.scanSpaceOnce("space-1")).toMatchObject({ archived: 1 });
+    expect(
+      store.db
+        .prepare("SELECT COUNT(*) AS count FROM workflow_definitions WHERE state='archived'")
+        .get(),
+    ).toEqual({ count: 3 });
     store.close();
   });
 

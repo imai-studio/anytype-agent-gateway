@@ -34,8 +34,10 @@ because the runner is not available. Authoring and data-product gates remain una
 
 The observer polls every allowed space through the public Anytype API. It stores one durable page
 cursor, reconciliation boundary, revision watermark, failure count, and next-scan time per space.
-`minimumIntervalSeconds`, `maximumIntervalSeconds`, and `pageSize` bound that work. A quiet space
-backs off to the maximum. A change, incomplete page, or recovery returns to the minimum. Run
+`minimumIntervalSeconds`, `maximumIntervalSeconds`, and `pageSize` bound that work. The page size is
+limited to the Anytype API maximum of 100. Missing-object confirmation also runs in page-sized
+batches, and the observer preserves the reconciliation boundary until every batch is complete. A
+quiet space backs off to the maximum. A change, incomplete page, or recovery returns to the minimum. Run
 `knot doctor` to verify that the configured type keys are searchable before starting the service.
 
 ## Definition and approval integrity
@@ -101,8 +103,9 @@ missing definition archived. It then requires a direct object read to confirm an
 Each definition must contain one fenced YAML block. Knot reads the native modification timestamp
 and the `last_modified_by` system object property from the full object response. Top-level aliases,
 display names, and creator fallbacks do not authorize the definition. Missing or unauthorized editor
-identity leaves the definition invalid. Knot stores a source digest, closed bounded error codes, and
-an immutable normalized definition event. It stores the redacted parsed version only after schema
+identity leaves the definition invalid. Knot stores a digest of the complete raw object body as the
+observation revision, plus a separate digest of the fenced YAML on an accepted immutable version.
+It also stores closed bounded error codes and an immutable normalized definition event. It stores the redacted parsed version only after schema
 and local authority checks pass. It never stores the raw source body, author prompt text, upstream
 response body, or validation input in workflow tables or event payloads.
 
@@ -115,8 +118,9 @@ at-least-once. Self-writes are suppressed by default, compatible object changes 
 causal depth bounds terminate loops.
 
 Anytype can report two workflow edits with the same modification timestamp. Knot compares the
-domain-separated source digests for those ties and selects the lexicographically greater digest.
-This produces the same active version regardless of observation order.
+domain-separated raw object-body digests byte by byte for those ties and selects the greater digest.
+This produces the same active state and version regardless of observation order, including when one
+revision is invalid.
 
 ## State migration and retention
 
@@ -138,6 +142,9 @@ backup like the live database and remove it only after the operator has verified
 accepted the loss of that rollback point.
 
 Schema 11 redacts author prompt and message strings from stored definition and approval records.
+The backup created before a schema 11 migration can still contain those plaintext strings. Keep it
+mode `0600`, restrict access to the operator, and remove it after the migration and rollback window
+have been verified.
 Schema 10 added definition source digests and durable per-space observer state. A restart resumes the
 saved page and reconciliation boundary. Repeated pages and repeated revisions reuse the same event
 dedupe key. An interrupted observation repairs a missing event on the next pass before it advances

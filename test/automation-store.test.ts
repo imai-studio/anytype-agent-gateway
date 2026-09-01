@@ -296,7 +296,11 @@ describe("automation persistence foundation", () => {
     });
     const versions = [versionRecord(firstDefinition), versionRecord(secondDefinition)];
     const expected = [...versions].sort((left, right) =>
-      left.sourceDigest.localeCompare(right.sourceDigest),
+      left.sourceDigest === right.sourceDigest
+        ? 0
+        : left.sourceDigest > right.sourceDigest
+          ? 1
+          : -1,
     )[1]!;
     for (const ordered of [versions, [...versions].reverse()]) {
       const store = new Store(":memory:");
