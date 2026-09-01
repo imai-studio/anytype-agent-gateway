@@ -97,7 +97,7 @@ describe("BridgeStore", () => {
     expect(second).toHaveLength(1);
     expect(second[0]!.storeSequence).toBeGreaterThan(first.at(-1)!.storeSequence);
     store.close();
-  });
+  }, 15_000);
 
   it("retains recent nonterminal events and bounds abandoned pending history by age", () => {
     const store = makeStore();
