@@ -7,6 +7,12 @@ import { configSchema, loadConfig } from "../src/config.js";
 import { callTool, toolDefinitions } from "../src/mcp.js";
 import { Store } from "../src/store.js";
 import type { AnytypeClient } from "../src/anytype-client.js";
+import {
+  initializeCloudConfig,
+  resolveCloudPaths,
+  saveCloudConfig,
+  type CloudConfig,
+} from "../src/cloud-config.js";
 
 function config(overrides: Record<string, unknown> = {}) {
   return configSchema.parse({
@@ -108,6 +114,85 @@ describe("AAG Anytype MCP policy", () => {
         "intruder",
       ),
     ).rejects.toThrow("current Anytype sender is not allowed to publish");
+  });
+
+  it("publishes through the constrained tool with a documented trailing-slash prefix", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "knot-mcp-publish-"));
+    const paths = resolveCloudPaths({ configFile: join(directory, "cloud.json") });
+    const base = await initializeCloudConfig({
+      paths,
+      baseUrl: "https://knot.example",
+      connectorName: "Test Mac",
+      requestedScopes: ["publications.read", "publications.write"],
+      requestedSlugGrants: ["notes/*"],
+    });
+    const siteId = "00000000-0000-4000-8000-000000000011";
+    const publicationId = "00000000-0000-4000-8000-000000000022";
+    const paired: CloudConfig = {
+      ...base,
+      paired: {
+        connectorId: "00000000-0000-4000-8000-000000000033",
+        tenantId: "00000000-0000-4000-8000-000000000044",
+        scopes: ["publications.read", "publications.write"],
+        siteIds: [siteId],
+        slugGrants: ["notes/*"],
+        approvedAt: 1,
+      },
+    };
+    await saveCloudConfig(paths, paired);
+    const fetchMock = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      expect(init?.method).toBe("POST");
+      expect(new Headers(init?.headers).get("Knot-Signature")).toBeTruthy();
+      return Response.json(
+        {
+          protocolVersion: "1.0",
+          publicationId,
+          versionId: "00000000-0000-4000-8000-000000000055",
+          state: "ready",
+        },
+        { status: 201 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const configured = config({
+        tools: {
+          publish: {
+            enabled: true,
+            allowedUsers: ["owner"],
+            allowedSiteIds: [siteId],
+            allowedSlugPrefixes: ["notes/"],
+            cloudConfigFile: paths.configFile,
+          },
+        },
+      });
+      await expect(
+        callTool(
+          client(),
+          configured,
+          "/config.yaml",
+          "chat:space-1:chat",
+          "space-1",
+          "aag_publish",
+          {
+            action: "push",
+            publication_id: publicationId,
+            site_id: siteId,
+            slug: "notes/release",
+            operation: "create",
+            document: {
+              schemaVersion: "1.0",
+              title: "Release",
+              blocks: [{ type: "paragraph", content: [{ text: "Ready" }] }],
+            },
+          },
+          "owner",
+        ),
+      ).resolves.toMatchObject({ state: "succeeded" });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("rejects runtime-provided links in the constrained publication tool", async () => {

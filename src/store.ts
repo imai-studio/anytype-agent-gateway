@@ -43,7 +43,7 @@ import {
   workflowVersionHash,
 } from "./automation/workflow.js";
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 export type ManagementCapabilityScope = "wake" | "access" | "model" | "publish";
 
@@ -108,6 +108,7 @@ export class Store {
       if (current < 11) this.migrateToVersion11();
       if (current < 12) this.migrateToVersion12();
       if (current < 13) this.migrateToVersion13();
+      if (current < 14) this.migrateToVersion14();
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -474,7 +475,7 @@ export class Store {
         token_hash TEXT PRIMARY KEY,
         route_id TEXT NOT NULL,
         participant_id TEXT NOT NULL,
-        scope TEXT NOT NULL CHECK(scope IN ('wake','access','model')),
+        scope TEXT NOT NULL CHECK(scope IN ('wake','access','model','publish')),
         expires_at INTEGER NOT NULL,
         created_at INTEGER NOT NULL
       );
@@ -732,6 +733,50 @@ export class Store {
           WHERE source='poll' AND kind IN ('object.created','object.updated','object.archived')
             AND json_extract(payload_json,'$.controlPlane')='workflow-definition';
       `);
+  }
+
+  private migrateToVersion14(): void {
+    const capabilityTableExists = Boolean(
+      this.db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='management_actor_capabilities'",
+        )
+        .get(),
+    );
+    if (!capabilityTableExists) {
+      this.db.exec(`
+        CREATE TABLE management_actor_capabilities (
+          token_hash TEXT PRIMARY KEY,
+          route_id TEXT NOT NULL,
+          participant_id TEXT NOT NULL,
+          scope TEXT NOT NULL CHECK(scope IN ('wake','access','model','publish')),
+          expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_management_actor_capabilities_route
+          ON management_actor_capabilities(route_id,expires_at);
+      `);
+      return;
+    }
+    this.db.exec(`
+      CREATE TABLE management_actor_capabilities_v14 (
+        token_hash TEXT PRIMARY KEY,
+        route_id TEXT NOT NULL,
+        participant_id TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK(scope IN ('wake','access','model','publish')),
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO management_actor_capabilities_v14(
+        token_hash,route_id,participant_id,scope,expires_at,created_at
+      )
+      SELECT token_hash,route_id,participant_id,scope,expires_at,created_at
+        FROM management_actor_capabilities;
+      DROP TABLE management_actor_capabilities;
+      ALTER TABLE management_actor_capabilities_v14 RENAME TO management_actor_capabilities;
+      CREATE INDEX idx_management_actor_capabilities_route
+        ON management_actor_capabilities(route_id,expires_at);
+    `);
   }
 
   isInitialized(routeId: string): boolean {

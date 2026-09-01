@@ -189,6 +189,8 @@ export declare class CloudPublicationOutbox {
     }): PublicationOperation;
     saveAssetManifest(assets: PublicationAsset[], now?: number): string;
     assetManifest(manifestId: string): PublicationAsset[] | undefined;
+    deleteAssetManifest(manifestId: string): void;
+    pruneAssetManifests(createdBefore: number): number;
     assetCheckpoint(operationId: string, digest: string): {
         state: "pending" | "requested" | "uploaded" | "committed";
         assetId?: string;

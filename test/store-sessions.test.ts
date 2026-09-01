@@ -25,7 +25,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(13);
+    expect(store.schemaVersion()).toBe(14);
     expect(store.cursor("route")).toBe("order-7");
     expect(
       (
@@ -64,7 +64,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(13);
+    expect(store.schemaVersion()).toBe(14);
     expect(
       (
         store.db.prepare("PRAGMA table_info(conversation_models)").all() as Array<{ name: string }>
@@ -110,7 +110,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(13);
+    expect(store.schemaVersion()).toBe(14);
     expect(store.sessionWorkspace("chat:space:chat")).toBe("/projects/imai");
     expect(store.sessionWorkspaceSource("chat:space:chat")).toBe("explicit");
     expect(store.db.prepare("PRAGMA foreign_key_list(session_workspaces)").all()).not.toHaveLength(
@@ -182,16 +182,50 @@ describe("session persistence", () => {
 
   it("binds management capabilities to one route, actor, scope, and use", () => {
     const store = new Store(":memory:");
-    const token = store.issueManagementCapability("chat:space:chat", "participant-admin", "access");
+    for (const scope of ["wake", "access", "model", "publish"] as const) {
+      const wrongRoute = store.issueManagementCapability(
+        "chat:space:chat",
+        "participant-admin",
+        scope,
+      );
+      expect(
+        store.consumeManagementCapability(wrongRoute, "chat:space:other", scope),
+      ).toBeUndefined();
+      expect(
+        store.consumeManagementCapability(wrongRoute, "chat:space:chat", scope),
+      ).toBeUndefined();
 
-    expect(store.consumeManagementCapability(token, "chat:space:other", "access")).toBeUndefined();
-    expect(store.consumeManagementCapability(token, "chat:space:chat", "access")).toBeUndefined();
+      const valid = store.issueManagementCapability("chat:space:chat", "participant-admin", scope);
+      expect(store.consumeManagementCapability(valid, "chat:space:chat", scope)).toBe(
+        "participant-admin",
+      );
+      expect(store.consumeManagementCapability(valid, "chat:space:chat", scope)).toBeUndefined();
+    }
+    store.close();
+  });
 
-    const valid = store.issueManagementCapability("chat:space:chat", "participant-admin", "access");
-    expect(store.consumeManagementCapability(valid, "chat:space:chat", "access")).toBe(
-      "participant-admin",
-    );
-    expect(store.consumeManagementCapability(valid, "chat:space:chat", "access")).toBeUndefined();
+  it("upgrades schema 13 capability constraints before issuing publish authority", () => {
+    const path = temporaryDatabase();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE management_actor_capabilities (
+        token_hash TEXT PRIMARY KEY,
+        route_id TEXT NOT NULL,
+        participant_id TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK(scope IN ('wake','access','model')),
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_management_actor_capabilities_route
+        ON management_actor_capabilities(route_id,expires_at);
+      PRAGMA user_version=13;
+    `);
+    legacy.close();
+
+    const store = new Store(path);
+    expect(store.schemaVersion()).toBe(14);
+    const token = store.issueManagementCapability("chat:space:chat", "owner", "publish");
+    expect(store.consumeManagementCapability(token, "chat:space:chat", "publish")).toBe("owner");
     store.close();
   });
 

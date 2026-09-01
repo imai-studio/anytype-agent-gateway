@@ -28,9 +28,15 @@ export async function publicationAction(input, context = {}) {
     const config = await requiredPairedConfig(paths);
     if (input.policy)
         assertPublicationPolicy(input, input.policy);
-    if (input.action === "status") {
+    if (input.action === "unpublish" && input.confirmation !== input.publicationId)
+        throw new Error("Destructive unpublish requires confirmation equal to the publication ID");
+    if (input.action === "status" || (input.action !== "push" && input.policy)) {
         assertServerGrant(config, "publications.read");
-        return (context.client?.(config) ?? new CloudClient(config)).publicationStatus(uuidSchema.parse(input.publicationId));
+        const status = await (context.client?.(config) ?? new CloudClient(config)).publicationStatus(uuidSchema.parse(input.publicationId));
+        if (input.policy)
+            assertPublicationIdentityPolicy(status, input.policy);
+        if (input.action === "status")
+            return status;
     }
     const outbox = new CloudPublicationOutbox(paths.publicationOutboxFile);
     try {
@@ -41,7 +47,7 @@ export async function publicationAction(input, context = {}) {
             throw new Error("No pre-approved publication asset manifest has that ID");
         const request = buildOutboxRequest(config, input, assets ?? []);
         assertRequestWithinLimit(request);
-        const serialized = canonicalJson(request);
+        const serialized = canonicalJson(logicalPublicationRequest(request));
         const requestSha256 = sha256(serialized);
         const idempotencyKey = request.kind === "push" ? request.mutation.idempotencyKey : request.request.idempotencyKey;
         const queued = outbox.enqueue({
@@ -50,6 +56,8 @@ export async function publicationAction(input, context = {}) {
             requestSha256,
             ...(context.now ? { now: context.now() } : {}),
         });
+        if (input.action === "push" && input.assetManifestId)
+            outbox.deleteAssetManifest(input.assetManifestId);
         if (queued.state === "succeeded" || queued.state === "failed")
             return queued;
         return await deliverPublicationOperation(outbox, queued.operationId, config, context);
@@ -207,10 +215,10 @@ function buildOutboxRequest(config, input, assets) {
         assertSiteGrant(config, input.siteId);
         assertSlugGrant(config, input.slug);
         const document = publicationDocumentSchema.parse(input.document);
-        const referencedDigests = document.blocks.flatMap((block) => block.type === "file" || block.type === "image" ? [block.assetDigest] : []);
-        const manifestDigests = assets.map((asset) => asset.digest);
-        if (referencedDigests.length !== manifestDigests.length ||
-            referencedDigests.some((digest) => !manifestDigests.includes(digest)))
+        const referencedDigests = new Set(document.blocks.flatMap((block) => block.type === "file" || block.type === "image" ? [block.assetDigest] : []));
+        const manifestDigests = new Set(assets.map((asset) => asset.digest));
+        if (referencedDigests.size !== manifestDigests.size ||
+            [...referencedDigests].some((digest) => !manifestDigests.has(digest)))
             throw new Error("Document asset blocks must exactly match the pre-approved asset manifest");
         const payload = {
             connectorId,
@@ -220,7 +228,7 @@ function buildOutboxRequest(config, input, assets) {
             operation: input.operation,
             document,
             contentSha256: sha256(canonicalJson(document)),
-            assetDigests: manifestDigests,
+            assetDigests: [...manifestDigests],
         };
         const idempotencyKey = idempotencyKeyFor({ kind: "push", payload });
         return {
@@ -349,7 +357,26 @@ function assertSlugGrant(config, slug) {
         throw new Error("The publication slug is absent from the local pairing grant");
 }
 function slugMatches(grant, slug) {
-    return grant.endsWith("*") ? slug.startsWith(grant.slice(0, -1)) : slug === grant;
+    if (grant.endsWith("*"))
+        return slug.startsWith(grant.slice(0, -1));
+    if (grant.endsWith("/"))
+        return slug.startsWith(grant);
+    return slug === grant;
+}
+function assertPublicationIdentityPolicy(status, policy) {
+    if (!policy.allowedSiteIds.includes(status.siteId))
+        throw new Error("The publication belongs to a site outside local publication policy");
+    if (!policy.allowedSlugPrefixes.some((prefix) => slugMatches(prefix, status.slug)))
+        throw new Error("The publication slug is outside local publication policy");
+}
+function logicalPublicationRequest(request) {
+    if (request.kind === "control")
+        return request;
+    return {
+        kind: request.kind,
+        mutation: request.mutation,
+        assets: request.assets.map(({ path: _path, ...asset }) => asset),
+    };
 }
 function assertServerGrant(config, scope) {
     if (!config.paired?.scopes.includes(scope))

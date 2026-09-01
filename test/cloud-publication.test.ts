@@ -15,6 +15,7 @@ import {
   preparePublicationAssetManifest,
   type PublicationPolicy,
 } from "../src/cloud-publication.js";
+import { CloudPublicationOutbox } from "../src/cloud-publication-outbox.js";
 
 const connectorId = "00000000-0000-4000-8000-000000000011";
 const siteId = "00000000-0000-4000-8000-000000000022";
@@ -24,6 +25,14 @@ const document = {
   schemaVersion: "1.0" as const,
   title: "Bounded page",
   blocks: [{ type: "paragraph" as const, content: [{ text: "Hello", marks: [] }] }],
+};
+const fullPolicy: PublicationPolicy = {
+  allowedSiteIds: [siteId],
+  allowedSlugPrefixes: ["notes/"],
+  allowUpdate: true,
+  allowRollback: true,
+  allowDisable: true,
+  allowUnpublish: true,
 };
 
 describe("local Cloud publication actions", () => {
@@ -89,6 +98,55 @@ describe("local Cloud publication actions", () => {
       lastErrorCode: "dependency-unavailable",
       availableAt: 6_000,
     });
+  });
+
+  it("treats a trailing slash as a local slug prefix", async () => {
+    const { configFile } = await pairedConfig();
+    const client = {
+      publish: vi.fn(async () => ({
+        protocolVersion: "1.0",
+        publicationId,
+        versionId,
+        state: "ready",
+      })),
+    } as unknown as CloudClient;
+    await expect(
+      publicationAction(
+        {
+          action: "push",
+          configFile,
+          siteId,
+          publicationId,
+          slug: "notes/release",
+          operation: "create",
+          document,
+          policy: fullPolicy,
+        },
+        { client: () => client, workerId: "prefix-worker" },
+      ),
+    ).resolves.toMatchObject({ state: "succeeded" });
+    expect(client.publish).toHaveBeenCalledOnce();
+  });
+
+  it("checks status results against the local site and slug policy", async () => {
+    const { configFile } = await pairedConfig();
+    const publicationStatus = vi.fn(async () => ({
+      protocolVersion: "1.0" as const,
+      publicationId,
+      siteId: "00000000-0000-4000-8000-000000000099",
+      slug: "private/secret",
+      state: "ready" as const,
+      currentVersionId: versionId,
+      updatedAt: 1,
+    }));
+    const client = { publicationStatus } as unknown as CloudClient;
+    await expect(
+      publicationAction(
+        { action: "status", configFile, publicationId, policy: fullPolicy },
+        { client: () => client },
+      ),
+    ).rejects.toThrow("outside local publication policy");
+    expect(publicationStatus).toHaveBeenCalledOnce();
   });
 
   it("requires exact destructive confirmation and local MCP lifecycle policy", async () => {
@@ -168,7 +226,10 @@ describe("local Cloud publication actions", () => {
         document: {
           schemaVersion: "1.0",
           title: "Media",
-          blocks: [{ type: "image", assetDigest: prepared.digests[0]! }],
+          blocks: [
+            { type: "image", assetDigest: prepared.digests[0]! },
+            { type: "image", assetDigest: prepared.digests[0]! },
+          ],
         },
       },
       { client: () => client, workerId: "asset-worker" },
@@ -178,6 +239,10 @@ describe("local Cloud publication actions", () => {
     expect(client.uploadAsset).toHaveBeenCalledOnce();
     expect(client.commitAssetUpload).toHaveBeenCalledOnce();
     expect(client.publish).toHaveBeenCalledOnce();
+    const paths = resolveCloudPaths({ configFile });
+    const outbox = new CloudPublicationOutbox(paths.publicationOutboxFile);
+    expect(outbox.assetManifest(prepared.manifestId)).toBeUndefined();
+    outbox.close();
   });
 
   it("rejects media blocks without a matching pre-approved manifest", async () => {

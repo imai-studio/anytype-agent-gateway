@@ -1,4 +1,5 @@
-import { mkdtemp } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -35,6 +36,95 @@ describe("CloudPublicationOutbox", () => {
     });
     expect(duplicate.operationId).toBe(first.operationId);
     expect(duplicate).not.toHaveProperty("request");
+    outbox.close();
+  });
+
+  it("keeps its directory private and does not create world-readable WAL sidecars", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "knot-publish-outbox-mode-"));
+    await chmod(directory, 0o755);
+    const path = join(directory, "outbox.sqlite");
+    const outbox = new CloudPublicationOutbox(path);
+    outbox.saveAssetManifest(
+      [
+        {
+          digest: "f".repeat(64),
+          path: "/private/media.png",
+          fileName: "media.png",
+          contentType: "image/png",
+          byteSize: 10,
+        },
+      ],
+      1,
+    );
+    expect((await stat(directory)).mode & 0o077).toBe(0);
+    expect((await stat(path)).mode & 0o077).toBe(0);
+    expect(existsSync(`${path}-wal`)).toBe(false);
+    outbox.close();
+  });
+
+  it("prunes expired manifests and lets callers delete consumed manifests", () => {
+    const outbox = new CloudPublicationOutbox(":memory:");
+    const asset = {
+      digest: "f".repeat(64),
+      path: "/private/media.png",
+      fileName: "media.png",
+      contentType: "image/png",
+      byteSize: 10,
+    };
+    const expired = outbox.saveAssetManifest([asset], 1);
+    const fresh = outbox.saveAssetManifest([asset], 8 * 24 * 60 * 60 * 1_000 + 2);
+    expect(outbox.assetManifest(expired)).toBeUndefined();
+    expect(outbox.assetManifest(fresh)).toHaveLength(1);
+    outbox.deleteAssetManifest(fresh);
+    expect(outbox.assetManifest(fresh)).toBeUndefined();
+    outbox.close();
+  });
+
+  it("refreshes a queued asset path without changing logical idempotency", () => {
+    const outbox = new CloudPublicationOutbox(":memory:");
+    const digest = "c".repeat(64);
+    const mutation = {
+      connectorId,
+      siteId: "00000000-0000-4000-8000-000000000031",
+      publicationId,
+      slug: "notes/media",
+      operation: "create" as const,
+      document: {
+        schemaVersion: "1.0" as const,
+        title: "Media",
+        blocks: [{ type: "image" as const, assetDigest: digest }],
+      },
+      contentSha256: "d".repeat(64),
+      assetDigests: [digest],
+      idempotencyKey: "knot-idempotency-relocated-asset",
+    };
+    const asset = {
+      digest,
+      path: "/private/old/media.png",
+      fileName: "media.png",
+      contentType: "image/png",
+      byteSize: 10,
+    };
+    const first = outbox.enqueue({
+      request: { kind: "push", mutation, assets: [asset] },
+      idempotencyKey: mutation.idempotencyKey,
+      requestSha256: "e".repeat(64),
+      now: 1,
+    });
+    const second = outbox.enqueue({
+      request: {
+        kind: "push",
+        mutation,
+        assets: [{ ...asset, path: "/private/new/media.png" }],
+      },
+      idempotencyKey: mutation.idempotencyKey,
+      requestSha256: "e".repeat(64),
+      now: 2,
+    });
+    expect(second.operationId).toBe(first.operationId);
+    expect(outbox.request(first.operationId)).toMatchObject({
+      assets: [{ path: "/private/new/media.png" }],
+    });
     outbox.close();
   });
 

@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { connectorPublicationControlRequestSchema, publicationMutationSchema, } from "./cloud-contract.js";
 const operationStateSchema = z.enum(["queued", "in-flight", "retrying", "succeeded", "failed"]);
+const assetManifestRetentionMs = 7 * 24 * 60 * 60 * 1_000;
 export const publicationAssetSchema = z
     .object({
     digest: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -41,10 +42,17 @@ export class CloudPublicationOutbox {
             if (process.platform !== "win32" && (info.mode & 0o077) !== 0)
                 throw new Error("Cloud publication outbox must not be accessible to group or other users");
         }
-        if (path !== ":memory:")
-            mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+        if (path !== ":memory:") {
+            const directory = dirname(path);
+            mkdirSync(directory, { recursive: true, mode: 0o700 });
+            const directoryInfo = lstatSync(directory);
+            if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink())
+                throw new Error("Cloud publication outbox directory must be a real directory");
+            if (process.platform !== "win32")
+                chmodSync(directory, 0o700);
+        }
         this.db = new DatabaseSync(path);
-        this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+        this.db.exec("PRAGMA journal_mode=TRUNCATE; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
         this.db.exec(`
       CREATE TABLE IF NOT EXISTS publication_operations (
         operation_id TEXT PRIMARY KEY,
@@ -109,16 +117,27 @@ export class CloudPublicationOutbox {
             throw new Error("Publication outbox did not persist the operation");
         if (row.request_sha256 !== input.requestSha256)
             throw new Error("The idempotency key is already bound to a different publication request");
+        if (request.kind === "push" && row.state !== "in-flight" && row.state !== "succeeded")
+            this.db
+                .prepare(`UPDATE publication_operations
+             SET request_json=?,state='queued',available_at=?,last_error_code=NULL,last_error=NULL,
+                 lease_owner=NULL,lease_expires_at=NULL,updated_at=?
+           WHERE operation_id=? AND state<>'in-flight' AND state<>'succeeded'`)
+                .run(JSON.stringify(request), now, now, row.operation_id);
         if (request.kind === "push")
             for (const asset of request.assets)
                 this.db
                     .prepare(`INSERT INTO publication_asset_checkpoints(operation_id,digest,state,updated_at)
              VALUES(?,?,'pending',?) ON CONFLICT(operation_id,digest) DO NOTHING`)
                     .run(row.operation_id, asset.digest, now);
-        return mapOperation(row);
+        const refreshed = this.rowByIdempotencyKey(input.idempotencyKey);
+        if (!refreshed)
+            throw new Error("Publication outbox lost the persisted operation");
+        return mapOperation(refreshed);
     }
     saveAssetManifest(assets, now = Date.now()) {
         const parsed = z.array(publicationAssetSchema).min(1).max(100).parse(assets);
+        this.pruneAssetManifests(now - assetManifestRetentionMs);
         const manifestId = randomUUID();
         this.db
             .prepare("INSERT INTO publication_asset_manifests(manifest_id,manifest_json,created_at) VALUES(?,?,?)")
@@ -132,6 +151,14 @@ export class CloudPublicationOutbox {
         return row
             ? z.array(publicationAssetSchema).min(1).max(100).parse(JSON.parse(row.manifest_json))
             : undefined;
+    }
+    deleteAssetManifest(manifestId) {
+        this.db.prepare("DELETE FROM publication_asset_manifests WHERE manifest_id=?").run(manifestId);
+    }
+    pruneAssetManifests(createdBefore) {
+        return Number(this.db
+            .prepare("DELETE FROM publication_asset_manifests WHERE created_at<?")
+            .run(createdBefore).changes);
     }
     assetCheckpoint(operationId, digest) {
         const row = this.db

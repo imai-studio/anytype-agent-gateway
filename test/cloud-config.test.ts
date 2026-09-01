@@ -43,6 +43,12 @@ describe("cloud configuration", () => {
   it("accepts loopback HTTP but rejects remote plaintext servers", () => {
     expect(normalizeCloudBaseUrl("http://127.0.0.1:3000/path")).toBe("http://127.0.0.1:3000");
     expect(() => normalizeCloudBaseUrl("http://knot.example")).toThrow("HTTPS or loopback HTTP");
+    expect(() => normalizeCloudBaseUrl("not a URL")).toThrow();
+    try {
+      normalizeCloudBaseUrl("not a URL");
+    } catch (error) {
+      expect(error).not.toBeInstanceOf(TypeError);
+    }
   });
 
   it("removes only the selected cloud identity when explicitly forgotten", async () => {

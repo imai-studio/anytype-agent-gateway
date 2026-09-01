@@ -22,7 +22,12 @@ import {
 } from "./cloud-contract.js";
 
 const secureUrlSchema = z.url().superRefine((value, context) => {
-  const parsed = new URL(value);
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return;
+  }
   const loopback = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
   if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
     context.addIssue({ code: "custom", message: "Cloud URL must use HTTPS or loopback HTTP" });
@@ -113,11 +118,11 @@ export function resolveCloudPaths(
 }
 
 export function normalizeCloudBaseUrl(value: string): string {
-  const parsed = new URL(value);
+  const parsed = new URL(secureUrlSchema.parse(value));
   parsed.hash = "";
   parsed.search = "";
   parsed.pathname = "/";
-  return secureUrlSchema.parse(parsed.toString()).replace(/\/$/u, "");
+  return parsed.toString().replace(/\/$/u, "");
 }
 
 export async function initializeCloudConfig(input: {
