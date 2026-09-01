@@ -140,9 +140,13 @@ export class TypedWorkflowStepExecutor implements WorkflowStepExecutor {
         "agent workflow invocation requires a capability-scoped runtime; OpenClaw workflow mode is unavailable",
       );
     const project = parsed.data.project ?? this.config.runtime.defaultProject;
-    if (project && this.config.runtime.kind !== "codex")
+    if (!project)
+      throw new ClosedExecutorError(
+        "agent workflow invocation requires an explicitly authorized project",
+      );
+    if (this.config.runtime.kind !== "codex")
       throw new ClosedExecutorError("agent project selection requires the Codex runtime");
-    if (project && !this.config.automation.allowedProjects.includes(project))
+    if (!this.config.automation.allowedProjects.includes(project))
       throw new ClosedExecutorError("agent project is not locally authorized");
     if (parsed.data.model && !this.config.automation.allowedModels.includes(parsed.data.model))
       throw new ClosedExecutorError("agent model is not locally authorized");

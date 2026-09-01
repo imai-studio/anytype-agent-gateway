@@ -770,5 +770,32 @@ describe("closed typed workflow executors", () => {
     ).toMatchObject({ ok: false, error: expect.stringContaining("OpenClaw workflow mode") });
     expect(openclawStart).not.toHaveBeenCalled();
     openclawState.store.close();
+
+    const unscopedAgent = workflow(
+      [{ id: "agent", kind: "agent", config: { prompt: "do work" } }],
+      ["agent.invoke"],
+    );
+    const noDefaultConfig = configSchema.parse({
+      ...config(),
+      runtime: { kind: "codex" },
+    });
+    const unscopedState = prepare(unscopedAgent, noDefaultConfig);
+    const unscopedStart = vi.fn();
+    const unscopedExecutor = new TypedWorkflowStepExecutor(
+      unscopedState.store,
+      noDefaultConfig,
+      anytype(),
+      runtime({ start: unscopedStart }),
+      fallback,
+    );
+    expect(
+      await unscopedExecutor.execute(
+        unscopedState.claim,
+        unscopedAgent,
+        new AbortController().signal,
+      ),
+    ).toMatchObject({ ok: false, error: expect.stringContaining("explicitly authorized project") });
+    expect(unscopedStart).not.toHaveBeenCalled();
+    unscopedState.store.close();
   });
 });
