@@ -1,7 +1,7 @@
 import { createHash, createPrivateKey, randomBytes, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { z, type ZodType } from "zod";
-import type { CloudConfig } from "./cloud-config.js";
+import { validateCloudKey, type CloudConfig } from "./cloud-config.js";
 import {
   CLOUD_PROTOCOL_VERSION,
   commandClaimResponseSchema,
@@ -227,6 +227,7 @@ export class CloudClient {
     method: string,
     body: Uint8Array,
   ): Promise<Record<string, string>> {
+    await validateCloudKey(this.config);
     const connectorId = this.pairedConnectorId();
     const authority = normalizeAuthority(url.host);
     const timestamp = Math.floor(this.now() / 1_000) + this.clockOffsetSeconds;

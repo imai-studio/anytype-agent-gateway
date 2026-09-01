@@ -1,4 +1,4 @@
-import type { CloudConfig } from "./cloud-config.js";
+import { type CloudConfig } from "./cloud-config.js";
 import { type CloudCommandEnvelope, type CloudCommandResult, type PairingCredentials } from "./cloud-contract.js";
 export declare class CloudRequestError extends Error {
     readonly options: {
