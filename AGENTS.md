@@ -22,7 +22,7 @@ pnpm add --global .
 knot --version
 ```
 
-Use the checkout-local command while preparing the release. After npm trusted publishing completes, use `pnpm add --global @imai/knot@0.2.0`. After the repository rename and tag exist, the exact-source form is `pnpm add --global github:imai-studio/knot#v0.2.0`. Keep the former `imai-studio/anytype-agent-gateway` URL available through GitHub's repository redirect for compatibility.
+Use the checkout-local command while preparing the release. After npm trusted publishing completes, use `pnpm add --global @imai/knot@0.2.0`. After the `v0.2.0` tag exists, the exact-source form is `pnpm add --global github:imai-studio/knot#v0.2.0`. Keep the former `imai-studio/anytype-agent-gateway` URL available through GitHub's repository redirect for compatibility.
 
 Ask the operator for values the machine cannot discover safely: runtime (`codex` or `openclaw`), dedicated Anytype member name, invite links, selected chats and discussions, authorized participant IDs, project paths, wake policy, and permission policy. Follow `docs/agent-setup.md` to create or reuse the identity. Write configuration outside the repository. Run `knot validate` and `knot doctor`, prove the foreground workflow, and only then install the service.
 

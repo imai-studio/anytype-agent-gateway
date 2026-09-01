@@ -31,7 +31,7 @@ knot service migrate --config ~/.config/aag/klee/agent.yaml --dry-run --json
 `knot migrate` copies the legacy configuration, SQLite state, support files, and macOS logs to the
 Knot paths. It rejects symlinks and non-regular files, preserves modes, writes through same-filesystem
 temporary files/directories, fsyncs before rename, and compares file sizes and SHA-256 digests. For
-SQLite it additionally runs `quick_check` and `integrity_check` and compares route cursors, handled
+SQLite it also runs `quick_check` and `integrity_check` and compares route cursors, handled
 message versions and fingerprints, session bindings and generations, authorization overrides,
 outbox dedupe/delivery state, proactive deliveries, and bridge cursors. The schema is not rebranded
 or converted. Existing identical destinations make the command idempotent; any divergent destination
@@ -97,9 +97,10 @@ markers, and OpenClaw `aag` profile are not rewritten.
 - **Unauthorized sender unexpectedly wakes:** stop Knot and treat this as a security issue. Authority
   must come only from the immutable native Anytype participant/member ID; names and message content
   are never evidence.
-- **npm publish does not start:** the workflow intentionally waits for the repository rename to
-  `imai-studio/knot`. Confirm `@imai` scope authorization and the npm trusted-publisher tuple in the
-  [release checklist](release-checklist.md); do not add a long-lived token as a workaround.
+- **npm publish does not start:** the workflow runs only when the `v0.2.0` GitHub release is
+  published. It also verifies the `imai-studio/knot` repository name. Confirm the release tag,
+  `@imai` scope authorization, and npm trusted-publisher tuple in the
+  [release checklist](release-checklist.md). Do not add a long-lived token as a workaround.
 
 See the [compatibility matrix](compatibility.md) for surfaces intentionally retained through the
 0.2.x/0.3.x window.

@@ -114,9 +114,9 @@ A comment-thread prompt includes its owning object, reply ancestry, and other me
 
 The runtime owns context compaction beyond these transport-level bounds.
 
-An authorized `/new` wake message creates an explicit session boundary without requiring a second Anytype chat. Knot persists a generation per chat or root comment thread and changes the runtime session key after each reset. A reset excludes earlier message history from the transport prompt. If a run is active, reset replaces it visibly rather than steering it, because steering would preserve the very harness session the user asked to discard.
+An authorized `/new` wake message creates a session boundary without requiring a second Anytype chat. Knot persists a generation per chat or root comment thread and changes the runtime session key after each reset. A reset excludes earlier message history from the transport prompt. If a run is active, reset replaces it visibly. Steering would preserve the runtime session that the user asked to discard.
 
-Model selection follows the same boundary. Knot stores only the requested, applied, and default model IDs plus the last harness catalog for each conversation. It does not proxy providers or invent a cross-harness model taxonomy. Codex ACP applies the selection with `session/set_config_option`; OpenClaw applies it with `sessions.patch`. `/new --model` records the requested model before the generation changes, then applies it to the new native session before the first prompt. An allowlist and separate model-admin list keep model cost and capability changes explicit.
+Model selection follows the same boundary. Knot stores the requested, applied, and default model IDs plus the last runtime catalog for each conversation. It does not proxy providers or invent a shared model taxonomy. Codex ACP applies the selection with `session/set_config_option`; OpenClaw applies it with `sessions.patch`. `/new --model` records the requested model before the generation changes, then applies it to the new native session before the first prompt. An allowlist and separate model-admin list restrict model cost and capability changes.
 
 ## Immediate editable replies and native steering
 
@@ -124,7 +124,7 @@ Acknowledge a trigger immediately with a working reaction on the user's message 
 
 The default response mode keeps one message stable and streams the latest answer text into it. Streaming can be disabled independently; milestone and verbose modes add tool or status detail. The working reaction is removed on completion, silence, interruption, or failure.
 
-Thinking and answer text form explicit output cycles. Safe thinking/progress may occupy the working message temporarily; the next assistant text replaces it in that same message. A later distinct assistant text part starts a new message and streams there. This follows harness output boundaries instead of flattening every part into one growing blob.
+Thinking and answer text use separate output cycles. Safe progress may occupy the working message temporarily. The next assistant text replaces it in that message. A later assistant text part starts a new message and streams there. This preserves the runtime's output boundaries.
 
 If a follow-up arrives during the same active conversation, it steers the current run instead of starting a queued run. Knot freezes the previous progress message and creates a new reply beneath the follow-up. Later updates go to the new reply. Runtime adapters must report steering failures. Knot does not silently cancel and send the prompt again because that could repeat tool side effects.
 

@@ -28,6 +28,8 @@ and upgrade guide, and exclude source tests, state, credentials, and local confi
 
 ## Repository rename and npm trusted publishing
 
+The repository rename is complete. Recheck its settings and redirect before publishing the tag.
+
 1. Merge the complete Phase 1 stack and confirm CI passes on the release commit.
 2. Rename `imai-studio/anytype-agent-gateway` to `imai-studio/knot` in GitHub settings.
 3. Verify the old URL redirects to the same commit. Never create another repository with the old name.
@@ -86,7 +88,7 @@ combinations in a disposable `PATH`: Knot configured/legacy installed and legacy
 installed. Do not print the bridge token, Gateway token, API key, or continuation arguments.
 
 For both Klee and Anya, repeat the sender-auth spoof cases: renamed authorized member succeeds;
-duplicate display name, text claiming “Raj/operator/admin,” mention of an admin, reply to an admin,
+duplicate display name, text claiming `Raj/operator/admin`, mention of an admin, reply to an admin,
 and forwarded admin text all remain unauthorized because only the immutable native ID is authority.
 
 ## Live migration and exact rollback

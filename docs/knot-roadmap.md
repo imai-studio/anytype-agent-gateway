@@ -38,10 +38,11 @@ destinations, or destructive capabilities.
 Every inbound message is normalized with a principal whose authority comes only from the immutable
 native Anytype participant/member ID. Display names are informational and may change or collide.
 Message text, mentions, replies, forwarded content, and agent-generated context are never identity
-evidence. Wake allowlists and all privileged actions—including route access, model changes, project
-selection, and self-configuration—compare the authenticated immutable ID with locally configured
-participant-ID allowlists. Missing or malformed native identity fails closed. Audit events record
-native provenance and a non-reversible identifier digest, never credentials or display-name claims.
+evidence. Wake allowlists and privileged actions compare the authenticated immutable ID with
+locally configured participant-ID allowlists. This check covers route access, model changes,
+project selection, and self-configuration. Missing or malformed native identity fails closed. Audit
+events record native provenance and a non-reversible identifier digest, never credentials or
+display-name claims.
 Existing configured participant IDs remain valid.
 
 ## Phase 1: behavior-neutral Knot v0.2.0
@@ -51,7 +52,7 @@ services, protocol markers, MCP names, and configured agent identities such as K
 
 ### Compatibility policy
 
-- `knot` becomes primary in the rename PR; `aag` remains an alias through `0.2.x` and `0.3.x`, with
+- `knot` is primary; `aag` remains an alias through `0.2.x` and `0.3.x`, with
   removal no earlier than `1.0.0`.
 - `KNOT_*` and `AAG_*` equivalents both work. A legacy-only setting produces at most one actionable
   process warning. Equivalent dual values are accepted; conflicting normalized values fail without
@@ -73,10 +74,8 @@ services, protocol markers, MCP names, and configured agent identities such as K
 3. **Installation/service migration (complete):** `knot migrate`, `knot service migrate`, old-service
    exclusion, process-lock checks, copy/verify/backup/rollback behavior, dual Heart lookup, and
    OpenClaw plugin compatibility.
-4. **Release engineering/docs (this PR):** publishing and provenance, compatibility matrix, upgrade and
+4. **Release engineering/docs (complete):** publishing and provenance, compatibility matrix, upgrade and
    rollback guides, troubleshooting, installation validation, and repository rename.
-
-Later Phase 1 PRs stack on PR 1 because their public renames depend on these contracts.
 
 ### v0.2.0 release gates
 
@@ -101,7 +100,7 @@ explicit copied-state migration keeps a timestamped backup and documented restor
 
 Phase 2 is developed as small, feature-gated PRs. Anytype is the **intent plane** (definitions,
 schedules, approvals, summaries, dashboards); local configuration is the **authority plane**
-(authors, spaces, projects, filesystem, harness, network, secrets, budgets); SQLite is the durable
+(authors, spaces, projects, filesystem, runtime, network, secrets, budgets); SQLite is the durable
 **execution plane** (immutable versions, approved hashes, events, runs, attempts, effects, retries,
 timers, snapshots, audit, mirror indexes, and circuit breakers).
 

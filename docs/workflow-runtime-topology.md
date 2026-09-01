@@ -365,8 +365,7 @@ expires.
 
 The v0.3 runtime performs no automatic deletion of workflow versions, approval subjects, approval
 decisions, normalized events, runs, attempts, effects, receipts, audit records, or dead letters.
-This is deliberate. Deleting evidence before the first long soak would make failure analysis
-guesswork.
+Deleting that evidence before the first long soak would make failure analysis guesswork.
 
 Knot may compact replaceable Anytype run-status projections and transient debug logs. It must not
 compact SQLite execution truth in v0.3.
