@@ -181,6 +181,6 @@ runner does not infer success from a missing worker process. It also records
 `source_refetch_required` for a claimed step and attempt when the immutable version contains
 redacted source text.
 
-Schema 14 adds the Cloud command inbox, effect receipts, and Anytype projection outbox. The live
+Schema 15 adds the Cloud command inbox, effect receipts, and Anytype projection outbox. The live
 state database is forced to mode `0600` because the inbox must retain the current fenced Cloud lease
 until its terminal result is acknowledged. CLI views omit that lease.
