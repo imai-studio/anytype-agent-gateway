@@ -98,13 +98,13 @@ The suggested delivery order is:
 7. Add custom domains, authenticated readers, billing, media workers, and isolated hosted connectors
    only after their individual security and operational gates pass.
 
-The Knot Cloud repository and hosted foundation exist. The local connector branch implements
-private Ed25519 key setup, human-initiated pairing polling, protocol diagnostics, and signed command
-claim, lease, result, and rejection calls. It does not execute cloud commands. Production pairing
-and command routes are still under review, so the end-to-end workflow remains unavailable there.
-Relay execution and the remote Anytype data API client are still planned. The local publication
-commands, asset checkpoints, outbox, and constrained MCP tool are implemented, but they work only
-against a Cloud deployment whose release notes include the matching publication routes.
+The Knot Cloud repository and hosted foundation exist. The local release candidate includes private
+Ed25519 setup, pairing, signed command transport, durable publication operations, and a default-off
+cloud-to-local workflow bridge. The bridge requires the Cloud side to emit an authenticated actor
+digest; a principal-kind-only envelope remains incompatible. Production activation and the full
+remote Anytype data API integration therefore remain release-gated. The publication commands,
+asset checkpoints, outbox, and constrained MCP tool work only against a deployment whose release
+notes include the matching routes.
 
 ## Gateway work not included in the current release
 

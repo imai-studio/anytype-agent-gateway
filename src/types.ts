@@ -226,6 +226,20 @@ export interface AnytypePort {
     spaceId: string,
     objectId: string,
   ): Promise<{ id: string; name?: string; markdown?: string } & Record<string, unknown>>;
+  searchSpace?(
+    spaceId: string,
+    input: { query?: string; types?: string[]; offset?: number; limit?: number },
+  ): Promise<Record<string, unknown>[]>;
+  createObject?(
+    spaceId: string,
+    input: {
+      type_key: string;
+      name?: string;
+      body?: string;
+      properties?: Record<string, unknown>[];
+      icon?: Record<string, unknown>;
+    },
+  ): Promise<Record<string, unknown>>;
   listProperties?(spaceId: string): Promise<Record<string, unknown>[]>;
   listPropertyTags(spaceId: string, propertyId: string): Promise<AnytypeTag[]>;
   createPropertyTag(
@@ -236,8 +250,25 @@ export interface AnytypePort {
   updateObject(
     spaceId: string,
     objectId: string,
-    input: { properties: Array<{ key: string; multi_select: string[] }> },
+    input: {
+      type_key?: string;
+      name?: string;
+      markdown?: string;
+      properties?: Record<string, unknown>[];
+      icon?: Record<string, unknown>;
+    },
   ): Promise<Record<string, unknown>>;
+  archiveObject?(spaceId: string, objectId: string): Promise<Record<string, unknown>>;
+  addObjectsToList?(spaceId: string, listId: string, objectIds: string[]): Promise<void>;
+  listViews?(spaceId: string, listId: string): Promise<Record<string, unknown>[]>;
+  listViewObjects?(
+    spaceId: string,
+    listId: string,
+    viewId: string,
+    page?: { offset: number; limit: number },
+  ): Promise<Record<string, unknown>[]>;
+  removeObjectFromList?(spaceId: string, listId: string, objectId: string): Promise<void>;
+  uploadFile?(spaceId: string, path: string): Promise<Record<string, unknown>>;
   searchObjects(
     spaceId: string,
     offset: number,

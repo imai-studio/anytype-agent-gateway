@@ -46,6 +46,11 @@ read-only. It must return the exact definition source, native revision, and veri
 then checks the source, version, approval, editor, policy, and current authority hashes before it
 can resume the step. The current gateway does not install a resolver or effect executor.
 
+The general Anytype-authored workflow catalog still has only an empty transform executor. The
+default-off Cloud command bridge is a separate typed input adapter that shares the runner tick,
+durable effect receipts, and projection outbox; it does not make arbitrary workflow step kinds
+executable. See [`cloud-workflows.md`](cloud-workflows.md).
+
 The observer polls every allowed space through the public Anytype API. It stores one durable page
 cursor, reconciliation boundary, revision watermark, failure count, and next-scan time per space.
 `minimumIntervalSeconds`, `maximumIntervalSeconds`, and `pageSize` bound that work. The page size is
@@ -175,3 +180,7 @@ cancellation, leases, and fences in SQLite. A restart recovers an expired claim 
 runner does not infer success from a missing worker process. It also records
 `source_refetch_required` for a claimed step and attempt when the immutable version contains
 redacted source text.
+
+Schema 14 adds the Cloud command inbox, effect receipts, and Anytype projection outbox. The live
+state database is forced to mode `0600` because the inbox must retain the current fenced Cloud lease
+until its terminal result is acknowledged. CLI views omit that lease.

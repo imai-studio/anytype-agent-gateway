@@ -14,7 +14,9 @@ does not open a public listener.
 A cloud grant does not override local policy. Every claimed command must still pass the local
 participant, space, operation, project, file, runtime, and approval checks before an adapter may
 execute it. The signed client exposes claim, lease extension, result, and local-policy rejection
-operations. It does not execute a command by itself.
+operations. The optional, default-off workflow bridge described in
+[`cloud-workflows.md`](cloud-workflows.md) persists and executes compatible commands through the
+existing local runner.
 
 ## Prepare the connector
 
@@ -110,6 +112,10 @@ protocol reachability, not proof that the cloud has recorded a recent heartbeat.
 The publication commands use only the signed connector routes frozen in the Cloud contract. See
 [`cloud-publishing.md`](cloud-publishing.md) for typed document input, asset manifests, durable
 operation status, lifecycle controls, and the constrained `aag_publish` tool.
+
+Cloud command execution requires an authenticated principal digest in every claimed envelope. A
+deployment that returns only a principal kind is intentionally incompatible with the local
+execution gate.
 
 ## Troubleshooting
 

@@ -54,6 +54,11 @@ export interface WorkflowSourceResolver {
 const SOURCE_REFETCH_REQUIRED =
   "source_refetch_required: workflow text is not stored; refetch and reverify the source before execution";
 
+export interface WorkflowRunnerExtension {
+  beforeTick?(): Promise<void>;
+  afterTick?(): Promise<void>;
+}
+
 export class NoEffectWorkflowStepExecutor implements WorkflowStepExecutor {
   async execute(
     claim: WorkflowClaim,
@@ -84,6 +89,7 @@ export class WorkflowRunner {
     private readonly executor: WorkflowStepExecutor = new NoEffectWorkflowStepExecutor(),
     private readonly now: () => number = Date.now,
     private readonly sourceResolver?: WorkflowSourceResolver,
+    private readonly extensions: WorkflowRunnerExtension[] = [],
   ) {
     this.queue = new WorkflowQueue(store);
     this.workerIds = Array.from(
@@ -111,6 +117,16 @@ export class WorkflowRunner {
   }
 
   async tickOnce(signal: AbortSignal = new AbortController().signal): Promise<void> {
+    for (const extension of this.extensions) {
+      try {
+        await extension.beforeTick?.();
+      } catch (error) {
+        this.log("workflow_runner_extension_failed", {
+          phase: "before_tick",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     const now = this.now();
     const initialized = this.queue.initializeMatcher(now);
     const sourceResumed = await this.resumeSourceRefetchSteps(now, signal);
@@ -152,6 +168,16 @@ export class WorkflowRunner {
         claimed,
         sourceResumed,
       });
+    for (const extension of this.extensions) {
+      try {
+        await extension.afterTick?.();
+      } catch (error) {
+        this.log("workflow_runner_extension_failed", {
+          phase: "after_tick",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   matchEventsOnce(now = this.now()): number {

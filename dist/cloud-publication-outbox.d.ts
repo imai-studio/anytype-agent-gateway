@@ -2,11 +2,11 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { type PublicationControlRequest, type PublicationMutation } from "./cloud-contract.js";
 declare const operationStateSchema: z.ZodEnum<{
-    failed: "failed";
     succeeded: "succeeded";
+    failed: "failed";
     queued: "queued";
-    "in-flight": "in-flight";
     retrying: "retrying";
+    "in-flight": "in-flight";
 }>;
 export declare const publicationAssetSchema: z.ZodObject<{
     digest: z.ZodString;
@@ -39,8 +39,8 @@ declare const storedRequestSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
                     marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                         code: "code";
                         bold: "bold";
-                        strikethrough: "strikethrough";
                         italic: "italic";
+                        strikethrough: "strikethrough";
                         underline: "underline";
                     }>>>;
                     href: z.ZodOptional<z.ZodURL>;
@@ -52,8 +52,8 @@ declare const storedRequestSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
                     marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                         code: "code";
                         bold: "bold";
-                        strikethrough: "strikethrough";
                         italic: "italic";
+                        strikethrough: "strikethrough";
                         underline: "underline";
                     }>>>;
                     href: z.ZodOptional<z.ZodURL>;
@@ -65,8 +65,8 @@ declare const storedRequestSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
                     marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                         code: "code";
                         bold: "bold";
-                        strikethrough: "strikethrough";
                         italic: "italic";
+                        strikethrough: "strikethrough";
                         underline: "underline";
                     }>>>;
                     href: z.ZodOptional<z.ZodURL>;
@@ -83,8 +83,8 @@ declare const storedRequestSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
                     marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                         code: "code";
                         bold: "bold";
-                        strikethrough: "strikethrough";
                         italic: "italic";
+                        strikethrough: "strikethrough";
                         underline: "underline";
                     }>>>;
                     href: z.ZodOptional<z.ZodURL>;
@@ -101,8 +101,8 @@ declare const storedRequestSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
                     marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                         code: "code";
                         bold: "bold";
-                        strikethrough: "strikethrough";
                         italic: "italic";
+                        strikethrough: "strikethrough";
                         underline: "underline";
                     }>>>;
                     href: z.ZodOptional<z.ZodURL>;
@@ -114,8 +114,8 @@ declare const storedRequestSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
                     marks: z.ZodDefault<z.ZodArray<z.ZodEnum<{
                         code: "code";
                         bold: "bold";
-                        strikethrough: "strikethrough";
                         italic: "italic";
+                        strikethrough: "strikethrough";
                         underline: "underline";
                     }>>>;
                     href: z.ZodOptional<z.ZodURL>;

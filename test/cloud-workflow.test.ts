@@ -1,0 +1,556 @@
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
+import { configSchema, type AgentConfig } from "../src/config.js";
+import {
+  AnytypeCloudCommandExecutor,
+  CloudCommandStore,
+  CloudWorkflowExtension,
+  type CloudCommandClient,
+  type CloudCommandExecutionPort,
+} from "../src/cloud-workflow.js";
+import { cloudConfigSchema } from "../src/cloud-config.js";
+import {
+  commandEnvelopeSchema,
+  commandResultSchema,
+  type CloudCommandEnvelope,
+  type CloudCommandResult,
+} from "../src/cloud-contract.js";
+import { Store } from "../src/store.js";
+import { FakeAnytype } from "./fakes.js";
+
+const actorDigest = "a".repeat(64);
+
+function command(
+  overrides: Partial<CloudCommandEnvelope> & {
+    operation?: CloudCommandEnvelope["payload"]["operation"];
+  } = {},
+): CloudCommandEnvelope {
+  const { operation, ...envelopeOverrides } = overrides;
+  return commandEnvelopeSchema.parse({
+    protocolVersion: "1.0",
+    commandId: "03b1731d-10a3-48ab-b8e4-5b164e536d20",
+    connectorId: "68bc8f83-fd2e-4f0e-a5de-ad539bcaf0d0",
+    requiredScope: "anytype.chats.send",
+    createdBy: "human-session",
+    actor: {
+      principalDigest: actorDigest,
+      digestVersion: 1,
+      provenance: "authenticated-cloud-session",
+    },
+    createdAt: 900,
+    notBefore: 900,
+    expiresAt: 2_000,
+    attempt: 1,
+    leaseToken: "lease_token_1234567890abcdefghijklmnop",
+    leaseExpiresAt: 1_100,
+    payload: {
+      domain: "anytype",
+      operation: operation ?? {
+        type: "chat.send",
+        spaceId: "space-1",
+        chatId: "chat-1",
+        message: "hello",
+      },
+    },
+    ...envelopeOverrides,
+  });
+}
+
+function settings(
+  overrides: Partial<AgentConfig["cloudCommands"]> = {},
+): AgentConfig["cloudCommands"] {
+  return configSchema.parse({
+    version: 1,
+    agent: { name: "Knot", participantId: "agent-1" },
+    anytype: { apiKeyFile: "/tmp/key" },
+    spaces: [{ id: "space-1" }],
+    runtime: { kind: "codex" },
+    automation: {
+      enabled: true,
+      observation: true,
+      execution: true,
+      allowedAuthorIds: ["operator"],
+      allowedSpaceIds: ["space-1"],
+    },
+    cloudCommands: {
+      enabled: true,
+      approval: "none",
+      allowedCreatorKinds: ["human-session"],
+      allowedSpaceIds: ["space-1"],
+      allowedActorDigests: [actorDigest],
+      allowedScopes: ["anytype.chats.send"],
+      ...overrides,
+    },
+  }).cloudCommands;
+}
+
+function clientFor(commands: CloudCommandEnvelope[]) {
+  const submitResult = vi.fn(
+    async (_command: CloudCommandEnvelope, _result: CloudCommandResult) => ({
+      protocolVersion: "1.0" as const,
+      commandId: commands[0]?.commandId ?? "03b1731d-10a3-48ab-b8e4-5b164e536d20",
+      attempt: 1,
+      status: "accepted" as const,
+      state: "succeeded" as const,
+    }),
+  );
+  const extendLease = vi.fn(async (item: CloudCommandEnvelope) => ({
+    protocolVersion: "1.0" as const,
+    commandId: item.commandId,
+    attempt: item.attempt,
+    leaseExpiresAt: 1_200,
+  }));
+  const claimCommands = vi.fn(async () => ({
+    protocolVersion: "1.0" as const,
+    commands: commands.splice(0, 1),
+    pollAfterSeconds: 5,
+  }));
+  const controlPublication = vi.fn(async () => {
+    throw new Error("not used");
+  });
+  return {
+    client: { claimCommands, extendLease, submitResult, controlPublication } as CloudCommandClient,
+    claimCommands,
+    extendLease,
+    submitResult,
+  };
+}
+
+const succeeded: CloudCommandResult = commandResultSchema.parse({
+  outcome: "succeeded",
+  result: {
+    type: "chat.send",
+    spaceId: "space-1",
+    chatId: "chat-1",
+    messageId: "message-1",
+    sentAt: 1_000,
+  },
+});
+
+describe("cloud workflow bridge", () => {
+  it("is feature-gated and requires the durable runner", () => {
+    const parsed = configSchema.parse({
+      version: 1,
+      agent: { name: "Knot", participantId: "agent-1" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ id: "space-1" }],
+      runtime: { kind: "codex" },
+    });
+    expect(parsed.cloudCommands.enabled).toBe(false);
+    expect(() =>
+      configSchema.parse({
+        ...parsed,
+        cloudCommands: {
+          enabled: true,
+          allowedScopes: ["anytype.chats.send"],
+          allowedActorDigests: [actorDigest],
+        },
+      }),
+    ).toThrow("durable automation runner");
+  });
+
+  it("persists before execution, deduplicates replay, and fences terminal completion", async () => {
+    const store = new Store(":memory:");
+    const { client, submitResult } = clientFor([command()]);
+    const execute = vi.fn(async () => succeeded);
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute } as CloudCommandExecutionPort,
+      settings(),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    const inbox = new CloudCommandStore(store);
+    expect(inbox.command(command().commandId)).toMatchObject({ state: "terminal_pending" });
+    expect(execute).toHaveBeenCalledOnce();
+    await extension.beforeTick();
+    expect(submitResult).toHaveBeenCalledOnce();
+    expect(inbox.command(command().commandId)).toMatchObject({ state: "succeeded" });
+    await extension.beforeTick();
+    expect(execute).toHaveBeenCalledOnce();
+    store.close();
+  });
+
+  it("quarantines an interrupted effect, reports failure, and never repeats it", async () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    const item = command();
+    inbox.persistClaim(item, 1_000_000);
+    inbox.prepare(item.commandId, false, 1_000_000);
+    inbox.startEffect(item.commandId, 1_000_000);
+    expect(inbox.recoverInterruptedEffects(1_000_001)).toBe(1);
+    expect(inbox.command(item.commandId)).toMatchObject({
+      state: "dead_letter",
+      lastErrorCode: "effect-outcome-unknown",
+    });
+    expect(() => inbox.retry(item.commandId)).toThrow("cannot be retried safely");
+    const { client, submitResult } = clientFor([]);
+    const execute = vi.fn(async () => succeeded);
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute },
+      settings(),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_002,
+    );
+    await extension.beforeTick();
+    expect(submitResult).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(inbox.command(item.commandId)).toMatchObject({
+      state: "dead_letter",
+      completedAt: 1_000_002,
+    });
+    store.close();
+  });
+
+  it("rejects a stale local effect fence", () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    const item = command();
+    inbox.persistClaim(item, 1_000_000);
+    inbox.prepare(item.commandId, false, 1_000_000);
+    const claim = inbox.startEffect(item.commandId, 1_000_000);
+    expect(inbox.completeEffect(item.commandId, "stale-fence", succeeded, 1_000_001)).toBe(false);
+    expect(inbox.command(item.commandId)?.state).toBe("running");
+    expect(inbox.completeEffect(item.commandId, claim.fencingToken, succeeded, 1_000_002)).toBe(
+      true,
+    );
+    expect(inbox.command(item.commandId)?.state).toBe("terminal_pending");
+    store.close();
+  });
+
+  it("rejects an immutable command ID replay with different content", () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    inbox.persistClaim(command(), 1_000_000);
+    expect(() =>
+      inbox.persistClaim(
+        command({
+          operation: {
+            type: "chat.send",
+            spaceId: "space-1",
+            chatId: "chat-1",
+            message: "different",
+          },
+        }),
+      ),
+    ).toThrow("different immutable content");
+    store.close();
+  });
+
+  it("accepts a new fenced cloud lease for the same immutable command", () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    const original = command();
+    inbox.persistClaim(original, 1_000_000);
+    const renewed = command({
+      attempt: 2,
+      leaseToken: "renewed_lease_token_1234567890abcdef",
+      leaseExpiresAt: 1_200,
+    });
+    expect(() => inbox.persistClaim(renewed, 1_010_000)).not.toThrow();
+    expect(inbox.command(original.commandId)).toMatchObject({
+      attempt: 2,
+      leaseExpiresAt: 1_200_000,
+    });
+    expect(inbox.envelope(original.commandId)).toMatchObject({
+      attempt: 2,
+      leaseToken: "renewed_lease_token_1234567890abcdef",
+      leaseExpiresAt: 1_200,
+    });
+    store.close();
+  });
+
+  it("denies revoked local scope and reports the rejection without executing", async () => {
+    const store = new Store(":memory:");
+    const { client, submitResult } = clientFor([command()]);
+    const execute = vi.fn(async () => succeeded);
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute },
+      settings({ allowedScopes: ["anytype.objects.read"] }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    expect(execute).not.toHaveBeenCalled();
+    await extension.beforeTick();
+    expect(submitResult.mock.calls[0]?.[1]).toEqual({
+      outcome: "rejected-by-local-policy",
+      reasonCode: "scope-denied",
+    });
+    store.close();
+  });
+
+  it("revalidates local policy after persistence and before an effect", async () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    const item = command();
+    inbox.persistClaim(item, 1_000_000);
+    inbox.prepare(item.commandId, false, 1_000_000);
+    const execute = vi.fn(async () => succeeded);
+    const { client } = clientFor([]);
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute },
+      settings({ allowedScopes: ["anytype.objects.read"] }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_001,
+    );
+
+    await extension.beforeTick();
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(inbox.command(item.commandId)).toMatchObject({
+      state: "terminal_pending",
+      result: { outcome: "rejected-by-local-policy", reasonCode: "scope-denied" },
+    });
+    store.close();
+  });
+
+  it("does not start an effect under an expired cloud lease", async () => {
+    const store = new Store(":memory:");
+    const stale = command({ leaseExpiresAt: 999 });
+    const fixture = clientFor([stale]);
+    fixture.client.extendLease = vi.fn(async () => {
+      throw new Error("stale lease");
+    });
+    const execute = vi.fn(async () => succeeded);
+    const extension = new CloudWorkflowExtension(
+      store,
+      fixture.client,
+      { execute },
+      settings(),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+
+    await extension.beforeTick();
+    await extension.beforeTick();
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(new CloudCommandStore(store).command(stale.commandId)?.state).toBe("queued");
+    store.close();
+  });
+
+  it("denies a mismatched authenticated cloud principal digest", async () => {
+    const store = new Store(":memory:");
+    const { client } = clientFor([command()]);
+    const execute = vi.fn(async () => succeeded);
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute },
+      settings({ allowedActorDigests: ["c".repeat(64)] }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    expect(execute).not.toHaveBeenCalled();
+    expect(new CloudCommandStore(store).command(command().commandId)?.result).toMatchObject({
+      outcome: "rejected-by-local-policy",
+      reasonCode: "actor-principal-denied",
+    });
+    store.close();
+  });
+
+  it("keeps writes awaiting explicit approval and supports operator rejection", async () => {
+    const store = new Store(":memory:");
+    const item = command();
+    const { client } = clientFor([item]);
+    const execute = vi.fn(async () => succeeded);
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute },
+      settings({ approval: "writes" }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    const inbox = new CloudCommandStore(store);
+    expect(inbox.command(item.commandId)?.state).toBe("awaiting_approval");
+    expect(inbox.reject(item.commandId, "operator-rejected")).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    store.close();
+  });
+
+  it("extends a near-expiry lease and survives an offline poll", async () => {
+    const store = new Store(":memory:");
+    const item = command({ leaseExpiresAt: 1_001 });
+    const inbox = new CloudCommandStore(store);
+    inbox.persistClaim(item, 1_000_000);
+    inbox.prepare(item.commandId, true, 1_000_000);
+    const { client, extendLease } = clientFor([]);
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({ approval: "all" }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    expect(extendLease).toHaveBeenCalledOnce();
+    expect(inbox.command(item.commandId)?.leaseExpiresAt).toBe(1_200_000);
+
+    const offline = {
+      ...client,
+      claimCommands: vi.fn(async () => {
+        throw new Error("offline");
+      }),
+    } as CloudCommandClient;
+    const second = new CloudWorkflowExtension(
+      store,
+      offline,
+      { execute: vi.fn(async () => succeeded) },
+      settings({ approval: "all" }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_010_000,
+    );
+    await expect(second.beforeTick()).resolves.toBeUndefined();
+    store.close();
+  });
+
+  it("delivers one audit projection from the durable outbox", async () => {
+    const store = new Store(":memory:");
+    const item = command();
+    const { client } = clientFor([item]);
+    const anytype = new FakeAnytype();
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({
+        approval: "all",
+        projection: { enabled: true, spaceId: "audit-space", chatId: "audit-chat" },
+      }),
+      anytype,
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    await extension.afterTick();
+    await extension.afterTick();
+    expect(anytype.messages).toHaveLength(1);
+    expect(anytype.messages[0]?.content?.text).toContain(item.commandId);
+    const delivered = store.db
+      .prepare("SELECT COUNT(*) AS count FROM cloud_projection_outbox WHERE state='delivered'")
+      .get() as { count: number };
+    expect(delivered.count).toBe(1);
+    store.close();
+  });
+
+  it("bounds retryable failures and does not repeat after the local attempt budget", async () => {
+    const store = new Store(":memory:");
+    const item = command({
+      requiredScope: "anytype.objects.read",
+      operation: { type: "object.read", spaceId: "space-1", objectId: "object-1" },
+    });
+    const { client, submitResult } = clientFor([item]);
+    const execute = vi.fn(async () => {
+      throw new Error("offline Anytype API");
+    });
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute },
+      settings({
+        allowedScopes: ["anytype.objects.read"],
+        maximumLocalAttempts: 1,
+      }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    await extension.beforeTick();
+    await extension.beforeTick();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(submitResult).toHaveBeenCalledOnce();
+    expect(new CloudCommandStore(store).command(item.commandId)).toMatchObject({
+      state: "dead_letter",
+      localAttempts: 1,
+      lastErrorCode: "external-effect-failed",
+    });
+    store.close();
+  });
+
+  it("rejects an expired command", async () => {
+    const store = new Store(":memory:");
+    const expired = command({ createdAt: 1, notBefore: 1, leaseExpiresAt: 2, expiresAt: 3 });
+    const { client } = clientFor([expired]);
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings(),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    expect(new CloudCommandStore(store).command(expired.commandId)?.result).toEqual({
+      outcome: "rejected-by-local-policy",
+      reasonCode: "command-expired",
+    });
+    store.close();
+  });
+
+  it("uses locally observed Anytype participant provenance and ignores claimed digests", async () => {
+    const anytype = new FakeAnytype();
+    anytype.messages.push({
+      id: "message-1",
+      creator: "native-participant-1",
+      created_at: 1_000_000,
+      content: { text: "hello" },
+      senderDigest: "b".repeat(64),
+    } as never);
+    const config = cloudConfigSchema.parse({
+      version: 1,
+      baseUrl: "https://knot.example/",
+      connectorName: "test",
+      protocolVersion: "1.0",
+      publicKey: "a".repeat(43),
+      privateKeyFile: "/tmp/key",
+      requestedScopes: ["anytype.chats.read"],
+      requestedSlugGrants: [],
+      paired: {
+        connectorId: "68bc8f83-fd2e-4f0e-a5de-ad539bcaf0d0",
+        tenantId: "tenant-1",
+        scopes: ["anytype.chats.read"],
+        siteIds: [],
+        slugGrants: [],
+        approvedAt: 1,
+      },
+    });
+    const cloud = clientFor([]).client;
+    const executor = new AnytypeCloudCommandExecutor(anytype, cloud, config, "agent-1");
+    const item = command({
+      requiredScope: "anytype.chats.read",
+      operation: { type: "chat.read", spaceId: "space-1", chatId: "chat-1", limit: 10 },
+    });
+    const result = await executor.execute(item, "e".repeat(64));
+    expect(result.outcome).toBe("succeeded");
+    if (result.outcome !== "succeeded" || result.result.type !== "chat.read") return;
+    const expected = createHash("sha256")
+      .update("knot.anytype.participant.v1\0native-participant-1")
+      .digest("hex");
+    expect(result.result.messages[0]?.senderDigest).toBe(expected);
+    expect(result.result.messages[0]?.senderDigest).not.toBe("b".repeat(64));
+  });
+});

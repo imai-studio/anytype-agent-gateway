@@ -182,6 +182,30 @@ function delivery(
 }
 
 describe("durable workflow runner", () => {
+  it("contains extension failures without stopping the workflow scheduler", async () => {
+    const store = new Store(":memory:");
+    const log = vi.fn();
+    const afterTick = vi.fn();
+    const runner = new WorkflowRunner(store, runnerConfig(), log, undefined, () => 500, [
+      {
+        beforeTick: async () => {
+          throw new Error("cloud unavailable");
+        },
+        afterTick,
+      },
+    ]);
+
+    await runner.tickOnce();
+
+    expect(runner.queue.cursor()?.initialized).toBe(true);
+    expect(afterTick).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith("workflow_runner_extension_failed", {
+      phase: "before_tick",
+      error: "cloud unavailable",
+    });
+    store.close();
+  });
+
   it("baselines existing events the first time execution is enabled", async () => {
     const store = new Store(":memory:");
     const version = saveVersion(store, workflow());
