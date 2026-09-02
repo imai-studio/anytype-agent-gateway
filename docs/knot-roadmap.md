@@ -5,15 +5,15 @@ This page tracks delivery status. Released behavior lives in
 missing lives in [`planned-work.md`](planned-work.md). The separate Cloud service keeps its own
 [release record](https://github.com/imai-studio/knot-cloud/blob/main/docs/releases.md).
 
-| Milestone                              | Status on local `main`                                   |
-| -------------------------------------- | -------------------------------------------------------- |
-| Phase 1 rename and AAG compatibility   | Complete                                                 |
-| Agent chats, discussions, and DMs      | Released                                                 |
-| Phase 2 observer and durable runner    | Default-off preview pending the representative soak      |
-| Closed workflow executors and CLI      | Default-off preview pending the representative soak      |
-| Cloud connector and publication client | Implemented; requires matching released Cloud routes     |
-| Cloud Relay and Anytype data client    | Implemented behind default-off local gates; not deployed |
-| Knot Data and Mirrors                  | Planned                                                  |
+| Milestone                              | Status on local `main`                                     |
+| -------------------------------------- | ---------------------------------------------------------- |
+| Phase 1 rename and AAG compatibility   | Complete                                                   |
+| Agent chats, discussions, and DMs      | Released                                                   |
+| Phase 2 observer and durable runner    | Default-off preview pending the representative soak        |
+| Closed workflow executors and CLI      | Default-off preview pending the representative soak        |
+| Cloud connector and publication client | Released with the matching Knot Cloud routes               |
+| Cloud Relay and Anytype data client    | Cloud routes released; local execution remains default-off |
+| Knot Data and Mirrors                  | Planned                                                    |
 
 Repository code, a passing pull request, and a Cloud deployment are different release boundaries.
 Update this table only when the relevant local documentation or Cloud release record changes.

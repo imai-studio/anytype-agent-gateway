@@ -15,8 +15,8 @@ process represents one agent identity.
 > is `v0.1.3` under the former Anytype Agent Gateway name.
 
 The Phase 2 workflow runtime and Cloud command bridge on `main` are disabled by default while their
-representative soak and production Cloud routes are pending. The separate Cloud release record, not
-repository code alone, determines which hosted routes are available.
+representative soak is pending. The separate Cloud release record, not repository code alone,
+determines which hosted routes are available.
 
 [Quick start](#quick-start) · [How it works](#how-it-works) ·
 [Configuration](#configuration) · [Documentation](#documentation) ·

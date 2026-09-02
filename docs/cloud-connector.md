@@ -1,10 +1,8 @@
 # Connect a local Knot runtime to Knot Cloud
 
-Status: the local connector identity, pairing poller, protocol checks, signed command client, typed
-publication client, and durable publication outbox are implemented in this repository. They require
-a Knot Cloud deployment that includes the matching routes; check its release notes before assuming a
-particular deployment supports them. The imai production release does not currently expose pairing,
-command, or publication routes.
+The imai service at `https://knot.imai.tech` supports connector pairing, signed command transport,
+and signed publication routes. A self-hosted or third-party service must advertise the same protocol
+before this client will use those routes.
 
 ## What the connection permits
 
@@ -12,10 +10,11 @@ Knot Cloud stores the connector public key and the grants approved by a workspac
 The private key stays on the machine running Knot. The connector makes outbound HTTPS requests; it
 does not open a public listener.
 
-A cloud grant does not override local policy. Every claimed command must still pass the local
-participant, space, operation, project, file, runtime, and approval checks before an adapter may
-execute it. The signed client exposes claim, lease extension, result, and local-policy rejection
-operations. The optional, default-off workflow bridge described in
+A cloud grant does not override local policy. Command execution remains a default-off local preview.
+Every claimed command must still pass the local participant, space, operation, project, file,
+runtime, and approval checks before an adapter may execute it. The signed client exposes claim,
+lease extension, result, and local-policy rejection operations. The optional, default-off workflow
+bridge described in
 [`cloud-workflows.md`](cloud-workflows.md) persists and executes compatible commands through the
 existing local runner.
 
@@ -110,7 +109,7 @@ The claim call is the connector's outbound poll. The cloud contract does not cur
 separate signed heartbeat route. Connector status in the local CLI therefore means local state plus
 protocol reachability, not proof that the cloud has recorded a recent heartbeat.
 
-The publication commands use only the signed connector routes frozen in the Cloud contract. See
+The publication commands use the released signed connector routes in the Cloud contract. See
 [`cloud-publishing.md`](cloud-publishing.md) for typed document input, asset manifests, durable
 operation status, lifecycle controls, and the constrained `aag_publish` tool.
 

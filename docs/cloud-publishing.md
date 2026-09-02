@@ -1,9 +1,9 @@
 # Publish through Knot Cloud
 
 The local Knot client can send a typed document to a paired Cloud connector without giving an agent
-a server URL, connector key, or local file path. These commands require a Cloud release with the
-matching signed publication and asset routes. The imai production release does not currently expose
-them.
+a server URL, connector key, or local file path. The imai service at `https://knot.imai.tech`
+supports the signed publication and asset routes used by these commands. A self-hosted or third-party
+service must advertise the same protocol.
 
 ## Grant the connector
 
