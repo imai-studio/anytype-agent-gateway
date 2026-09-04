@@ -413,22 +413,46 @@ export class CloudWorkflowExtension {
     config;
     anytype;
     log;
+    options;
     inbox;
     projectionWorkerId = `cloud-projection-${randomUUID()}`;
     nextPollAt = 0;
     recovered = false;
+    stopped = new AbortController();
+    beforeTask;
+    afterTask;
+    nextCloudAttemptAt = 0;
     inFlight;
-    constructor(store, client, executor, config, anytype, log, now) {
+    constructor(store, client, executor, config, anytype, log, now, options = {}) {
         this.client = client;
         this.executor = executor;
         this.config = config;
         this.anytype = anytype;
         this.log = log;
+        this.options = options;
         this.inbox = new CloudCommandStore(store);
         this.now = now ?? (() => this.client.serverAdjustedNow());
     }
     now;
-    async beforeTick() {
+    beforeTick(parentSignal) {
+        if (this.stopped.signal.aborted)
+            return Promise.resolve();
+        if (this.beforeTask)
+            return this.beforeTask;
+        const signal = this.tickSignal(parentSignal);
+        this.beforeTask = this.tick(signal, parentSignal ? AbortSignal.any([parentSignal, this.stopped.signal]) : this.stopped.signal).finally(() => {
+            this.beforeTask = undefined;
+        });
+        return this.beforeTask;
+    }
+    tickSignal(parentSignal) {
+        return AbortSignal.any([
+            this.stopped.signal,
+            AbortSignal.timeout(this.options.tickBudgetMilliseconds ?? 1_000),
+            ...(parentSignal ? [parentSignal] : []),
+        ]);
+    }
+    async tick(signal, executionSignal) {
         const now = this.now();
         if (!this.recovered) {
             const recovered = this.inbox.recoverInterruptedEffects(now);
@@ -437,13 +461,23 @@ export class CloudWorkflowExtension {
             this.recovered = true;
         }
         this.inbox.expire(now);
-        await this.extendLeases(now);
-        await this.submitTerminalResults(now);
-        if (now >= this.nextPollAt)
-            await this.poll(now);
+        if (now >= this.nextCloudAttemptAt) {
+            try {
+                await this.extendLeases(now, signal);
+                await this.submitTerminalResults(now, signal);
+                if (now >= this.nextPollAt)
+                    await this.poll(now, signal);
+            }
+            catch (error) {
+                this.nextCloudAttemptAt = this.now() + this.config.pollIntervalSeconds * 1_000;
+                this.log("cloud_command_network_deferred", { error: message(error) });
+            }
+        }
+        if (signal.aborted)
+            return;
         const ready = this.inbox.nextReady(now);
         if (ready && ready.leaseExpiresAt > now && !this.inFlight) {
-            const promise = this.execute(ready, now)
+            const promise = this.execute(ready, now, executionSignal)
                 .catch((error) => this.log("cloud_command_execution_failed", {
                 commandId: ready.commandId,
                 error: message(error),
@@ -461,28 +495,41 @@ export class CloudWorkflowExtension {
             });
     }
     async stop() {
-        if (this.inFlight)
-            await this.inFlight.promise;
+        this.stopped.abort(new Error("Cloud workflow extension stopped"));
+        await Promise.allSettled([this.beforeTask, this.afterTask, this.inFlight?.promise]);
     }
-    async afterTick() {
-        if (!this.config.projection.enabled)
-            return;
+    afterTick(parentSignal) {
+        if (this.stopped.signal.aborted || !this.config.projection.enabled)
+            return Promise.resolve();
+        if (this.afterTask)
+            return this.afterTask;
+        this.afterTask = this.project(this.tickSignal(parentSignal)).finally(() => {
+            this.afterTask = undefined;
+        });
+        return this.afterTask;
+    }
+    async project(signal) {
         const projection = this.inbox.claimProjection(this.projectionWorkerId, this.now());
         if (!projection)
             return;
         try {
             const messageId = await this.anytype.sendMessage(this.config.projection.spaceId, this.config.projection.chatId, {
                 text: `Knot Cloud command ${projection.commandId}: ${projection.payload.state}`,
-            });
+            }, signal);
+            signal.throwIfAborted();
             this.inbox.completeProjection(projection.projectionId, this.projectionWorkerId, messageId, this.now());
         }
         catch (error) {
             this.inbox.failProjection(projection.projectionId, this.projectionWorkerId, message(error), projection.attempt, this.now());
         }
     }
-    async poll(now) {
+    async poll(now, signal) {
         try {
-            const response = await this.client.claimCommands({ leaseSeconds: this.config.leaseSeconds });
+            const response = await this.client.claimCommands({
+                leaseSeconds: this.config.leaseSeconds,
+                signal,
+            });
+            signal.throwIfAborted();
             this.nextPollAt = now + response.pollAfterSeconds * 1_000;
             for (const command of response.commands) {
                 const record = this.inbox.persistClaim(command, now);
@@ -504,16 +551,19 @@ export class CloudWorkflowExtension {
         catch (error) {
             this.nextPollAt = now + this.config.pollIntervalSeconds * 1_000;
             this.log("cloud_command_poll_failed", { error: message(error) });
+            throw error;
         }
     }
-    async extendLeases(now) {
+    async extendLeases(now, signal) {
         for (const command of this.inbox.list(100)) {
+            signal.throwIfAborted();
             if ((terminalStates.has(command.state) && command.completedAt !== undefined) ||
                 command.leaseExpiresAt - now > Math.max(5_000, (this.config.leaseSeconds * 1_000) / 2))
                 continue;
             try {
                 const envelope = this.inbox.envelope(command.commandId);
-                const extended = await this.client.extendLease(envelope, this.config.leaseSeconds);
+                const extended = await this.client.extendLease(envelope, this.config.leaseSeconds, signal);
+                signal.throwIfAborted();
                 if (extended.commandId !== command.commandId || extended.attempt !== envelope.attempt)
                     throw new Error("Cloud returned a lease extension for a different command fence");
                 this.inbox.updateLease(command.commandId, extended.leaseExpiresAt, now);
@@ -523,10 +573,11 @@ export class CloudWorkflowExtension {
                     commandId: command.commandId,
                     error: message(error),
                 });
+                throw error;
             }
         }
     }
-    async execute(record, now) {
+    async execute(record, now, signal) {
         const command = this.inbox.envelope(record.commandId);
         const denial = localPolicyDenial(command, this.config, now);
         if (denial) {
@@ -535,12 +586,20 @@ export class CloudWorkflowExtension {
         }
         const { fencingToken } = this.inbox.startEffect(command.commandId, now);
         const heartbeat = new AbortController();
-        const leaseTask = this.maintainLease(command.commandId, heartbeat.signal);
+        const leaseTask = this.maintainLease(command.commandId, AbortSignal.any([heartbeat.signal, signal]));
         try {
-            const result = await this.executor.execute(command, record.effectKey);
+            signal.throwIfAborted();
+            const result = await this.executor.execute(command, record.effectKey, signal);
+            signal.throwIfAborted();
             this.inbox.completeEffect(command.commandId, fencingToken, result, this.now());
         }
         catch (error) {
+            if (signal.aborted) {
+                // An aborted write can have reached the server. Preserve the durable
+                // outcome-unknown barrier instead of allowing an automatic replay.
+                this.inbox.recoverInterruptedEffects(this.now());
+                return;
+            }
             const failure = cloudExecutionError(error);
             this.inbox.failEffect(command.commandId, fencingToken, {
                 code: failure.code,
@@ -560,7 +619,8 @@ export class CloudWorkflowExtension {
                 return;
             try {
                 const envelope = this.inbox.envelope(commandId);
-                const extended = await this.client.extendLease(envelope, this.config.leaseSeconds);
+                const extended = await this.client.extendLease(envelope, this.config.leaseSeconds, signal);
+                signal.throwIfAborted();
                 if (extended.commandId !== commandId || extended.attempt !== envelope.attempt)
                     throw new Error("Cloud returned a lease extension for a different command fence");
                 this.inbox.updateLease(commandId, extended.leaseExpiresAt, this.now());
@@ -573,13 +633,15 @@ export class CloudWorkflowExtension {
             }
         }
     }
-    async submitTerminalResults(now) {
+    async submitTerminalResults(now, signal) {
         for (const record of this.inbox.terminalPending()) {
+            signal.throwIfAborted();
             if (!record.result)
                 continue;
             try {
                 const command = this.inbox.envelope(record.commandId);
-                const receipt = await this.client.submitResult(command, record.result);
+                const receipt = await this.client.submitResult(command, record.result, signal);
+                signal.throwIfAborted();
                 if (receipt.commandId !== record.commandId || receipt.attempt !== command.attempt)
                     throw new Error("Cloud acknowledged a different command fence");
                 this.inbox.markSubmitted(record.commandId, record.result, now);
@@ -589,6 +651,7 @@ export class CloudWorkflowExtension {
                     commandId: record.commandId,
                     error: message(error),
                 });
+                throw error;
             }
         }
     }
@@ -606,14 +669,15 @@ export class AnytypeCloudCommandExecutor {
         this.agentParticipantId = agentParticipantId;
         this.allowedOriginParticipantIds = allowedOriginParticipantIds;
     }
-    async execute(command, effectKey) {
+    async execute(command, effectKey, signal) {
+        signal?.throwIfAborted();
         if (command.payload.domain === "publication") {
             const result = await this.cloud.controlPublication({
                 protocolVersion: "1.0",
                 connectorId: command.connectorId,
                 idempotencyKey: effectKey,
                 operation: command.payload.operation,
-            });
+            }, signal);
             return commandResultSchema.parse({ outcome: "succeeded", result });
         }
         const operation = command.payload.operation;
@@ -628,7 +692,7 @@ export class AnytypeCloudCommandExecutor {
         });
         switch (operation.type) {
             case "object.read": {
-                const object = await this.anytype.getObject(operation.spaceId, operation.objectId);
+                const object = await this.anytype.getObject(operation.spaceId, operation.objectId, signal);
                 return success({
                     type: operation.type,
                     object: snapshot(object, operation.spaceId, operation.objectId, provenance(operation.spaceId, operation.objectId)),
@@ -642,7 +706,7 @@ export class AnytypeCloudCommandExecutor {
                     query: operation.text,
                     ...(operation.typeKey ? { types: [operation.typeKey] } : {}),
                     limit: operation.limit,
-                });
+                }, signal);
                 return success({
                     type: operation.type,
                     objects: objects.slice(0, operation.limit).map((object) => {
@@ -658,7 +722,7 @@ export class AnytypeCloudCommandExecutor {
                     type_key: operation.typeKey,
                     name: operation.name,
                     properties: properties(operation.properties),
-                });
+                }, signal);
                 const id = stringField(object, "id");
                 return success({
                     type: operation.type,
@@ -668,7 +732,7 @@ export class AnytypeCloudCommandExecutor {
             case "object.update": {
                 const object = await this.anytype.updateObject(operation.spaceId, operation.objectId, {
                     properties: properties(operation.properties),
-                });
+                }, signal);
                 return success({
                     type: operation.type,
                     object: snapshot(object, operation.spaceId, operation.objectId, provenance(operation.spaceId, operation.objectId)),
@@ -677,17 +741,17 @@ export class AnytypeCloudCommandExecutor {
             case "object.archive": {
                 if (!this.anytype.archiveObject)
                     throw unsupported(operation.type);
-                await this.anytype.archiveObject(operation.spaceId, operation.objectId);
+                await this.anytype.archiveObject(operation.spaceId, operation.objectId, signal);
                 return success({ ...operation, archived: true });
             }
             case "collection.read": {
                 if (!this.anytype.listViews || !this.anytype.listViewObjects)
                     throw unsupported(operation.type);
-                const [view] = await this.anytype.listViews(operation.spaceId, operation.collectionId);
+                const [view] = await this.anytype.listViews(operation.spaceId, operation.collectionId, signal);
                 if (!view)
                     return success({ ...operation, objectIds: [] });
                 const viewId = stringField(view, "id");
-                const objects = await this.anytype.listViewObjects(operation.spaceId, operation.collectionId, viewId, { offset: 0, limit: operation.limit });
+                const objects = await this.anytype.listViewObjects(operation.spaceId, operation.collectionId, viewId, { offset: 0, limit: operation.limit }, signal);
                 return success({
                     ...operation,
                     objectIds: objects.map((object) => stringField(object, "id")),
@@ -696,21 +760,24 @@ export class AnytypeCloudCommandExecutor {
             case "collection.members.add": {
                 if (!this.anytype.addObjectsToList)
                     throw unsupported(operation.type);
-                await this.anytype.addObjectsToList(operation.spaceId, operation.collectionId, operation.objectIds);
+                await this.anytype.addObjectsToList(operation.spaceId, operation.collectionId, operation.objectIds, signal);
                 return success(operation);
             }
             case "collection.members.remove": {
                 if (!this.anytype.removeObjectFromList)
                     throw unsupported(operation.type);
-                for (const objectId of operation.objectIds)
-                    await this.anytype.removeObjectFromList(operation.spaceId, operation.collectionId, objectId);
+                for (const objectId of operation.objectIds) {
+                    signal?.throwIfAborted();
+                    await this.anytype.removeObjectFromList(operation.spaceId, operation.collectionId, objectId, signal);
+                }
                 return success(operation);
             }
             case "file.upload": {
                 if (!this.anytype.uploadFile)
                     throw unsupported(operation.type);
                 const path = await resolveAsset(operation.assetDigest, operation.name, this.cloudConfig.publication.allowedAssetRoots);
-                const file = await this.anytype.uploadFile(operation.spaceId, path);
+                signal?.throwIfAborted();
+                const file = await this.anytype.uploadFile(operation.spaceId, path, signal);
                 return success({
                     type: operation.type,
                     spaceId: operation.spaceId,
@@ -721,7 +788,7 @@ export class AnytypeCloudCommandExecutor {
             case "file.download": {
                 if (!this.anytype.downloadFile)
                     throw unsupported(operation.type);
-                const downloaded = await this.anytype.downloadFile(operation.spaceId, operation.fileId, this.cloudConfig.publication.maximumAssetBytes);
+                const downloaded = await this.anytype.downloadFile(operation.spaceId, operation.fileId, this.cloudConfig.publication.maximumAssetBytes, signal);
                 return success({
                     type: operation.type,
                     spaceId: operation.spaceId,
@@ -735,7 +802,7 @@ export class AnytypeCloudCommandExecutor {
             case "file.attach":
                 throw unsupported(operation.type);
             case "chat.read": {
-                const messages = await this.anytype.listMessages(operation.spaceId, operation.chatId, operation.limit);
+                const messages = await this.anytype.listMessages(operation.spaceId, operation.chatId, operation.limit, undefined, signal);
                 return success({
                     type: operation.type,
                     spaceId: operation.spaceId,
@@ -762,7 +829,7 @@ export class AnytypeCloudCommandExecutor {
                 const origin = operation.channelOrigin;
                 // Cloud supplies only a lookup pointer. Authority comes from a fresh
                 // native Anytype read immediately before the external effect.
-                const source = await this.anytype.getMessage(origin.spaceId, origin.chatId, origin.messageId);
+                const source = await this.anytype.getMessage(origin.spaceId, origin.chatId, origin.messageId, signal);
                 if (source.id !== origin.messageId)
                     return {
                         outcome: "rejected-by-local-policy",
@@ -776,9 +843,10 @@ export class AnytypeCloudCommandExecutor {
                             ? "channel-origin-sender-denied"
                             : "channel-origin-sender-unverified",
                     };
+                signal?.throwIfAborted();
                 const messageId = await this.anytype.sendMessage(operation.spaceId, operation.chatId, {
                     text: operation.message,
-                });
+                }, signal);
                 return success({
                     type: operation.type,
                     spaceId: operation.spaceId,

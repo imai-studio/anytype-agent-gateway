@@ -58,6 +58,9 @@ export class OpenClawDriver implements RuntimeDriver {
     modelSelection: true,
   } as const;
   private client: GatewayClientLike | undefined;
+  private pendingClient: GatewayClientLike | undefined;
+  private rejectPendingConnection: ((error: Error) => void) | undefined;
+  private closed = false;
   private connecting: Promise<GatewayClientLike> | undefined;
   private connected = false;
   private connectionGeneration = 0;
@@ -108,12 +111,16 @@ export class OpenClawDriver implements RuntimeDriver {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    this.rejectPendingConnection?.(new Error("OpenClaw driver closed"));
+    if (this.pendingClient) this.disconnect(this.pendingClient);
     if (this.client) this.disconnect(this.client);
     this.rejectConnectionWaiters(new Error("OpenClaw driver closed"));
     this.eventCallbacks.clear();
     this.ownedSessionLaunches.clear();
     if (this.bridgePollTimer) clearInterval(this.bridgePollTimer);
     this.bridgePollTimer = undefined;
+    for (const observer of this.bridgeObservers.values()) observer.abort.abort();
     this.bridgeObservers.clear();
   }
 
@@ -447,6 +454,7 @@ export class OpenClawDriver implements RuntimeDriver {
     conversation: ConversationRef,
     onOutput: (output: RuntimeSessionOutput) => Promise<void>,
   ): Promise<RuntimeSessionObserver> {
+    if (this.closed) throw new Error("OpenClaw driver closed");
     const id = crypto.randomUUID();
     const state: BridgeObserverState = {
       id,
@@ -456,10 +464,12 @@ export class OpenClawDriver implements RuntimeDriver {
       runs: new Map(),
       recentOutputs: new Map(),
       afterSequence: 0,
+      abort: new AbortController(),
     };
     this.bridgeObservers.set(id, state);
     try {
       await this.pollBridgeOutbox();
+      if (state.abort.signal.aborted) throw new Error("OpenClaw observer closed");
     } catch (error) {
       this.bridgeObservers.delete(id);
       throw error;
@@ -473,6 +483,7 @@ export class OpenClawDriver implements RuntimeDriver {
     return {
       ...(state.cursor ? { cursor: state.cursor } : {}),
       close: async () => {
+        state.abort.abort();
         this.bridgeObservers.delete(id);
         state.runs.clear();
         state.recentOutputs.clear();
@@ -496,6 +507,7 @@ export class OpenClawDriver implements RuntimeDriver {
   }
 
   private reportBridgePollError(error: unknown): void {
+    if (this.closed) return;
     const now = Date.now();
     if (now - this.lastBridgePollErrorAt < 60_000) return;
     this.lastBridgePollErrorAt = now;
@@ -506,7 +518,11 @@ export class OpenClawDriver implements RuntimeDriver {
 
   private async drainBridgeOutbox(token: string): Promise<void> {
     for (const observer of [...this.bridgeObservers.values()]) {
-      await this.drainBridgeObserver(token, observer);
+      try {
+        await this.drainBridgeObserver(token, observer);
+      } catch (error) {
+        if (!observer.abort.signal.aborted) throw error;
+      }
     }
   }
 
@@ -524,13 +540,15 @@ export class OpenClawDriver implements RuntimeDriver {
       if (observer.afterSequence > 0) query.set("afterSequence", String(observer.afterSequence));
       const response = await fetch(new URL(`/v1/outbox?${query}`, this.config.channelBridge.url), {
         headers: { authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.any([observer.abort.signal, AbortSignal.timeout(10_000)]),
       });
       if (!response.ok)
         throw new Error(`OpenClaw Anytype channel outbox returned HTTP ${response.status}`);
       const body = (await response.json()) as { deliveries?: BridgeDelivery[] };
+      if (!this.bridgeObservers.has(observer.id)) return;
       const deliveries = body.deliveries ?? [];
       for (const delivery of deliveries) {
+        if (!this.bridgeObservers.has(observer.id)) return;
         if (!bridgeDeliveryMatches(observer, delivery)) continue;
         observer.cursor = delivery.idempotencyKey;
         if (delivery.kind === "message-final" && delivery.message) {
@@ -545,7 +563,13 @@ export class OpenClawDriver implements RuntimeDriver {
               ],
               result: parseSilence(text),
             });
-          await this.ackBridgeDelivery(delivery.id, token);
+          if (!this.bridgeObservers.has(observer.id)) return;
+          try {
+            await this.ackBridgeDelivery(delivery.id, token, observer.abort.signal);
+          } catch (error) {
+            if (owned) this.markOwnedTerminalText(observer.sessionKey, text);
+            throw error;
+          }
           continue;
         }
         if (delivery.kind !== "agent-event" || !delivery.agentEvent) continue;
@@ -573,7 +597,8 @@ export class OpenClawDriver implements RuntimeDriver {
               result: parseSilence(text),
             });
         }
-        await this.ackBridgeDeliveries(run.deliveryIds, token);
+        if (!this.bridgeObservers.has(observer.id)) return;
+        await this.ackBridgeDeliveries(run.deliveryIds, token, observer.abort.signal);
         if (owned) this.ownedRunIds.delete(event.runId);
         observer.runs.delete(event.runId);
       }
@@ -585,13 +610,13 @@ export class OpenClawDriver implements RuntimeDriver {
     }
   }
 
-  private async ackBridgeDelivery(id: string, token: string): Promise<void> {
+  private async ackBridgeDelivery(id: string, token: string, signal: AbortSignal): Promise<void> {
     const response = await fetch(
       new URL(`/v1/outbox/${encodeURIComponent(id)}/ack`, this.config.channelBridge.url),
       {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
       },
     );
     if (!response.ok)
@@ -612,12 +637,16 @@ export class OpenClawDriver implements RuntimeDriver {
       );
   }
 
-  private async ackBridgeDeliveries(ids: string[], token: string): Promise<void> {
+  private async ackBridgeDeliveries(
+    ids: string[],
+    token: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     const response = await fetch(new URL("/v1/outbox/ack", this.config.channelBridge.url), {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ ids }),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
     });
     if (!response.ok)
       throw new Error(
@@ -687,17 +716,20 @@ export class OpenClawDriver implements RuntimeDriver {
   }
 
   private async getClient(): Promise<GatewayClientLike> {
+    if (this.closed) throw new Error("OpenClaw driver closed");
     if (this.client) return this.client;
     if (this.connecting) return this.connecting;
     this.connecting = (async () => {
       const Client = this.clientConstructor ?? (await this.loadClientConstructor());
       const token = await this.readToken();
+      if (this.closed) throw new Error("OpenClaw driver closed");
       let settle!: () => void;
       let fail!: (error: unknown) => void;
       const connected = new Promise<void>((resolve, reject) => {
         settle = resolve;
         fail = reject;
       });
+      this.rejectPendingConnection = fail;
       const client = new Client({
         url: this.config.gateway.url,
         token,
@@ -711,6 +743,7 @@ export class OpenClawDriver implements RuntimeDriver {
         minProtocol: this.config.gateway.protocolVersion,
         maxProtocol: this.config.gateway.protocolVersion,
         onHelloOk: () => {
+          if (this.closed || (this.pendingClient !== client && this.client !== client)) return;
           this.connected = true;
           this.connectionGeneration += 1;
           this.resolveConnectionWaiters();
@@ -718,6 +751,7 @@ export class OpenClawDriver implements RuntimeDriver {
         },
         onConnectError: fail,
         onClose: () => {
+          if (this.pendingClient !== client && this.client !== client) return;
           this.connected = false;
         },
         onEvent: (event: any) => {
@@ -769,10 +803,20 @@ export class OpenClawDriver implements RuntimeDriver {
             });
         },
       });
-      client.start();
-      await connected;
-      this.client = client;
-      return client;
+      this.pendingClient = client;
+      try {
+        client.start();
+        await connected;
+        if (this.closed) throw new Error("OpenClaw driver closed");
+        this.client = client;
+        return client;
+      } catch (error) {
+        if (this.pendingClient === client) this.disconnect(client);
+        throw error;
+      } finally {
+        if (this.pendingClient === client) this.pendingClient = undefined;
+        this.rejectPendingConnection = undefined;
+      }
     })().finally(() => {
       this.connecting = undefined;
     });
@@ -808,7 +852,9 @@ export class OpenClawDriver implements RuntimeDriver {
     },
   ): Promise<T> {
     for (let attempt = 1; attempt <= MAX_GATEWAY_REQUEST_ATTEMPTS; attempt += 1) {
+      if (this.closed) throw new Error("OpenClaw driver closed");
       await this.waitForConnection(this.connectionGeneration - (this.connected ? 1 : 0));
+      if (this.closed) throw new Error("OpenClaw driver closed");
       const generation = this.connectionGeneration;
       try {
         return await client.request<T>(method, params, options);
@@ -822,6 +868,7 @@ export class OpenClawDriver implements RuntimeDriver {
   }
 
   private waitForConnection(afterGeneration: number): Promise<void> {
+    if (this.closed) return Promise.reject(new Error("OpenClaw driver closed"));
     if (this.connected && this.connectionGeneration > afterGeneration) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const waiter: ConnectionWaiter = {
@@ -862,6 +909,7 @@ export class OpenClawDriver implements RuntimeDriver {
   private disconnect(client: GatewayClientLike): void {
     client.stop();
     if (this.client === client) this.client = undefined;
+    if (this.pendingClient === client) this.pendingClient = undefined;
     this.connected = false;
   }
 
@@ -1113,6 +1161,7 @@ type BridgeObserverState = {
   runs: Map<string, BridgeRun>;
   recentOutputs: Map<string, { kind: "agent-event" | "message-final"; timestamp: number }>;
   afterSequence: number;
+  abort: AbortController;
   cursor?: string;
 };
 

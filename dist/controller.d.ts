@@ -33,6 +33,7 @@ export declare class AgentController {
         drain?: boolean;
     }): Promise<void>;
     private start;
+    private startWithContext;
     private replaceActiveSession;
     private handleModelCommand;
     private handleProjectCommand;

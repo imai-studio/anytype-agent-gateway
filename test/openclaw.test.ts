@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import { configSchema } from "../src/config.js";
 import { OpenClawDriver } from "../src/runtime/openclaw.js";
@@ -9,6 +9,9 @@ const bridgeTokenEnvironment = "AAG_TEST_OPENCLAW_BRIDGE_TOKEN";
 const servers: Server[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   delete process.env[tokenEnvironment];
   delete process.env[bridgeTokenEnvironment];
   await Promise.all(
@@ -645,6 +648,182 @@ describe("OpenClaw gateway recovery", () => {
       ]);
     await expect.poll(() => deliveries).toEqual([]);
     await resumedObserver.close();
+    await driver.close();
+  });
+});
+
+function bridgeTestRuntime() {
+  process.env[tokenEnvironment] = "synthetic-token";
+  process.env[bridgeTokenEnvironment] = "synthetic-bridge-token-that-is-long-enough";
+  const runtime = configSchema.parse({
+    version: 1,
+    agent: { name: "Test", participantId: "bot" },
+    anytype: { apiKeyFile: "/tmp/synthetic-key" },
+    spaces: [{ name: "Test" }],
+    runtime: {
+      kind: "openclaw",
+      gateway: { tokenEnv: tokenEnvironment },
+      channelBridge: {
+        enabled: true,
+        tokenEnv: bridgeTokenEnvironment,
+        pollIntervalMilliseconds: 100,
+      },
+    },
+  }).runtime;
+  if (runtime.kind !== "openclaw") throw new Error("Expected OpenClaw runtime");
+  return runtime;
+}
+
+const bridgeTestConversation = {
+  kind: "chat" as const,
+  routeId: "chat:space:chat",
+  spaceId: "space",
+  chatId: "chat",
+};
+const bridgeTestFinal = {
+  id: "final",
+  idempotencyKey: "final-source",
+  storeSequence: 1,
+  sessionKey: "session",
+  kind: "message-final",
+  message: { text: "direct reply" },
+};
+
+describe("OpenClaw shutdown and acknowledgement fences", () => {
+  it.each(["observer", "driver"])(
+    "does not emit or acknowledge an in-flight bridge response after %s close",
+    async (target) => {
+      vi.useFakeTimers();
+      let held = false;
+      let release!: (response: Response) => void;
+      const outputs = vi.fn(async () => undefined);
+      const acks = vi.fn();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_url: unknown, options?: RequestInit) => {
+          if (options?.method === "POST") {
+            acks();
+            return Response.json({ ok: true });
+          }
+          if (!held) return Response.json({ deliveries: [] });
+          return new Promise<Response>((resolve) => {
+            release = resolve;
+          });
+        }),
+      );
+      const driver = new OpenClawDriver(bridgeTestRuntime());
+      const observer = await driver.observeSession(
+        { sessionKey: "session", conversation: bridgeTestConversation },
+        outputs,
+      );
+      held = true;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(release).toBeTypeOf("function");
+      if (target === "observer") await observer.close();
+      else await driver.close();
+      // Deliberately emulate a transport that completes despite cancellation.
+      release(Response.json({ deliveries: [bridgeTestFinal] }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outputs).not.toHaveBeenCalled();
+      expect(acks).not.toHaveBeenCalled();
+      await driver.close();
+    },
+  );
+
+  it("rejects an initial connection on close and ignores its late hello", async () => {
+    let options!: Record<string, unknown>;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const stop = vi.fn();
+    const request = vi.fn(async () => ({ models: [] }));
+    class PendingGateway {
+      constructor(value: Record<string, unknown>) {
+        options = value;
+      }
+      start(): void {
+        markStarted();
+      }
+      stop(): void {
+        stop();
+      }
+      async request<T>(): Promise<T> {
+        return (await request()) as T;
+      }
+    }
+    const driver = new OpenClawDriver(bridgeTestRuntime(), PendingGateway);
+    const rejected = expect(driver.configureModel({ sessionKey: "session" })).rejects.toThrow(
+      "driver closed",
+    );
+    await started;
+    await driver.close();
+    (options.onHelloOk as () => void)();
+    await rejected;
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(request).not.toHaveBeenCalled();
+    await expect(driver.configureModel({ sessionKey: "session" })).rejects.toThrow("driver closed");
+  });
+
+  it("keeps an owned final suppressed when its acknowledgement must retry", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    let deliveries: unknown[] = [];
+    let ackAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL, options?: RequestInit) => {
+        if (url.pathname === "/v1/outbox/final/ack") {
+          ackAttempts++;
+          if (ackAttempts === 1) return new Response("{}", { status: 503 });
+          deliveries = [];
+          return Response.json({ ok: true });
+        }
+        if (options?.method === "POST") return Response.json({ ok: true });
+        return Response.json({ deliveries });
+      }),
+    );
+    class Gateway {
+      constructor(private readonly options: Record<string, unknown>) {}
+      start(): void {
+        (this.options.onHelloOk as () => void)();
+      }
+      stop(): void {}
+      async request<T>(method: string): Promise<T> {
+        if (method === "chat.history") return { messages: [] } as T;
+        if (method === "agent") return { runId: "owned-run", sessionKey: "session" } as T;
+        if (method === "agent.wait") return { result: { text: "direct reply" } } as T;
+        throw new Error(`Unexpected request ${method}`);
+      }
+    }
+    const driver = new OpenClawDriver(bridgeTestRuntime(), Gateway);
+    const active = await driver.start(
+      {
+        sessionKey: "session",
+        prompt: "hello",
+        turn: {
+          conversation: bridgeTestConversation,
+          message: { id: "trigger", creator: "owner", content: { text: "hello" } },
+          replyTargetId: "trigger",
+        },
+      },
+      () => undefined,
+    );
+    await expect(active.result).resolves.toMatchObject({ text: "direct reply" });
+    const outputs = vi.fn(async () => undefined);
+    await driver.observeSession(
+      { sessionKey: "session", conversation: bridgeTestConversation },
+      outputs,
+    );
+    deliveries = [bridgeTestFinal];
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ackAttempts).toBe(1);
+    expect(deliveries).toHaveLength(1);
+    expect(outputs).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ackAttempts).toBe(2);
+    expect(deliveries).toEqual([]);
+    expect(outputs).not.toHaveBeenCalled();
     await driver.close();
   });
 });

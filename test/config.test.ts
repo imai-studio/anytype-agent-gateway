@@ -54,6 +54,45 @@ describe("loadConfig", () => {
     });
   });
 
+  it("validates direct-message bootstrap syntax without truncating stable global IDs", () => {
+    const base = {
+      version: 1,
+      agent: { name: "Knot", participantId: "bot" },
+      anytype: { apiKeyFile: "/fixture/key" },
+      spaces: [{ id: "space" }],
+      runtime: { kind: "openclaw" },
+    };
+    const dm = (id: string) => ({
+      ...base,
+      directMessages: {
+        enabled: true,
+        createMissing: true,
+        wake: { humans: "every-message", agents: "never", allowedUsers: [id] },
+      },
+    });
+    for (const id of ["_member_", "_participant_space_", "identity with space"])
+      expect(() => configSchema.parse(dm(id))).toThrow("native identities");
+    for (const id of [
+      "stable_global_identity",
+      "_member_identity",
+      "_participant_space_suffix_identity",
+    ])
+      expect(configSchema.parse(dm(id)).directMessages.createMissing).toBe(true);
+  });
+
+  it("retains explicit wildcard admin and private Heart network configuration compatibility", () => {
+    const configured = configSchema.parse({
+      version: 1,
+      agent: { name: "Knot", participantId: "bot" },
+      anytype: { apiKeyFile: "/fixture/key", heartAdapter: { grpcAddress: "100.64.0.10:31008" } },
+      spaces: [{ id: "space" }],
+      runtime: { kind: "openclaw" },
+      management: { allowAccessChanges: true, accessAdmins: ["*"] },
+    });
+    expect(configured.management.accessAdmins).toEqual(["*"]);
+    expect(configured.anytype.heartAdapter.grpcAddress).toBe("100.64.0.10:31008");
+  });
+
   it("requires explicit workflow authors and spaces before enabling automation", () => {
     const base = {
       version: 1,

@@ -609,8 +609,15 @@ from removing an access admin.
 
 Authorization is based on the native Anytype sender, never a display name or an ID supplied by the
 model. Codex binds the sender directly to its turn. For OpenClaw, Knot supplies an opaque,
-single-use capability scoped to that sender, route, and management action; the next human turn
-invalidates any unused capability. Do not add a static actor ID to OpenClaw's MCP configuration.
+capability scoped to that sender, route, management action, and source conversation thread.
+Wake, access, and model mutations are single-use. Publishing permits up to 16 calls in a turn,
+including status reads, so status followed by multiple authorized publishes works. All capabilities
+expire after five minutes; an accepted successor in the same thread or completion/cancellation
+revokes the previous set. Ignored messages and unrelated discussion roots do not revoke it.
+An expired, exhausted, revoked, or mismatched capability requires a new authenticated turn;
+this is separate from a sender denied by the configured allowlist. The schema 18 upgrade expires
+pre-upgrade ephemeral capabilities because they lack a source thread; users need a new turn.
+It preserves durable sessions, replies, workflow approvals, and replay records. Do not add a static actor ID to OpenClaw's MCP configuration.
 
 The change is scoped to the current chat or discussion and applies to the next message without a
 restart. Direct-message policy stays in operator configuration and cannot be changed through route

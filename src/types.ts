@@ -177,12 +177,18 @@ export type AnytypeWorkflowObject = {
 };
 
 export interface AnytypePort {
-  getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage>;
+  getMessage(
+    spaceId: string,
+    chatId: string,
+    messageId: string,
+    signal?: AbortSignal,
+  ): Promise<ChatMessage>;
   listMessages(
     spaceId: string,
     chatId: string,
     limit: number,
     afterOrderId?: string,
+    signal?: AbortSignal,
   ): Promise<ChatMessage[]>;
   sendMessage(
     spaceId: string,
@@ -276,15 +282,29 @@ export interface AnytypePort {
     objectIds: string[],
     signal?: AbortSignal,
   ): Promise<void>;
-  listViews?(spaceId: string, listId: string): Promise<Record<string, unknown>[]>;
+  listViews?(
+    spaceId: string,
+    listId: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>[]>;
   listViewObjects?(
     spaceId: string,
     listId: string,
     viewId: string,
     page?: { offset: number; limit: number },
+    signal?: AbortSignal,
   ): Promise<Record<string, unknown>[]>;
-  removeObjectFromList?(spaceId: string, listId: string, objectId: string): Promise<void>;
-  uploadFile?(spaceId: string, path: string): Promise<Record<string, unknown>>;
+  removeObjectFromList?(
+    spaceId: string,
+    listId: string,
+    objectId: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  uploadFile?(
+    spaceId: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>>;
   searchObjects(
     spaceId: string,
     offset: number,
@@ -300,5 +320,6 @@ export interface AnytypePort {
     spaceId: string,
     fileId: string,
     maxBytes: number,
+    signal?: AbortSignal,
   ): Promise<{ bytes: Uint8Array; contentType?: string }>;
 }

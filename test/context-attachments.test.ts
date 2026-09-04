@@ -4,10 +4,48 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { configSchema } from "../src/config.js";
 import { buildContext, preparePrompt } from "../src/context.js";
+import { renderCoordination } from "../src/projection.js";
 import type { ConversationRef } from "../src/types.js";
 import { FakeAnytype, incoming } from "./fakes.js";
 
 describe("Anytype attachment context", () => {
+  it("retains conflicting observed attribution so rendering can reject an ambiguous name", async () => {
+    const anytype = new FakeAnytype();
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "Fixture", participantId: "bot" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ id: "space" }],
+      runtime: { kind: "codex" },
+    });
+    const trigger = incoming({
+      creator: "person-a",
+      creator_name: "Alice",
+      content: {
+        text: "@Alice @Elsewhere",
+        marks: [
+          { type: "mention", param: "person-b", from: 0, to: 6 },
+          { type: "mention", param: "person-b", from: 7, to: 17 },
+        ],
+      },
+    });
+    const bundle = await buildContext(
+      anytype,
+      config,
+      {
+        routeId: "chat:space:chat",
+        kind: "chat",
+        spaceId: "space",
+        chatId: "chat",
+      },
+      trigger,
+    );
+    // Two labels for the same mark target must not erase evidence of the spoofed label.
+    expect(bundle.mentionTargets).toHaveLength(3);
+    expect(renderCoordination("@Alice", config, bundle.mentionTargets).marks).toEqual([]);
+    expect(renderCoordination("@Elsewhere", config, bundle.mentionTargets).marks).toHaveLength(1);
+  });
+
   it("materializes the current media attachment and gives Codex its local path", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "aag-attachment-context-"));
     const anytype = new (class extends FakeAnytype {
@@ -25,6 +63,9 @@ describe("Anytype attachment context", () => {
       spaces: [{ id: "space" }],
       runtime: { kind: "codex", defaultProject: workspace },
       context: { promptMode: "workspace" },
+      state: {
+        path: join(workspace, "..", `${workspace.split("/").at(-1)}-state`, "state.sqlite"),
+      },
     });
     const conversation: ConversationRef = {
       routeId: "chat:space:chat",
@@ -98,6 +139,9 @@ describe("Anytype attachment context", () => {
       spaces: [{ id: "space" }],
       runtime: { kind: "codex", defaultProject: workspace },
       context: { promptMode: "workspace" },
+      state: {
+        path: join(workspace, "..", `${workspace.split("/").at(-1)}-state`, "state.sqlite"),
+      },
     });
     const conversation: ConversationRef = {
       routeId: "chat:space:chat",

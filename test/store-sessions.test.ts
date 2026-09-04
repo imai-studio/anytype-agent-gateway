@@ -25,7 +25,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
     expect(store.cursor("route")).toBe("order-7");
     expect(
       (
@@ -64,7 +64,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
     expect(
       (
         store.db.prepare("PRAGMA table_info(conversation_models)").all() as Array<{ name: string }>
@@ -110,7 +110,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
     expect(store.sessionWorkspace("chat:space:chat")).toBe("/projects/imai");
     expect(store.sessionWorkspaceSource("chat:space:chat")).toBe("explicit");
     expect(store.db.prepare("PRAGMA foreign_key_list(session_workspaces)").all()).not.toHaveLength(
@@ -180,7 +180,7 @@ describe("session persistence", () => {
     store.close();
   });
 
-  it("binds management capabilities to one route, actor, scope, and use", () => {
+  it("binds management capabilities to one route, actor, scope, and finite use budget", () => {
     const store = new Store(":memory:");
     for (const scope of ["wake", "access", "model", "publish"] as const) {
       const wrongRoute = store.issueManagementCapability(
@@ -191,14 +191,19 @@ describe("session persistence", () => {
       expect(
         store.consumeManagementCapability(wrongRoute, "chat:space:other", scope),
       ).toBeUndefined();
-      expect(
-        store.consumeManagementCapability(wrongRoute, "chat:space:chat", scope),
-      ).toBeUndefined();
+      expect(store.consumeManagementCapability(wrongRoute, "chat:space:chat", scope)).toBe(
+        "participant-admin",
+      );
 
       const valid = store.issueManagementCapability("chat:space:chat", "participant-admin", scope);
       expect(store.consumeManagementCapability(valid, "chat:space:chat", scope)).toBe(
         "participant-admin",
       );
+      if (scope === "publish")
+        for (let i = 1; i < 16; i++)
+          expect(store.consumeManagementCapability(valid, "chat:space:chat", scope)).toBe(
+            "participant-admin",
+          );
       expect(store.consumeManagementCapability(valid, "chat:space:chat", scope)).toBeUndefined();
     }
     store.close();
@@ -231,10 +236,34 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
     const token = store.issueManagementCapability("chat:space:chat", "owner", "publish");
     expect(store.consumeManagementCapability(token, "chat:space:chat", "publish")).toBe("owner");
     store.close();
+  });
+
+  it("expires pre-upgrade capabilities without changing durable session state", () => {
+    const directory = mkdtempSync(join(tmpdir(), "knot-capability-v17-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state.sqlite");
+    const previous = new Store(path);
+    const token = previous.issueManagementCapability("discussion:space:chat", "owner", "publish");
+    previous.initialize("chat:space:chat", "existing-cursor");
+    previous.db.exec(`DROP INDEX idx_management_actor_capabilities_thread;
+      ALTER TABLE management_actor_capabilities DROP COLUMN thread_key;
+      ALTER TABLE management_actor_capabilities DROP COLUMN uses_remaining;
+      PRAGMA user_version=17;`);
+    previous.close();
+    const upgraded = new Store(path, () => {});
+    try {
+      expect(
+        upgraded.consumeManagementCapability(token, "discussion:space:chat", "publish"),
+      ).toBeUndefined();
+      expect(upgraded.cursor("chat:space:chat")).toBe("existing-cursor");
+      expect(upgraded.migrationBackupPath).toBeDefined();
+    } finally {
+      upgraded.close();
+    }
   });
 
   it("invalidates unused management capabilities when the route receives a new turn", () => {

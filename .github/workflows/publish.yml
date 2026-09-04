@@ -36,6 +36,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Audit all workspace dependencies
+        run: pnpm audit
       - name: Verify release tag and reviewed ancestry
         run: |
           package_version="$(node -p "require('./package.json').version")"
@@ -51,11 +53,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: 1.25.7
+          go-version: 1.26.8
           cache-dependency-path: heart-adapter/go.sum
       - name: Verify Heart adapter
         working-directory: heart-adapter
-        run: go test ./... && go vet ./...
+        run: go test ./... && go vet ./... && go build ./...
+      - name: Scan reachable Heart adapter vulnerabilities
+        working-directory: heart-adapter
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - name: Pack the reviewed release artifact
         run: |
           mkdir release-artifact

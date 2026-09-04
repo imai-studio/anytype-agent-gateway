@@ -47,4 +47,11 @@ export declare function resolveInstalledService(platform: "linux" | "darwin", ho
     identity: string;
 } | undefined>;
 export declare function buildLaunchdPlist(options: LaunchdPlistOptions): string;
+export declare function buildSystemdUnit(input: {
+    nodePath: string;
+    cliPath: string;
+    configPath: string;
+    pathEnvironment: string;
+    localAnytype: boolean;
+}): string;
 export {};

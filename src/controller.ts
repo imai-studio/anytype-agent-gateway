@@ -1,3 +1,4 @@
+import { holdWorkspaceContext } from "./context-retention.js";
 import { inactivityTimeoutSeconds, type AgentConfig, type WakeConfig } from "./config.js";
 import { createHash } from "node:crypto";
 import { resolveChatProjectBinding, setChatProjectBindingTag } from "./chat-project-binding.js";
@@ -24,6 +25,7 @@ import type {
 } from "./types.js";
 import { decideWake, mergeWakeOverride } from "./wake.js";
 import {
+  sameIdentity,
   principalAllowed,
   principalAuditFields,
   principalFromMessage,
@@ -121,8 +123,6 @@ export class AgentController {
     wakeIsEffective: boolean,
   ): Promise<void> {
     if (this.store.isResponse(message.id)) return;
-    if (this.runtimeName() === "openclaw" && principalFromMessage(message))
-      this.store.revokeManagementCapabilities(conversation.routeId);
     const effectiveWake = wakeIsEffective
       ? wake
       : mergeWakeOverride(wake, this.store.wakeOverride(conversation.routeId));
@@ -288,13 +288,15 @@ export class AgentController {
         return;
       }
       try {
+        if (this.runtimeName() === "openclaw")
+          this.store.revokeManagementCapabilities(conversation.routeId, threadKey);
         active.projection.addMentionTargets(mentionTargetsFrom(message));
         await active.handle.steer(
           this.steerPrompt(
             message,
             conversation.managementEnabled === false
               ? undefined
-              : this.managementActorCommand(conversation.routeId, message),
+              : this.managementActorCommand(conversation.routeId, threadKey, message),
           ),
           {
             conversation: threadConversation,
@@ -341,6 +343,7 @@ export class AgentController {
           });
           return;
         }
+        this.store.revokeManagementCapabilities(conversation.routeId, threadKey);
         active.cancelled = true;
         await active.handle.cancel().catch(() => undefined);
         await active.projection.fail(error).catch(() => undefined);
@@ -393,6 +396,7 @@ export class AgentController {
     }
     const runs = startedRuns.filter((run) => this.active.get(run.threadKey)?.id === run.id);
     for (const run of runs) {
+      this.store.revokeManagementCapabilities(run.conversation.routeId, run.threadKey);
       run.cancelled = true;
       await run.handle.cancel().catch(() => undefined);
       await run.projection.interrupt().catch(() => undefined);
@@ -415,6 +419,33 @@ export class AgentController {
     newSession = false,
     resumeResponseId?: string,
   ): Promise<void> {
+    const releaseContext = holdWorkspaceContext(this.config);
+    try {
+      await this.startWithContext(
+        conversation,
+        message,
+        threadKey,
+        replyTargetId,
+        hop,
+        newSession,
+        resumeResponseId,
+      );
+    } finally {
+      releaseContext();
+    }
+  }
+
+  private async startWithContext(
+    conversation: ConversationRef,
+    message: ChatMessage,
+    threadKey: string,
+    replyTargetId: string,
+    hop: number,
+    newSession = false,
+    resumeResponseId?: string,
+  ): Promise<void> {
+    if (this.runtimeName() === "openclaw")
+      this.store.revokeManagementCapabilities(conversation.routeId, threadKey);
     const anytype = this.port(conversation);
     const runId = crypto.randomUUID();
     const interrupted = this.store.runningRunForThread(threadKey);
@@ -449,7 +480,9 @@ export class AgentController {
               ),
           )
         : undefined);
-    const context = await buildContext(anytype, this.config, conversation, message, { newSession });
+    const context = await buildContext(anytype, this.config, conversation, message, {
+      newSession,
+    });
     const resetOnly =
       newSession && isNewSessionOnlyCommand(message.content?.text ?? "", this.config.agent.name);
     const projection = orphan
@@ -525,7 +558,7 @@ export class AgentController {
         sessionKey,
         conversation.managementEnabled === false
           ? undefined
-          : this.managementActorCommand(conversation.routeId, message),
+          : this.managementActorCommand(conversation.routeId, threadKey, message),
         { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId },
       );
       const workspacePath = this.store.sessionWorkspace(threadKey);
@@ -572,7 +605,9 @@ export class AgentController {
             prompt,
             turn,
             ...(modelPending
-              ? { modelId: modelRevocationPending ? null : (modelState?.requestedModelId ?? null) }
+              ? {
+                  modelId: modelRevocationPending ? null : (modelState?.requestedModelId ?? null),
+                }
               : {}),
             ...(modelPending && modelState?.defaultModelId
               ? { defaultModelId: modelState.defaultModelId }
@@ -675,7 +710,10 @@ export class AgentController {
       active.completion = result
         .then(async (value) => {
           if (active.cancelled) return;
-          if (this.active.get(threadKey)?.id === runId) this.active.delete(threadKey);
+          if (this.active.get(threadKey)?.id === runId) {
+            this.store.revokeManagementCapabilities(conversation.routeId, threadKey);
+            this.active.delete(threadKey);
+          }
           const visibleResult = resetOnly
             ? { text: "Started a new session." }
             : newSession && value.silent
@@ -699,9 +737,13 @@ export class AgentController {
           });
         })
         .finally(() => {
-          if (this.active.get(threadKey)?.id === runId) this.active.delete(threadKey);
+          if (this.active.get(threadKey)?.id === runId) {
+            this.store.revokeManagementCapabilities(conversation.routeId, threadKey);
+            this.active.delete(threadKey);
+          }
         });
     } catch (error) {
+      this.store.revokeManagementCapabilities(conversation.routeId, threadKey);
       if (startedHandle) {
         this.active.delete(threadKey);
         await startedHandle.cancel().catch(() => undefined);
@@ -716,6 +758,7 @@ export class AgentController {
   }
 
   private async replaceActiveSession(active: ActiveRun): Promise<void> {
+    this.store.revokeManagementCapabilities(active.conversation.routeId, active.threadKey);
     active.cancelled = true;
     this.active.delete(active.threadKey);
     await active.handle.cancel().catch(() => undefined);
@@ -1043,34 +1086,47 @@ export class AgentController {
     ].join("\n");
   }
 
-  private managementActorCommand(routeId: string, message: ChatMessage): string | undefined {
+  private managementActorCommand(
+    routeId: string,
+    threadKey: string,
+    message: ChatMessage,
+  ): string | undefined {
     const actor = principalFromMessage(message);
     if (!actor || !this.managementCommand) return undefined;
     if (this.runtimeName() !== "openclaw") return this.managementCommand(routeId);
+    this.store.revokeManagementCapabilities(routeId, threadKey);
     const capabilities: ManagementActorCapabilities = {};
     if (this.config.management.allowWakeChanges)
       capabilities.wake = this.store.issueManagementCapability(
         routeId,
         actor.participantId,
         "wake",
+        undefined,
+        threadKey,
       );
     if (this.config.management.allowAccessChanges)
       capabilities.access = this.store.issueManagementCapability(
         routeId,
         actor.participantId,
         "access",
+        undefined,
+        threadKey,
       );
     if (this.config.models.enabled && this.config.management.allowModelChanges)
       capabilities.model = this.store.issueManagementCapability(
         routeId,
         actor.participantId,
         "model",
+        undefined,
+        threadKey,
       );
     if (this.config.tools.publish.enabled)
       capabilities.publish = this.store.issueManagementCapability(
         routeId,
         actor.participantId,
         "publish",
+        undefined,
+        threadKey,
       );
     return this.managementCommand(routeId, capabilities);
   }
@@ -1107,8 +1163,12 @@ export class AgentController {
         if (
           !parent.creator ||
           !(
-            this.config.coordination.agentParticipants.includes(parent.creator) ||
-            this.config.coordination.peers.some((peer) => peer.participantId === parent?.creator)
+            this.config.coordination.agentParticipants.some((id) =>
+              sameIdentity(id, parent.creator!),
+            ) ||
+            this.config.coordination.peers.some((peer) =>
+              sameIdentity(peer.participantId, parent.creator!),
+            )
           )
         )
           break;
@@ -1559,8 +1619,7 @@ function modelCommandText(
 
 function sameParticipant(left: string | undefined, right: string): boolean {
   if (!left) return false;
-  if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`)) return true;
-  return left.split("_").at(-1) === right.split("_").at(-1);
+  return sameIdentity(left, right);
 }
 
 function sameOptionalId(

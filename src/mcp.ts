@@ -592,6 +592,7 @@ export async function callTool(
         "model",
         input,
         boundActorId,
+        threadKey,
       );
       if (!principalAllowed(boundPrincipal, config.management.modelAdmins))
         throw new Error("The current Anytype sender is not allowed to change models");
@@ -814,6 +815,7 @@ function verifiedManagementPrincipal(
   scope: ManagementCapabilityScope,
   input: Record<string, any>,
   boundActorId?: string,
+  threadKey?: string,
 ) {
   const directlyBound = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
   if (directlyBound) return directlyBound;
@@ -821,7 +823,11 @@ function verifiedManagementPrincipal(
   if (!token) return undefined;
   const store = new Store(config.state.path);
   try {
-    const participantId = store.consumeManagementCapability(token, routeId, scope);
+    const participantId = store.consumeManagementCapability(token, routeId, scope, threadKey);
+    if (!participantId)
+      throw new Error(
+        "The current Anytype sender could not be verified: capability expired, exhausted, revoked, or mismatched; request a new authenticated turn",
+      );
     return principalFromParticipantId(participantId);
   } finally {
     store.close();
@@ -1025,7 +1031,7 @@ function publicationToolSchema(): Record<string, unknown> {
       },
       route_id: stringSchema(),
       actor_capability: stringSchema(
-        "Opaque, single-use capability supplied by Knot for this authenticated turn",
+        "Opaque capability supplied by Knot: up to 16 calls in this turn, expires after five minutes",
       ),
       site_id: stringSchema("Preconfigured Cloud site UUID; required for push"),
       publication_id: stringSchema("Stable publication UUID"),

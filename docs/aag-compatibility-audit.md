@@ -32,3 +32,9 @@ Generated `dist` repeats the same source-level compatibility strings and is mark
 unchanged. `scripts/aag-occurrences.json` is the definitive per-file, per-occurrence inventory, and
 `scripts/release-audit.mjs` requires an exact match. A new, removed, or moved grep finding is a
 release-blocking change until its compatibility reason and count are reviewed together.
+
+The inventory covers tracked text files, using NUL-delimited Git filenames. Untracked scratch
+content and binary files with NUL bytes are excluded. This is a compatibility inventory, not a
+secret scanner; the release tarball and direct Git installation are checked independently by the
+release install fixtures. Context retention tests, systemd percent-escaping fixtures, and the
+isolated inventory regression intentionally use legacy protocol/path names to preserve coverage.

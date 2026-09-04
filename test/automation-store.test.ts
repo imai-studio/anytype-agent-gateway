@@ -66,7 +66,7 @@ function versionRecord(
 describe("automation persistence foundation", () => {
   it("retains the v7 automation foundation tables without enabling execution", () => {
     const store = new Store(":memory:");
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
     for (const table of [
       "workflow_definitions",
       "workflow_approval_subjects",
@@ -104,10 +104,10 @@ describe("automation persistence foundation", () => {
 
     const reports: string[] = [];
     const store = new Store(path, (message) => reports.push(message));
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
     expect(store.migrationBackupPath).toBeTruthy();
     expect(store.migrationBackupPath).toContain(".pre-v6.");
-    expect(reports[0]).toContain("from schema 6 to 17");
+    expect(reports[0]).toContain("from schema 6 to 18");
     expect(statSync(store.migrationBackupPath!).mode & 0o777).toBe(0o600);
     const backup = new DatabaseSync(store.migrationBackupPath!, { readOnly: true });
     expect(
@@ -165,6 +165,11 @@ describe("automation persistence foundation", () => {
         ('safe','{"metadata":{"labels":{"prompt":{"redacted":true,"digest":"sha256:${"a".repeat(64)}"}}}}');
       INSERT INTO workflow_approval_subjects VALUES
         ('unsafe','{"spec":{"steps":[{"config":{"message":"legacy approval plaintext"}}]}}');
+      CREATE TABLE management_actor_capabilities (
+        token_hash TEXT PRIMARY KEY, route_id TEXT NOT NULL, participant_id TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK(scope IN ('wake','access','model','publish')),
+        expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+      );
       PRAGMA user_version=14;
     `);
     legacy.close();
@@ -260,7 +265,7 @@ describe("automation persistence foundation", () => {
 
     const store = new Store(path, () => {});
 
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
     expect(
       store.db
         .prepare("SELECT 1 FROM pragma_table_info('workflow_deliveries') WHERE name=?")
@@ -304,12 +309,15 @@ describe("automation persistence foundation", () => {
       DROP TRIGGER workflow_effect_receipts_no_delete;
       DROP INDEX workflow_effect_receipts_state;
       DROP TABLE workflow_effect_receipts;
+      DROP INDEX idx_management_actor_capabilities_thread;
+      ALTER TABLE management_actor_capabilities DROP COLUMN thread_key;
+      ALTER TABLE management_actor_capabilities DROP COLUMN uses_remaining;
       PRAGMA user_version=15;
     `);
     legacy.close();
 
     const store = new Store(path, () => {});
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
     expect(
       store.db
         .prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?")
@@ -347,7 +355,7 @@ describe("automation persistence foundation", () => {
     store.close();
 
     const reopened = new Store(path);
-    expect(reopened.schemaVersion()).toBe(17);
+    expect(reopened.schemaVersion()).toBe(18);
     expect(
       reopened.db
         .prepare("SELECT state FROM workflow_effect_receipts WHERE effect_key='effect-1'")
@@ -371,12 +379,15 @@ describe("automation persistence foundation", () => {
       DROP INDEX workflow_operator_audit_created;
       DROP TABLE workflow_operator_audit;
       DROP TABLE workflow_operator_overrides;
+      DROP INDEX idx_management_actor_capabilities_thread;
+      ALTER TABLE management_actor_capabilities DROP COLUMN thread_key;
+      ALTER TABLE management_actor_capabilities DROP COLUMN uses_remaining;
       PRAGMA user_version=16;
     `);
     legacy.close();
 
     const store = new Store(path, () => {});
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
     for (const table of ["workflow_operator_overrides", "workflow_operator_audit"])
       expect(
         store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table),

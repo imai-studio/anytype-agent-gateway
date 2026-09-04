@@ -1,3 +1,4 @@
+import { sameIdentity } from "./principal.js";
 import type { AgentConfig } from "./config.js";
 import type {
   AnytypePort,
@@ -642,12 +643,20 @@ export function renderCoordination(
   const peers = new Map<string, AgentConfig["coordination"]["peers"][number]>();
   for (const peer of config.coordination.peers)
     for (const name of [peer.name, ...peer.aliases]) peers.set(name.toLocaleLowerCase(), peer);
-  for (const target of dynamicTargets)
-    peers.set(target.name.toLocaleLowerCase(), {
-      name: target.name,
-      participantId: target.participantId,
-      aliases: [],
-    });
+  const configuredNames = new Set(peers.keys());
+  const ambiguousNames = new Set<string>();
+  for (const target of dynamicTargets) {
+    const name = target.name.trim().replace(/^@/, "");
+    const key = name.toLocaleLowerCase();
+    if (!name || configuredNames.has(key) || ambiguousNames.has(key)) continue;
+    const previous = peers.get(key);
+    if (previous && !sameIdentity(previous.participantId, target.participantId)) {
+      peers.delete(key);
+      ambiguousNames.add(key);
+      continue;
+    }
+    if (!previous) peers.set(key, { name, participantId: target.participantId, aliases: [] });
+  }
   const marks: TextMark[] = [];
   const tagged = new Set<string>();
   const matcher = new RegExp(mentionMarker.source, mentionMarker.flags);
@@ -678,9 +687,9 @@ export function renderCoordination(
   }
   rendered += text.slice(cursor);
   const occupied = marks.map((mark) => [mark.from ?? 0, mark.to ?? 0] as const);
-  const uniqueTargets = new Map(
-    [...peers.values()].map((target) => [target.participantId, target]),
-  );
+  const uniqueTargets = new Map<string, AgentConfig["coordination"]["peers"][number]>();
+  for (const target of peers.values())
+    if (!uniqueTargets.has(target.participantId)) uniqueTargets.set(target.participantId, target);
   for (const target of uniqueTargets.values()) {
     const matcher = new RegExp(`@${escapeRegExp(target.name)}(?![\\p{L}\\p{N}_])`, "giu");
     for (let match = matcher.exec(rendered); match; match = matcher.exec(rendered)) {

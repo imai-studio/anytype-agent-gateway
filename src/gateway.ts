@@ -1,3 +1,5 @@
+import { pruneWorkspaceContext } from "./context-retention.js";
+import { globalIdentity } from "./principal.js";
 import type { AgentConfig, WakeConfig } from "./config.js";
 import {
   AgentController,
@@ -106,13 +108,31 @@ export class Gateway {
     void this.terminal.catch(() => undefined);
   }
 
+  private async pruneContext(): Promise<void> {
+    try {
+      const sessions = this.store
+        .listSessionBindings()
+        .filter((binding) => binding.state === "active" || binding.state === "resetting");
+      await pruneWorkspaceContext(
+        this.config,
+        sessions.map((binding) => binding.nativeSessionKey),
+      );
+    } catch (error) {
+      this.log("context_prune_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async start(): Promise<void> {
     try {
       this.store.prune(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      await this.pruneContext();
       this.pruneTimer = setInterval(
         () => {
           try {
             this.store.prune(Date.now() - 30 * 24 * 60 * 60 * 1000);
+            this.trackAuxiliary(this.pruneContext(), "context_prune_failed");
           } catch (error) {
             this.log("state_prune_failed", {
               error: error instanceof Error ? error.message : String(error),
@@ -613,7 +633,8 @@ export class Gateway {
         if (discovery.createMissing && membershipScanClean) {
           for (const allowed of discovery.wake.allowedUsers) {
             if (this.abort.signal.aborted) break;
-            const identity = allowed.split("_").at(-1)!;
+            const identity = globalIdentity(allowed);
+            if (!identity) continue; // Invalid bootstrap identities are rejected by config validation.
             const retry = this.directMessageBootstrapFailures.get(identity);
             if (
               [...authorizedPeerIdentities].some((observed) => sameIdentity(observed, identity)) ||

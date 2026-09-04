@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
   buildLaunchdPlist,
+  buildSystemdUnit,
   launchdServiceLabel,
   resolveInstalledService,
   serviceRollbackCommands,
@@ -14,6 +15,23 @@ import {
   type ManagedServiceState,
   type ServiceMigrationManager,
 } from "../src/service.js";
+
+describe("buildSystemdUnit", () => {
+  it("escapes literal percent specifiers in commands, config paths and PATH", () => {
+    const unit = buildSystemdUnit({
+      nodePath: "/opt/node%v/node",
+      cliPath: "/opt/100%/cli.js",
+      configPath: '/config with spaces/%n/agent".yaml',
+      pathEnvironment: "/opt/%h/bin:/usr/bin",
+      localAnytype: true,
+    });
+    expect(unit).toContain(
+      'ExecStart="/opt/node%%v/node" "/opt/100%%/cli.js" run --config "/config with spaces/%%n/agent\\".yaml"',
+    );
+    expect(unit).toContain('Environment="PATH=/opt/%%h/bin:/usr/bin"');
+    expect(unit).toContain("After=network-online.target anytype.service");
+  });
+});
 
 describe("buildLaunchdPlist", () => {
   it("uses the Knot service identities for newly generated services", () => {

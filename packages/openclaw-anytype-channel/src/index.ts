@@ -35,15 +35,13 @@ export class AnytypeChannelRuntime {
       throw new Error(`Anytype account ${account.accountId} is not configured`);
     }
     const store = new BridgeStore(account.databasePath);
-    store.pruneDelivered(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    store.compactDelivered(Date.now() - 7 * 24 * 60 * 60 * 1000);
     store.pruneOwnedRuns(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    store.pruneExpiredPending(Date.now() - 30 * 24 * 60 * 60 * 1000);
     store.pruneExpiredThinking(Date.now() - 60 * 60 * 1000);
     const pruneTimer = setInterval(
       () => {
-        store.pruneDelivered(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        store.compactDelivered(Date.now() - 7 * 24 * 60 * 60 * 1000);
         store.pruneOwnedRuns(Date.now() - 7 * 24 * 60 * 60 * 1000);
-        store.pruneExpiredPending(Date.now() - 30 * 24 * 60 * 60 * 1000);
         store.pruneExpiredThinking(Date.now() - 60 * 60 * 1000);
       },
       24 * 60 * 60 * 1000,

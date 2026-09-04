@@ -100,7 +100,7 @@ The payload kind is either `agent-event` or `message-final`. `agent-event` prese
 
 Knot pulls `GET /v1/outbox`. Standalone final records are acknowledged with `POST /v1/outbox/:id/ack`; a run's event records are retained until its terminal event and acknowledged atomically with `POST /v1/outbox/ack`. A process restart therefore reconstructs the run from the plugin's durable records instead of losing already-seen chunks.
 
-Delivered records are retained for seven days. Pending records with no matching live route or no terminal lifecycle event expire after 30 days, preventing abandoned bindings from growing the outbox forever. Plaintext thinking events are ephemeral: live thinking remains available for streaming, while abandoned pending thinking expires after one hour.
+Delivered payloads are retained for seven days, then compacted while their durable idempotency records remain. Pending final replies and recovery events remain available until acknowledged; an extended outage does not silently expire them. These durable records need operator-managed storage capacity. Plaintext thinking events are ephemeral: live thinking remains available for streaming, while abandoned pending thinking expires after one hour.
 
 ## Native scheduling and external continuation
 

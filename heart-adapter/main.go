@@ -562,6 +562,7 @@ func renderContent(message *model.ChatMessage) (string, string, []textMark) {
 		return content.GetText(), strings.ToLower(content.GetStyle().String()), renderMarks(content.GetMarks(), 0)
 	}
 	var text strings.Builder
+	var offset int32
 	marks := make([]textMark, 0)
 	style := "paragraph"
 	for _, block := range message.GetBlocks() {
@@ -571,11 +572,12 @@ func renderContent(message *model.ChatMessage) (string, string, []textMark) {
 		}
 		if text.Len() > 0 {
 			text.WriteByte('\n')
+			offset++
 		}
-		offset := int32(text.Len())
 		text.WriteString(blockText.GetText())
 		style = strings.ToLower(blockText.GetStyle().String())
 		marks = append(marks, renderMarks(blockText.GetMarks(), offset)...)
+		offset += utf16Length(blockText.GetText())
 	}
 	return text.String(), style, marks
 }

@@ -24,6 +24,8 @@ import {
 } from "../src/automation/workflow.js";
 import { configSchema, type AgentConfig } from "../src/config.js";
 import { Store } from "../src/store.js";
+import { CloudWorkflowExtension, type CloudCommandClient } from "../src/cloud-workflow.js";
+import { FakeAnytype } from "./fakes.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -1258,6 +1260,99 @@ describe("durable workflow runner", () => {
     );
 
     await runner.tickOnce();
+
+    expect(queue.run(run.runId)).toMatchObject({
+      state: "waiting",
+      error: "Current local authority does not permit this run",
+    });
+    expect(queue.steps(run.runId)[0]?.state).toBe("waiting_approval");
+    store.close();
+  });
+
+  it("pauses revoked local work before entering network extensions", async () => {
+    const original = runnerConfig({
+      allowedCapabilities: ["anytype.write"],
+      maximumRiskTier: "T1",
+    });
+    const store = new Store(":memory:");
+    const definition = workflow("Authority", {
+      steps: [
+        {
+          id: "write",
+          kind: "anytype.write",
+          dependsOn: [],
+          config: { operation: "update", bulk: false, values: { properties: [] } },
+        },
+      ],
+      capabilities: ["anytype.write"],
+    });
+    const queue = new WorkflowQueue(store);
+    const run = delivery(queue, store, original, definition, "workflow-authority");
+    const narrowed = runnerConfig();
+    let stateAtCloudRequest: string | undefined;
+    let aborted = false;
+    const cloud: CloudCommandClient = {
+      serverAdjustedNow: () => 500,
+      claimCommands: async (input) => {
+        stateAtCloudRequest = queue.run(run.runId)?.state;
+        return new Promise((_resolve, reject) => {
+          input!.signal!.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(input!.signal!.reason);
+            },
+            { once: true },
+          );
+        });
+      },
+      extendLease: async () => {
+        throw new Error("not used");
+      },
+      submitResult: async () => {
+        throw new Error("not used");
+      },
+      controlPublication: async () => {
+        throw new Error("not used");
+      },
+    };
+    const cloudSettings = configSchema.parse({
+      version: 1,
+      agent: { name: "Knot", participantId: "agent" },
+      anytype: { apiKeyFile: "/tmp/key" },
+      spaces: [{ id: "space-1" }],
+      runtime: { kind: "codex" },
+    }).cloudCommands;
+    const extension = new CloudWorkflowExtension(
+      store,
+      cloud,
+      {
+        execute: async () => {
+          throw new Error("not used");
+        },
+      },
+      cloudSettings,
+      new FakeAnytype(),
+      () => undefined,
+      () => 500,
+      { tickBudgetMilliseconds: 30 },
+    );
+    const runner = new WorkflowRunner(
+      store,
+      narrowed,
+      () => {},
+      undefined,
+      () => 500,
+      undefined,
+      [extension],
+    );
+    const started = Date.now();
+
+    await runner.tickOnce();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(stateAtCloudRequest).toBe("waiting");
+    expect(aborted).toBe(true);
+    await extension.stop();
 
     expect(queue.run(run.runId)).toMatchObject({
       state: "waiting",

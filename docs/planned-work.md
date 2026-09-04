@@ -64,6 +64,15 @@ an Anytype sender, choose a credential, or bypass the local executor catalog.
 - A supported multi-host deployment for one identity and state database.
 - A distributed queue or cross-machine exactly-once guarantee.
 - A public-API replacement for the private Heart discussion adapter.
+- An isolated authority broker and explicit operation approval for shell-capable runtime management;
+  same-user actor files or HMACs do not provide this boundary (see `../SECURITY.md`).
+- Native remote TLS configuration for Heart; today remote transport security belongs to an
+  operator-managed SSH tunnel or authenticated encrypted private network.
+- A replay-safe archival/tombstone protocol for durable workflow, approval, and Cloud command
+  records, and a supported operator recovery interface for permanently undeliverable chat replies.
+- A product policy for Cloud `chat.send` origin recency and content binding; today it rechecks the
+  native origin sender against current local policy but does not require recent command-specific
+  consent.
 
 Keep these gaps visible in guides and diagnostics. Do not hide them behind display-name
 authorization, broad network listeners, a second scheduler, or ordinary Anytype objects pretending

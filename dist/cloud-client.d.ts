@@ -20,7 +20,7 @@ export interface CloudClientOptions {
     fetch?: typeof fetch;
     now?: () => number;
     random?: () => number;
-    sleep?: (milliseconds: number) => Promise<void>;
+    sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
     requestTimeoutMilliseconds?: number;
     maximumAttempts?: number;
     assetUploadTimeoutMilliseconds?: number;
@@ -67,6 +67,7 @@ export declare class CloudClient {
     }>;
     claimCommands(input?: {
         leaseSeconds?: number;
+        signal?: AbortSignal;
     }): Promise<{
         protocolVersion: "1.0";
         commands: {
@@ -172,13 +173,13 @@ export declare class CloudClient {
         }[];
         pollAfterSeconds: number;
     }>;
-    extendLease(command: CloudCommandEnvelope, extendBySeconds?: number): Promise<{
+    extendLease(command: CloudCommandEnvelope, extendBySeconds?: number, signal?: AbortSignal): Promise<{
         protocolVersion: "1.0";
         commandId: string;
         attempt: number;
         leaseExpiresAt: number;
     }>;
-    submitResult(command: CloudCommandEnvelope, result: CloudCommandResult): Promise<{
+    submitResult(command: CloudCommandEnvelope, result: CloudCommandResult, signal?: AbortSignal): Promise<{
         protocolVersion: "1.0";
         commandId: string;
         attempt: number;
@@ -234,7 +235,7 @@ export declare class CloudClient {
         updatedAt: number;
         currentVersionId?: string | undefined;
     }>;
-    controlPublication(input: PublicationControlRequest): Promise<{
+    controlPublication(input: PublicationControlRequest, signal?: AbortSignal): Promise<{
         type: "publication.disable";
         publicationId: string;
         disabledAt: number;

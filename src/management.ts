@@ -33,10 +33,7 @@ export async function enrollChatRoute(input: {
     chats.push({ id: input.chatId, name: input.chatName, wake: input.wake });
     rawSpace.chats = chats;
     configSchema.parse(configFile.raw);
-    await writePrivateFileAtomic(
-      configFile.absolute,
-      serializeConfig(configFile.raw, configFile.extension),
-    );
+    await writePrivateFileAtomic(configFile.absolute, serializeConfig(configFile));
     return "enrolled";
   });
 }
@@ -116,6 +113,8 @@ export async function setRouteAccess(input: {
 type ConfigFile = {
   absolute: string;
   extension: string;
+  document: YAML.Document | undefined;
+  original: unknown;
   raw: Record<string, unknown>;
   parsed: AgentConfig;
   rawSpaces: Array<Record<string, unknown>>;
@@ -125,6 +124,8 @@ type ConfigFile = {
 type RouteConfig = {
   absolute: string;
   extension: string;
+  document: YAML.Document | undefined;
+  original: unknown;
   raw: Record<string, unknown>;
   parsed: AgentConfig;
   rawSpace: Record<string, unknown>;
@@ -158,6 +159,8 @@ async function resolveRouteConfig(
   return {
     absolute: configFile.absolute,
     extension: configFile.extension,
+    document: configFile.document,
+    original: configFile.original,
     raw: configFile.raw,
     parsed: configFile.parsed,
     rawSpace: configFile.rawSpaces[configFile.spaceIndex]!,
@@ -180,7 +183,7 @@ async function persistRouteWake(route: RouteConfig, wake: WakeConfig): Promise<v
   else overrides[overrideIndex] = next;
   route.rawSpace.wakeOverrides = overrides;
   configSchema.parse(route.raw);
-  await writePrivateFileAtomic(route.absolute, serializeConfig(route.raw, route.extension));
+  await writePrivateFileAtomic(route.absolute, serializeConfig(route));
   const config = await loadConfig(route.absolute);
   const store = new Store(config.state.path);
   try {
@@ -199,7 +202,12 @@ async function resolveConfigFile(
   const extension = extname(absolute).toLowerCase();
   if (extension === ".toml")
     throw new Error("Runtime configuration changes support YAML and JSON files only");
-  const raw = parseConfig(await readFile(absolute, "utf8"), extension) as Record<string, unknown>;
+  const text = await readFile(absolute, "utf8");
+  const document = extension === ".json" ? undefined : YAML.parseDocument(text);
+  if (document?.errors.length) throw document.errors[0];
+  const original: unknown = document ? document.toJS() : JSON.parse(text);
+  // Detach YAML aliases before changing a route so another alias stays untouched.
+  const raw = JSON.parse(JSON.stringify(original)) as Record<string, unknown>;
   const parsed = configSchema.parse(raw);
   const rawSpaces = raw.spaces as Array<Record<string, unknown>>;
   let spaceIndex = parsed.spaces.findIndex((space) => space.id === spaceId);
@@ -217,7 +225,7 @@ async function resolveConfigFile(
     spaceIndex = resolvedSpaces.findIndex((resolvedId) => resolvedId === spaceId);
   }
   if (spaceIndex < 0) throw new Error(`Space ${spaceId} is not configured by ID`);
-  return { absolute, extension, raw, parsed, rawSpaces, spaceIndex };
+  return { absolute, extension, document, original, raw, parsed, rawSpaces, spaceIndex };
 }
 
 async function resolveRouteSpaceName(configPath: string, routeId: string): Promise<string> {
@@ -241,11 +249,45 @@ async function withConfigWriteLock<T>(configPath: string, operation: () => Promi
   }
 }
 
-function parseConfig(text: string, extension: string): unknown {
-  return extension === ".json" ? JSON.parse(text) : YAML.parse(text);
+function serializeConfig(config: Pick<ConfigFile, "raw" | "original" | "document">): string {
+  if (!config.document) return `${JSON.stringify(config.raw, null, 2)}\n`;
+  patchDocument(config.document, [], config.original, config.raw);
+  return config.document.toString();
 }
-function serializeConfig(value: unknown, extension: string): string {
-  return extension === ".json" ? `${JSON.stringify(value, null, 2)}\n` : YAML.stringify(value);
+
+function patchDocument(
+  document: YAML.Document,
+  path: Array<string | number>,
+  before: unknown,
+  after: unknown,
+): void {
+  if (JSON.stringify(before) === JSON.stringify(after)) return;
+  const node = document.getIn(path, true);
+  if (YAML.isNode(node) && !YAML.isAlias(node) && node.anchor) {
+    const anchor = node.anchor;
+    YAML.visit(document, {
+      Alias: (_key, alias) => (alias.source === anchor ? document.createNode(before) : undefined),
+    });
+  }
+  // Updating through an alias would change its anchor and all other consumers.
+  if (YAML.isAlias(node)) {
+    document.setIn(path, document.createNode(after));
+  } else if (Array.isArray(before) && Array.isArray(after) && YAML.isSeq(node)) {
+    for (let index = before.length - 1; index >= after.length; index -= 1)
+      document.deleteIn([...path, index]);
+    for (let index = 0; index < after.length; index += 1)
+      patchDocument(document, [...path, index], before[index], after[index]);
+  } else if (isRecord(before) && isRecord(after) && YAML.isMap(node)) {
+    for (const key of Object.keys(before)) if (!(key in after)) document.deleteIn([...path, key]);
+    for (const [key, value] of Object.entries(after))
+      patchDocument(document, [...path, key], before[key], value);
+  } else {
+    document.setIn(path, after);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function writePrivateFileAtomic(target: string, contents: string): Promise<void> {

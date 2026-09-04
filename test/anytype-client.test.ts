@@ -17,6 +17,63 @@ afterEach(async () => {
 });
 
 describe("Anytype object REST client", () => {
+  it("cancels a native HTTP origin lookup while the server is stalled", async () => {
+    let entered!: () => void;
+    let closed!: () => void;
+    const requestEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const requestClosed = new Promise<void>((resolve) => {
+      closed = resolve;
+    });
+    const server = createServer((_request, response) => {
+      response.on("close", closed);
+      entered();
+    });
+    const client = await cancellationClient(server);
+    const controller = new AbortController();
+    const pending = client.getMessage("space", "chat", "origin", controller.signal);
+    const rejected = expect(pending).rejects.toThrow("cancel lookup");
+    await requestEntered;
+    controller.abort(new Error("cancel lookup"));
+    await rejected;
+    await requestClosed;
+  });
+
+  it("cancels queued writes promptly without sending or bypassing the active write", async () => {
+    let releaseFirst!: () => void;
+    let entered!: () => void;
+    const requestEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const bodies: string[] = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      bodies.push(Buffer.concat(chunks).toString());
+      response.setHeader("Content-Type", "application/json");
+      if (bodies.length === 1) {
+        releaseFirst = () => response.end(JSON.stringify({ message_id: "first" }));
+        entered();
+      } else response.end(JSON.stringify({ message_id: "third" }));
+    });
+    const client = await cancellationClient(server);
+    const first = client.sendMessage("space", "chat", { text: "first" });
+    await requestEntered;
+    const controller = new AbortController();
+    const second = client.sendMessage("space", "chat", { text: "cancelled" }, controller.signal);
+    const rejected = expect(second).rejects.toThrow("cancel queued write");
+    const third = client.sendMessage("space", "chat", { text: "third" });
+    controller.abort(new Error("cancel queued write"));
+    await rejected;
+    expect(bodies).toHaveLength(1);
+    releaseFirst();
+    await expect(first).resolves.toBe("first");
+    await expect(third).resolves.toBe("third");
+    expect(bodies).toHaveLength(2);
+    expect(bodies.join(" ")).not.toContain("cancelled");
+  });
+
   it("loads workflow definitions with native revision and editor fields", async () => {
     const calls: Array<{ method: string; path: string; body: string }> = [];
     const server = createServer(async (request, response) => {
@@ -779,3 +836,22 @@ describe("Anytype object REST client", () => {
     ).toBe(true);
   });
 });
+
+async function cancellationClient(server: Server): Promise<AnytypeClient> {
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing server address");
+  const directory = await mkdtemp(join(tmpdir(), "knot-cancellation-"));
+  const keyPath = join(directory, "key");
+  await writeFile(keyPath, "test-key\n");
+  return AnytypeClient.create(
+    configSchema.parse({
+      version: 1,
+      agent: { name: "Knot", participantId: "bot" },
+      anytype: { apiBase: `http://127.0.0.1:${address.port}`, apiKeyFile: keyPath },
+      spaces: [{ id: "space" }],
+      runtime: { kind: "codex" },
+    }),
+  );
+}

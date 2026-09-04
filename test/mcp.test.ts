@@ -116,84 +116,128 @@ describe("AAG Anytype MCP policy", () => {
     ).rejects.toThrow("current Anytype sender is not allowed to publish");
   });
 
-  it("publishes through the constrained tool with a documented trailing-slash prefix", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "knot-mcp-publish-"));
-    const paths = resolveCloudPaths({ configFile: join(directory, "cloud.json") });
-    const base = await initializeCloudConfig({
-      paths,
-      baseUrl: "https://knot.example",
-      connectorName: "Test Mac",
-      requestedScopes: ["publications.read", "publications.write"],
-      requestedSlugGrants: ["notes/*"],
-    });
-    const siteId = "00000000-0000-4000-8000-000000000011";
-    const publicationId = "00000000-0000-4000-8000-000000000022";
-    const paired: CloudConfig = {
-      ...base,
-      paired: {
-        connectorId: "00000000-0000-4000-8000-000000000033",
-        tenantId: "00000000-0000-4000-8000-000000000044",
-        scopes: ["publications.read", "publications.write"],
-        siteIds: [siteId],
-        slugGrants: ["notes/*"],
-        approvedAt: 1,
-      },
-    };
-    await saveCloudConfig(paths, paired);
-    const fetchMock = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
-      expect(init?.method).toBe("POST");
-      expect(new Headers(init?.headers).get("Knot-Signature")).toBeTruthy();
-      return Response.json(
-        {
-          protocolVersion: "1.0",
-          publicationId,
-          versionId: "00000000-0000-4000-8000-000000000055",
-          state: "ready",
-        },
-        { status: 201 },
-      );
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    try {
-      const configured = config({
-        tools: {
-          publish: {
-            enabled: true,
-            allowedUsers: ["owner"],
-            allowedSiteIds: [siteId],
-            allowedSlugPrefixes: ["notes/"],
-            cloudConfigFile: paths.configFile,
-          },
-        },
+  it.each(["bound", "capability"])(
+    "publishes through the constrained tool (%s) with status then multiple pushes",
+    async (authority) => {
+      const directory = await mkdtemp(join(tmpdir(), "knot-mcp-publish-"));
+      const paths = resolveCloudPaths({ configFile: join(directory, "cloud.json") });
+      const base = await initializeCloudConfig({
+        paths,
+        baseUrl: "https://knot.example",
+        connectorName: "Test Mac",
+        requestedScopes: ["publications.read", "publications.write"],
+        requestedSlugGrants: ["notes/*"],
       });
-      await expect(
-        callTool(
-          client(),
-          configured,
-          "/config.yaml",
-          "chat:space-1:chat",
-          "space-1",
-          "aag_publish",
+      const siteId = "00000000-0000-4000-8000-000000000011";
+      const publicationId = "00000000-0000-4000-8000-000000000022";
+      const paired: CloudConfig = {
+        ...base,
+        paired: {
+          connectorId: "00000000-0000-4000-8000-000000000033",
+          tenantId: "00000000-0000-4000-8000-000000000044",
+          scopes: ["publications.read", "publications.write"],
+          siteIds: [siteId],
+          slugGrants: ["notes/*"],
+          approvedAt: 1,
+        },
+      };
+      await saveCloudConfig(paths, paired);
+      const fetchMock = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+        if (String(_input).endsWith("/status"))
+          return Response.json({
+            protocolVersion: "1.0",
+            publicationId,
+            siteId,
+            slug: "notes/status",
+            state: "ready",
+            updatedAt: 1,
+          });
+        expect(init?.method).toBe("POST");
+        expect(new Headers(init?.headers).get("Knot-Signature")).toBeTruthy();
+        return Response.json(
           {
-            action: "push",
-            publication_id: publicationId,
-            site_id: siteId,
-            slug: "notes/release",
-            operation: "create",
-            document: {
-              schemaVersion: "1.0",
-              title: "Release",
-              blocks: [{ type: "paragraph", content: [{ text: "Ready" }] }],
+            protocolVersion: "1.0",
+            publicationId,
+            versionId: "00000000-0000-4000-8000-000000000055",
+            state: "ready",
+          },
+          { status: 201 },
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      try {
+        const configured = config({
+          runtime:
+            authority === "capability"
+              ? { kind: "openclaw" }
+              : { kind: "codex", defaultProject: "/workspace" },
+          state: { path: join(directory, "state.sqlite") },
+          tools: {
+            publish: {
+              enabled: true,
+              allowedUsers: ["owner"],
+              allowedSiteIds: [siteId],
+              allowedSlugPrefixes: ["notes/"],
+              cloudConfigFile: paths.configFile,
             },
           },
-          "owner",
-        ),
-      ).resolves.toMatchObject({ state: "succeeded" });
-      expect(fetchMock).toHaveBeenCalledOnce();
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
+        });
+        const store = new Store(configured.state.path);
+        const capability = store.issueManagementCapability("chat:space-1:chat", "owner", "publish");
+        store.close();
+        const actorId = authority === "bound" ? "owner" : undefined;
+        const metadata =
+          authority === "capability"
+            ? { actor_capability: capability, route_id: "chat:space-1:chat" }
+            : {};
+        const boundRoute = authority === "bound" ? "chat:space-1:chat" : undefined;
+        await expect(
+          callTool(
+            client(),
+            configured,
+            "/config.yaml",
+            boundRoute,
+            "space-1",
+            "aag_publish",
+            {
+              action: "status",
+              publication_id: publicationId,
+              ...metadata,
+            },
+            actorId,
+          ),
+        ).resolves.toMatchObject({ state: "ready" });
+        for (const slug of ["notes/hello", "notes/second"])
+          await expect(
+            callTool(
+              client(),
+              configured,
+              "/config.yaml",
+              boundRoute,
+              "space-1",
+              "aag_publish",
+              {
+                ...metadata,
+                action: "push",
+                publication_id: publicationId,
+                site_id: siteId,
+                slug,
+                operation: "create",
+                document: {
+                  schemaVersion: "1.0",
+                  title: "Release",
+                  blocks: [{ type: "paragraph", content: [{ text: "Ready" }] }],
+                },
+              },
+              actorId,
+            ),
+          ).resolves.toMatchObject({ state: "succeeded" });
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("rejects runtime-provided links in the constrained publication tool", async () => {
     const configured = config({

@@ -311,7 +311,10 @@ export class TypedWorkflowStepExecutor {
             ...(step.model ? { modelId: step.model } : {}),
         }, () => { });
         const cancel = () => void active.cancel().catch(() => undefined);
-        signal.addEventListener("abort", cancel, { once: true });
+        if (signal.aborted)
+            cancel();
+        else
+            signal.addEventListener("abort", cancel, { once: true });
         try {
             const result = await abortable(active.result, signal);
             const text = boundedText(result.text, 60_000);

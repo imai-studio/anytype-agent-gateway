@@ -199,8 +199,8 @@ export type AnytypeWorkflowObject = {
     observationError?: "anytype_request_failed" | "object_identifier_invalid" | "object_read_failed" | "object_not_found" | "object_too_large" | "object_type_unverified" | "native_revision_missing";
 };
 export interface AnytypePort {
-    getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage>;
-    listMessages(spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]>;
+    getMessage(spaceId: string, chatId: string, messageId: string, signal?: AbortSignal): Promise<ChatMessage>;
+    listMessages(spaceId: string, chatId: string, limit: number, afterOrderId?: string, signal?: AbortSignal): Promise<ChatMessage[]>;
     sendMessage(spaceId: string, chatId: string, input: {
         text: string;
         replyTo?: string;
@@ -269,20 +269,20 @@ export interface AnytypePort {
     }, signal?: AbortSignal): Promise<Record<string, unknown>>;
     archiveObject?(spaceId: string, objectId: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
     addObjectsToList?(spaceId: string, listId: string, objectIds: string[], signal?: AbortSignal): Promise<void>;
-    listViews?(spaceId: string, listId: string): Promise<Record<string, unknown>[]>;
+    listViews?(spaceId: string, listId: string, signal?: AbortSignal): Promise<Record<string, unknown>[]>;
     listViewObjects?(spaceId: string, listId: string, viewId: string, page?: {
         offset: number;
         limit: number;
-    }): Promise<Record<string, unknown>[]>;
-    removeObjectFromList?(spaceId: string, listId: string, objectId: string): Promise<void>;
-    uploadFile?(spaceId: string, path: string): Promise<Record<string, unknown>>;
+    }, signal?: AbortSignal): Promise<Record<string, unknown>[]>;
+    removeObjectFromList?(spaceId: string, listId: string, objectId: string, signal?: AbortSignal): Promise<void>;
+    uploadFile?(spaceId: string, path: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
     searchObjects(spaceId: string, offset: number, limit: number): Promise<Array<{
         id: string;
         name?: string;
         type?: string;
     }>>;
     searchWorkflowObjects(spaceId: string, typeKeys: string[], offset: number, limit: number): Promise<AnytypeWorkflowObject[]>;
-    downloadFile?(spaceId: string, fileId: string, maxBytes: number): Promise<{
+    downloadFile?(spaceId: string, fileId: string, maxBytes: number, signal?: AbortSignal): Promise<{
         bytes: Uint8Array;
         contentType?: string;
     }>;

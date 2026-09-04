@@ -578,6 +578,36 @@ describe("closed typed workflow executors", () => {
     materializeState.store.close();
   });
 
+  it("cancels a runtime whose startup completes after authority was aborted", async () => {
+    const definition = workflow(
+      [{ id: "agent", kind: "agent", config: { prompt: "bounded work", project: "/workspace" } }],
+      ["agent.invoke"],
+    );
+    const state = prepare(definition);
+    const abort = new AbortController();
+    const cancel = vi.fn(async () => {});
+    const driver = runtime();
+    driver.start = vi.fn(async () => {
+      abort.abort(new Error("authority revoked during startup"));
+      return { result: new Promise<never>(() => {}), steer: async () => {}, cancel };
+    });
+    const executor = new TypedWorkflowStepExecutor(
+      state.store,
+      config(),
+      {} as AnytypePort,
+      driver,
+      fallback,
+    );
+    try {
+      await expect(executor.execute(state.claim, definition, abort.signal)).rejects.toThrow(
+        "authority revoked during startup",
+      );
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      state.store.close();
+    }
+  });
+
   it("honors cancellation immediately before an effect", async () => {
     const definition = workflow(
       [

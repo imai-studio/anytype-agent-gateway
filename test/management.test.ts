@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -142,6 +142,28 @@ describe("constrained gateway management", () => {
     });
     store.close();
     expect((await readFile(configPath, "utf8")).includes("wakeOverrides")).toBe(true);
+  });
+
+  it("preserves YAML comments, quotes and untouched anchors while keeping writes private", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aag-management-yaml-"));
+    const configPath = join(dir, "agent.yaml");
+    await writeFile(
+      configPath,
+      `# Operator note\nversion: 1\nagent: { name: 'Anya', participantId: bot } # identity\nanytype: { apiKeyFile: /tmp/key }\n\nspaces:\n  - id: space\n    wakeOverrides:\n      - kind: chat\n        id: chat\n        wake: &policy # original policy\n          humans: mention # wake note\n          agents: never\n          allowedUsers: [human]\n    chats:\n      - id: other\n        wake: *policy\nruntime: { kind: openclaw }\nmanagement: { allowWakeChanges: true }\nstate: { path: '${join(dir, "state.sqlite")}' }\n`,
+      { mode: 0o644 },
+    );
+    await setRouteWake({ configPath, routeId: "chat:space:chat", humans: "every-message" });
+    const text = await readFile(configPath, "utf8");
+    expect(text).toContain("# Operator note");
+    expect(text).toContain("name: 'Anya'");
+    expect(text).toContain("# identity");
+    expect(text).toContain("# original policy");
+    expect(text).toContain("# wake note");
+    expect(text).toContain("&policy");
+    expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+    const config = await loadConfig(configPath);
+    expect(config.spaces[0]?.wakeOverrides[0]?.wake.humans).toBe("every-message");
+    expect(config.spaces[0]?.chats[0]?.wake.humans).toBe("mention");
   });
 
   it("applies a prefix wake override immediately", async () => {

@@ -412,6 +412,203 @@ describe("cloud workflow bridge", () => {
     store.close();
   });
 
+  it("aborts a stalled lease pass within its budget and defers all further Cloud work", async () => {
+    const store = new Store(":memory:");
+    const item = command({ leaseExpiresAt: 1_001 });
+    const inbox = new CloudCommandStore(store);
+    inbox.persistClaim(item, 1_000_000);
+    inbox.prepare(item.commandId, true, 1_000_000);
+    const { client, claimCommands } = clientFor([]);
+    let cancelled = false;
+    client.extendLease = vi.fn<CloudCommandClient["extendLease"]>(
+      async (_command, _seconds, signal) =>
+        new Promise<Awaited<ReturnType<CloudCommandClient["extendLease"]>>>((_resolve, reject) => {
+          signal!.addEventListener(
+            "abort",
+            () => {
+              cancelled = true;
+              reject(signal!.reason);
+            },
+            { once: true },
+          );
+        }),
+    );
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({ approval: "all" }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+      { tickBudgetMilliseconds: 30 },
+    );
+    const started = Date.now();
+    await extension.beforeTick();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(cancelled).toBe(true);
+    expect(inbox.command(item.commandId)?.leaseExpiresAt).toBe(1_001_000);
+    await extension.beforeTick();
+    expect(client.extendLease).toHaveBeenCalledOnce();
+    expect(claimCommands).not.toHaveBeenCalled();
+    await extension.stop();
+    store.close();
+  });
+
+  it("rejects a late lease response after cancellation before changing durable state", async () => {
+    const store = new Store(":memory:");
+    const item = command({ leaseExpiresAt: 1_001 });
+    const inbox = new CloudCommandStore(store);
+    inbox.persistClaim(item, 1_000_000);
+    inbox.prepare(item.commandId, true, 1_000_000);
+    const { client } = clientFor([]);
+    client.extendLease = vi.fn<CloudCommandClient["extendLease"]>(
+      async (_command, _seconds, signal) =>
+        new Promise<Awaited<ReturnType<CloudCommandClient["extendLease"]>>>((resolve) => {
+          signal!.addEventListener(
+            "abort",
+            () =>
+              resolve({
+                protocolVersion: "1.0",
+                commandId: item.commandId,
+                attempt: 1,
+                leaseExpiresAt: 1_200,
+              }),
+            { once: true },
+          );
+        }),
+    );
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({ approval: "all" }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+      { tickBudgetMilliseconds: 30 },
+    );
+    await extension.beforeTick();
+    expect(inbox.command(item.commandId)?.leaseExpiresAt).toBe(1_001_000);
+    await extension.stop();
+    store.close();
+  });
+
+  it("stops an in-flight effect and retains the unknown-outcome replay barrier", async () => {
+    const store = new Store(":memory:");
+    const item = command();
+    const { client } = clientFor([item]);
+    let cancelled = false;
+    const executor: CloudCommandExecutionPort = {
+      execute: vi.fn<CloudCommandExecutionPort["execute"]>(
+        async (_command, _key, signal) =>
+          new Promise<CloudCommandResult>((_resolve, reject) => {
+            signal!.addEventListener(
+              "abort",
+              () => {
+                cancelled = true;
+                reject(signal!.reason);
+              },
+              { once: true },
+            );
+          }),
+      ),
+    };
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      executor,
+      settings(),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    expect(executor.execute).toHaveBeenCalledOnce();
+    await extension.stop();
+    expect(cancelled).toBe(true);
+    expect(new CloudCommandStore(store).command(item.commandId)).toMatchObject({
+      state: "dead_letter",
+      lastErrorCode: "effect-outcome-unknown",
+    });
+    await extension.beforeTick();
+    expect(executor.execute).toHaveBeenCalledOnce();
+    store.close();
+  });
+
+  it("stops a pending Cloud poll without accepting its late reply", async () => {
+    const store = new Store(":memory:");
+    const { client } = clientFor([]);
+    let entered!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    client.claimCommands = vi.fn<CloudCommandClient["claimCommands"]>(
+      async (input) =>
+        new Promise<Awaited<ReturnType<CloudCommandClient["claimCommands"]>>>((resolve) => {
+          input!.signal!.addEventListener(
+            "abort",
+            () =>
+              resolve({
+                protocolVersion: "1.0",
+                commands: [command()],
+                pollAfterSeconds: 5,
+              }),
+            { once: true },
+          );
+          entered();
+        }),
+    );
+    const execute = vi.fn(async () => succeeded);
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute },
+      settings(),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    const tick = extension.beforeTick();
+    await pending;
+    await extension.stop();
+    await tick;
+    expect(new CloudCommandStore(store).list()).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+    store.close();
+  });
+
+  it("does not send after the native origin lookup is cancelled", async () => {
+    const anytype = new FakeAnytype();
+    const controller = new AbortController();
+    anytype.getMessage = vi.fn(async () => {
+      controller.abort(new Error("stopped"));
+      return { id: "origin-message-1", creator: "operator", content: { text: "hello" } };
+    });
+    const send = vi.spyOn(anytype, "sendMessage");
+    const { client } = clientFor([]);
+    const executor = new AnytypeCloudCommandExecutor(
+      anytype,
+      client,
+      cloudConfigSchema.parse({
+        version: 1,
+        baseUrl: "https://knot.example/",
+        connectorName: "test",
+        protocolVersion: "1.0",
+        publicKey: "a".repeat(43),
+        privateKeyFile: "/tmp/key",
+        requestedScopes: ["anytype.chats.send"],
+        requestedSlugGrants: [],
+      }),
+      "agent-1",
+      ["operator"],
+    );
+    await expect(executor.execute(command(), "e".repeat(64), controller.signal)).rejects.toThrow(
+      "stopped",
+    );
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("extends a near-expiry lease and survives an offline poll", async () => {
     const store = new Store(":memory:");
     const item = command({ leaseExpiresAt: 1_001 });

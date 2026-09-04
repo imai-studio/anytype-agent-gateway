@@ -78,20 +78,29 @@ export interface CloudCommandRecord {
 
 export interface CloudCommandClient {
   serverAdjustedNow(): number;
-  claimCommands(input?: { leaseSeconds?: number }): ReturnType<CloudClient["claimCommands"]>;
+  claimCommands(input?: {
+    leaseSeconds?: number;
+    signal?: AbortSignal;
+  }): ReturnType<CloudClient["claimCommands"]>;
   extendLease(
     command: CloudCommandEnvelope,
     extendBySeconds?: number,
+    signal?: AbortSignal,
   ): ReturnType<CloudClient["extendLease"]>;
   submitResult(
     command: CloudCommandEnvelope,
     result: CloudCommandResult,
+    signal?: AbortSignal,
   ): ReturnType<CloudClient["submitResult"]>;
   controlPublication: CloudClient["controlPublication"];
 }
 
 export interface CloudCommandExecutionPort {
-  execute(command: CloudCommandEnvelope, effectKey: string): Promise<CloudCommandResult>;
+  execute(
+    command: CloudCommandEnvelope,
+    effectKey: string,
+    signal?: AbortSignal,
+  ): Promise<CloudCommandResult>;
 }
 
 export class CloudCommandStore {
@@ -717,6 +726,10 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
   private readonly projectionWorkerId = `cloud-projection-${randomUUID()}`;
   private nextPollAt = 0;
   private recovered = false;
+  private readonly stopped = new AbortController();
+  private beforeTask: Promise<void> | undefined;
+  private afterTask: Promise<void> | undefined;
+  private nextCloudAttemptAt = 0;
   private inFlight: { commandId: string; promise: Promise<void> } | undefined;
 
   constructor(
@@ -727,6 +740,7 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
     private readonly anytype: AnytypePort,
     private readonly log: (event: string, fields?: Record<string, unknown>) => void,
     now?: () => number,
+    private readonly options: { tickBudgetMilliseconds?: number } = {},
   ) {
     this.inbox = new CloudCommandStore(store);
     this.now = now ?? (() => this.client.serverAdjustedNow());
@@ -734,7 +748,28 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
 
   private readonly now: () => number;
 
-  async beforeTick(): Promise<void> {
+  beforeTick(parentSignal?: AbortSignal): Promise<void> {
+    if (this.stopped.signal.aborted) return Promise.resolve();
+    if (this.beforeTask) return this.beforeTask;
+    const signal = this.tickSignal(parentSignal);
+    this.beforeTask = this.tick(
+      signal,
+      parentSignal ? AbortSignal.any([parentSignal, this.stopped.signal]) : this.stopped.signal,
+    ).finally(() => {
+      this.beforeTask = undefined;
+    });
+    return this.beforeTask;
+  }
+
+  private tickSignal(parentSignal?: AbortSignal): AbortSignal {
+    return AbortSignal.any([
+      this.stopped.signal,
+      AbortSignal.timeout(this.options.tickBudgetMilliseconds ?? 1_000),
+      ...(parentSignal ? [parentSignal] : []),
+    ]);
+  }
+
+  private async tick(signal: AbortSignal, executionSignal: AbortSignal): Promise<void> {
     const now = this.now();
     if (!this.recovered) {
       const recovered = this.inbox.recoverInterruptedEffects(now);
@@ -742,12 +777,20 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
       this.recovered = true;
     }
     this.inbox.expire(now);
-    await this.extendLeases(now);
-    await this.submitTerminalResults(now);
-    if (now >= this.nextPollAt) await this.poll(now);
+    if (now >= this.nextCloudAttemptAt) {
+      try {
+        await this.extendLeases(now, signal);
+        await this.submitTerminalResults(now, signal);
+        if (now >= this.nextPollAt) await this.poll(now, signal);
+      } catch (error) {
+        this.nextCloudAttemptAt = this.now() + this.config.pollIntervalSeconds * 1_000;
+        this.log("cloud_command_network_deferred", { error: message(error) });
+      }
+    }
+    if (signal.aborted) return;
     const ready = this.inbox.nextReady(now);
     if (ready && ready.leaseExpiresAt > now && !this.inFlight) {
-      const promise = this.execute(ready, now)
+      const promise = this.execute(ready, now, executionSignal)
         .catch((error) =>
           this.log("cloud_command_execution_failed", {
             commandId: ready.commandId,
@@ -766,11 +809,20 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
   }
 
   async stop(): Promise<void> {
-    if (this.inFlight) await this.inFlight.promise;
+    this.stopped.abort(new Error("Cloud workflow extension stopped"));
+    await Promise.allSettled([this.beforeTask, this.afterTask, this.inFlight?.promise]);
   }
 
-  async afterTick(): Promise<void> {
-    if (!this.config.projection.enabled) return;
+  afterTick(parentSignal?: AbortSignal): Promise<void> {
+    if (this.stopped.signal.aborted || !this.config.projection.enabled) return Promise.resolve();
+    if (this.afterTask) return this.afterTask;
+    this.afterTask = this.project(this.tickSignal(parentSignal)).finally(() => {
+      this.afterTask = undefined;
+    });
+    return this.afterTask;
+  }
+
+  private async project(signal: AbortSignal): Promise<void> {
     const projection = this.inbox.claimProjection(this.projectionWorkerId, this.now());
     if (!projection) return;
     try {
@@ -780,7 +832,9 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
         {
           text: `Knot Cloud command ${projection.commandId}: ${projection.payload.state}`,
         },
+        signal,
       );
+      signal.throwIfAborted();
       this.inbox.completeProjection(
         projection.projectionId,
         this.projectionWorkerId,
@@ -798,9 +852,13 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
     }
   }
 
-  private async poll(now: number): Promise<void> {
+  private async poll(now: number, signal: AbortSignal): Promise<void> {
     try {
-      const response = await this.client.claimCommands({ leaseSeconds: this.config.leaseSeconds });
+      const response = await this.client.claimCommands({
+        leaseSeconds: this.config.leaseSeconds,
+        signal,
+      });
+      signal.throwIfAborted();
       this.nextPollAt = now + response.pollAfterSeconds * 1_000;
       for (const command of response.commands) {
         const record = this.inbox.persistClaim(command, now);
@@ -824,11 +882,13 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
     } catch (error) {
       this.nextPollAt = now + this.config.pollIntervalSeconds * 1_000;
       this.log("cloud_command_poll_failed", { error: message(error) });
+      throw error;
     }
   }
 
-  private async extendLeases(now: number): Promise<void> {
+  private async extendLeases(now: number, signal: AbortSignal): Promise<void> {
     for (const command of this.inbox.list(100)) {
+      signal.throwIfAborted();
       if (
         (terminalStates.has(command.state) && command.completedAt !== undefined) ||
         command.leaseExpiresAt - now > Math.max(5_000, (this.config.leaseSeconds * 1_000) / 2)
@@ -836,7 +896,8 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
         continue;
       try {
         const envelope = this.inbox.envelope(command.commandId);
-        const extended = await this.client.extendLease(envelope, this.config.leaseSeconds);
+        const extended = await this.client.extendLease(envelope, this.config.leaseSeconds, signal);
+        signal.throwIfAborted();
         if (extended.commandId !== command.commandId || extended.attempt !== envelope.attempt)
           throw new Error("Cloud returned a lease extension for a different command fence");
         this.inbox.updateLease(command.commandId, extended.leaseExpiresAt, now);
@@ -845,11 +906,16 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
           commandId: command.commandId,
           error: message(error),
         });
+        throw error;
       }
     }
   }
 
-  private async execute(record: CloudCommandRecord, now: number): Promise<void> {
+  private async execute(
+    record: CloudCommandRecord,
+    now: number,
+    signal: AbortSignal,
+  ): Promise<void> {
     const command = this.inbox.envelope(record.commandId);
     const denial = localPolicyDenial(command, this.config, now);
     if (denial) {
@@ -858,11 +924,22 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
     }
     const { fencingToken } = this.inbox.startEffect(command.commandId, now);
     const heartbeat = new AbortController();
-    const leaseTask = this.maintainLease(command.commandId, heartbeat.signal);
+    const leaseTask = this.maintainLease(
+      command.commandId,
+      AbortSignal.any([heartbeat.signal, signal]),
+    );
     try {
-      const result = await this.executor.execute(command, record.effectKey);
+      signal.throwIfAborted();
+      const result = await this.executor.execute(command, record.effectKey, signal);
+      signal.throwIfAborted();
       this.inbox.completeEffect(command.commandId, fencingToken, result, this.now());
     } catch (error) {
+      if (signal.aborted) {
+        // An aborted write can have reached the server. Preserve the durable
+        // outcome-unknown barrier instead of allowing an automatic replay.
+        this.inbox.recoverInterruptedEffects(this.now());
+        return;
+      }
       const failure = cloudExecutionError(error);
       this.inbox.failEffect(
         command.commandId,
@@ -887,7 +964,8 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
       if (!(await waitFor(interval, signal))) return;
       try {
         const envelope = this.inbox.envelope(commandId);
-        const extended = await this.client.extendLease(envelope, this.config.leaseSeconds);
+        const extended = await this.client.extendLease(envelope, this.config.leaseSeconds, signal);
+        signal.throwIfAborted();
         if (extended.commandId !== commandId || extended.attempt !== envelope.attempt)
           throw new Error("Cloud returned a lease extension for a different command fence");
         this.inbox.updateLease(commandId, extended.leaseExpiresAt, this.now());
@@ -900,12 +978,14 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
     }
   }
 
-  private async submitTerminalResults(now: number): Promise<void> {
+  private async submitTerminalResults(now: number, signal: AbortSignal): Promise<void> {
     for (const record of this.inbox.terminalPending()) {
+      signal.throwIfAborted();
       if (!record.result) continue;
       try {
         const command = this.inbox.envelope(record.commandId);
-        const receipt = await this.client.submitResult(command, record.result);
+        const receipt = await this.client.submitResult(command, record.result, signal);
+        signal.throwIfAborted();
         if (receipt.commandId !== record.commandId || receipt.attempt !== command.attempt)
           throw new Error("Cloud acknowledged a different command fence");
         this.inbox.markSubmitted(record.commandId, record.result, now);
@@ -914,6 +994,7 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
           commandId: record.commandId,
           error: message(error),
         });
+        throw error;
       }
     }
   }
@@ -928,14 +1009,22 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
     private readonly allowedOriginParticipantIds: readonly string[] = [],
   ) {}
 
-  async execute(command: CloudCommandEnvelope, effectKey: string): Promise<CloudCommandResult> {
+  async execute(
+    command: CloudCommandEnvelope,
+    effectKey: string,
+    signal?: AbortSignal,
+  ): Promise<CloudCommandResult> {
+    signal?.throwIfAborted();
     if (command.payload.domain === "publication") {
-      const result = await this.cloud.controlPublication({
-        protocolVersion: "1.0",
-        connectorId: command.connectorId,
-        idempotencyKey: effectKey,
-        operation: command.payload.operation,
-      });
+      const result = await this.cloud.controlPublication(
+        {
+          protocolVersion: "1.0",
+          connectorId: command.connectorId,
+          idempotencyKey: effectKey,
+          operation: command.payload.operation,
+        },
+        signal,
+      );
       return commandResultSchema.parse({ outcome: "succeeded", result });
     }
     const operation = command.payload.operation;
@@ -950,7 +1039,7 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
     });
     switch (operation.type) {
       case "object.read": {
-        const object = await this.anytype.getObject(operation.spaceId, operation.objectId);
+        const object = await this.anytype.getObject(operation.spaceId, operation.objectId, signal);
         return success({
           type: operation.type,
           object: snapshot(
@@ -963,12 +1052,16 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
       }
       case "object.query": {
         if (!this.anytype.searchSpace) throw unsupported(operation.type);
-        const objects = await this.anytype.searchSpace(operation.spaceId, {
-          text: operation.text,
-          query: operation.text,
-          ...(operation.typeKey ? { types: [operation.typeKey] } : {}),
-          limit: operation.limit,
-        } as { query?: string; types?: string[]; limit?: number });
+        const objects = await this.anytype.searchSpace(
+          operation.spaceId,
+          {
+            text: operation.text,
+            query: operation.text,
+            ...(operation.typeKey ? { types: [operation.typeKey] } : {}),
+            limit: operation.limit,
+          } as { query?: string; types?: string[]; limit?: number },
+          signal,
+        );
         return success({
           type: operation.type,
           objects: objects.slice(0, operation.limit).map((object) => {
@@ -979,11 +1072,15 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
       }
       case "object.create": {
         if (!this.anytype.createObject) throw unsupported(operation.type);
-        const object = await this.anytype.createObject(operation.spaceId, {
-          type_key: operation.typeKey,
-          name: operation.name,
-          properties: properties(operation.properties),
-        });
+        const object = await this.anytype.createObject(
+          operation.spaceId,
+          {
+            type_key: operation.typeKey,
+            name: operation.name,
+            properties: properties(operation.properties),
+          },
+          signal,
+        );
         const id = stringField(object, "id");
         return success({
           type: operation.type,
@@ -991,9 +1088,14 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
         });
       }
       case "object.update": {
-        const object = await this.anytype.updateObject(operation.spaceId, operation.objectId, {
-          properties: properties(operation.properties),
-        });
+        const object = await this.anytype.updateObject(
+          operation.spaceId,
+          operation.objectId,
+          {
+            properties: properties(operation.properties),
+          },
+          signal,
+        );
         return success({
           type: operation.type,
           object: snapshot(
@@ -1006,13 +1108,17 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
       }
       case "object.archive": {
         if (!this.anytype.archiveObject) throw unsupported(operation.type);
-        await this.anytype.archiveObject(operation.spaceId, operation.objectId);
+        await this.anytype.archiveObject(operation.spaceId, operation.objectId, signal);
         return success({ ...operation, archived: true });
       }
       case "collection.read": {
         if (!this.anytype.listViews || !this.anytype.listViewObjects)
           throw unsupported(operation.type);
-        const [view] = await this.anytype.listViews(operation.spaceId, operation.collectionId);
+        const [view] = await this.anytype.listViews(
+          operation.spaceId,
+          operation.collectionId,
+          signal,
+        );
         if (!view) return success({ ...operation, objectIds: [] });
         const viewId = stringField(view, "id");
         const objects = await this.anytype.listViewObjects(
@@ -1020,6 +1126,7 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
           operation.collectionId,
           viewId,
           { offset: 0, limit: operation.limit },
+          signal,
         );
         return success({
           ...operation,
@@ -1032,17 +1139,21 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
           operation.spaceId,
           operation.collectionId,
           operation.objectIds,
+          signal,
         );
         return success(operation);
       }
       case "collection.members.remove": {
         if (!this.anytype.removeObjectFromList) throw unsupported(operation.type);
-        for (const objectId of operation.objectIds)
+        for (const objectId of operation.objectIds) {
+          signal?.throwIfAborted();
           await this.anytype.removeObjectFromList(
             operation.spaceId,
             operation.collectionId,
             objectId,
+            signal,
           );
+        }
         return success(operation);
       }
       case "file.upload": {
@@ -1052,7 +1163,8 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
           operation.name,
           this.cloudConfig.publication.allowedAssetRoots,
         );
-        const file = await this.anytype.uploadFile(operation.spaceId, path);
+        signal?.throwIfAborted();
+        const file = await this.anytype.uploadFile(operation.spaceId, path, signal);
         return success({
           type: operation.type,
           spaceId: operation.spaceId,
@@ -1066,6 +1178,7 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
           operation.spaceId,
           operation.fileId,
           this.cloudConfig.publication.maximumAssetBytes,
+          signal,
         );
         return success({
           type: operation.type,
@@ -1084,6 +1197,8 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
           operation.spaceId,
           operation.chatId,
           operation.limit,
+          undefined,
+          signal,
         );
         return success({
           type: operation.type,
@@ -1118,6 +1233,7 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
           origin.spaceId,
           origin.chatId,
           origin.messageId,
+          signal,
         );
         if (source.id !== origin.messageId)
           return {
@@ -1132,9 +1248,15 @@ export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
               ? "channel-origin-sender-denied"
               : "channel-origin-sender-unverified",
           };
-        const messageId = await this.anytype.sendMessage(operation.spaceId, operation.chatId, {
-          text: operation.message,
-        });
+        signal?.throwIfAborted();
+        const messageId = await this.anytype.sendMessage(
+          operation.spaceId,
+          operation.chatId,
+          {
+            text: operation.message,
+          },
+          signal,
+        );
         return success({
           type: operation.type,
           spaceId: operation.spaceId,

@@ -25,8 +25,8 @@ export interface WorkflowSourceResolver {
     refetch(version: WorkflowVersionRecord, signal: AbortSignal): Promise<WorkflowSourceSnapshot | undefined>;
 }
 export interface WorkflowRunnerExtension {
-    beforeTick?(): Promise<void>;
-    afterTick?(): Promise<void>;
+    beforeTick?(signal?: AbortSignal): Promise<void>;
+    afterTick?(signal?: AbortSignal): Promise<void>;
     stop?(): Promise<void>;
 }
 export declare class NoEffectWorkflowStepExecutor implements WorkflowStepExecutor {

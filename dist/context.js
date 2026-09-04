@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { prepareWorkspaceDirectory, recordWorkspaceFile, recordWorkspaceSession, } from "./context-retention.js";
 import { principalFromMessage } from "./principal.js";
 export async function buildContext(anytype, config, conversation, trigger, options = {}) {
     let history = !options.newSession && config.context.historyMessages
@@ -213,7 +214,10 @@ export function formatPrompt(bundle, config, managementCommand, workspaceContext
     ].join("\n");
 }
 export async function preparePrompt(bundle, config, sessionKey, managementCommand, options = {}) {
+    const attachmentPaths = (bundle.attachments ?? []).flatMap((item) => item.localPath ? [item.localPath] : []);
     if (config.context.promptMode !== "workspace" || !config.runtime.defaultProject) {
+        if (attachmentPaths.length)
+            await recordWorkspaceSession(config, sessionKey, attachmentPaths);
         return formatPrompt(bundle, config, managementCommand);
     }
     const payload = {
@@ -230,9 +234,16 @@ export async function preparePrompt(bundle, config, sessionKey, managementComman
     const contextDirectory = dirname(contextFile);
     const contextName = basename(contextFile);
     const temporaryFile = join(contextDirectory, `.${contextName}.${randomUUID()}.tmp`);
-    await mkdir(contextDirectory, { recursive: true, mode: 0o700 });
-    await writeFile(temporaryFile, `${JSON.stringify({ updatedAt: new Date().toISOString(), ...payload }, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporaryFile, contextFile);
+    await prepareWorkspaceDirectory(config, contextDirectory);
+    try {
+        await writeFile(temporaryFile, `${JSON.stringify({ updatedAt: new Date().toISOString(), ...payload }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+        await rename(temporaryFile, contextFile);
+        await recordWorkspaceFile(config, contextFile, "context");
+        await recordWorkspaceSession(config, sessionKey, [...attachmentPaths, contextFile]);
+    }
+    finally {
+        await unlink(temporaryFile).catch(() => undefined);
+    }
     return formatPrompt(bundle, config, managementCommand, contextFile, options);
 }
 export function workspaceContextFile(defaultProject, sessionKey) {
@@ -268,8 +279,16 @@ async function materializeAttachments(anytype, config, conversation, messages, r
             const extension = extensionForContentType(downloaded.contentType);
             const directory = join(config.runtime.defaultProject, ".aag", "attachments", safePathSegment(messageId));
             const localPath = join(directory, `${safePathSegment(attachment.target)}${extension}`);
-            await mkdir(directory, { recursive: true, mode: 0o700 });
-            await writeFile(localPath, downloaded.bytes, { mode: 0o600 });
+            await prepareWorkspaceDirectory(config, directory);
+            const temporary = join(directory, `.${basename(localPath)}.${randomUUID()}.tmp`);
+            try {
+                await writeFile(temporary, downloaded.bytes, { mode: 0o600, flag: "wx" });
+                await rename(temporary, localPath);
+                await recordWorkspaceFile(config, localPath, "attachment");
+            }
+            finally {
+                await unlink(temporary).catch(() => undefined);
+            }
             output.push({
                 messageId,
                 objectId: attachment.target,
@@ -375,7 +394,10 @@ function collectMentionTargets(messages) {
     const targets = new Map();
     for (const message of messages) {
         if (message.creator && message.creator_name)
-            targets.set(message.creator, { name: message.creator_name, participantId: message.creator });
+            targets.set(JSON.stringify([message.creator, message.creator_name]), {
+                name: message.creator_name,
+                participantId: message.creator,
+            });
         const text = message.content?.text ?? "";
         for (const mark of message.content?.marks ?? []) {
             if (mark.type !== "mention" ||
@@ -385,7 +407,7 @@ function collectMentionTargets(messages) {
                 continue;
             const name = text.slice(mark.from, mark.to).replace(/^@/, "").trim();
             if (name)
-                targets.set(mark.param, { name, participantId: mark.param });
+                targets.set(JSON.stringify([mark.param, name]), { name, participantId: mark.param });
         }
     }
     return [...targets.values()];
