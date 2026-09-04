@@ -170,7 +170,7 @@ Knot installs a systemd user service on Linux or a launchd agent on macOS. Other
 - A reachable Anytype API and a revocable API key owned by the agent identity.
 - The official Anytype CLI for headless identity creation and space joining.
 - A running OpenClaw Gateway or the packaged `codex-acp` runtime.
-- Go 1.25.7 only when building the optional Heart adapter.
+- Go 1.26.8 or newer only when building the optional Heart adapter.
 - Linux or macOS for the built-in service installer.
 
 Anytype Desktop normally exposes its API at `http://127.0.0.1:31009`. A headless Anytype node
@@ -245,6 +245,9 @@ mentions, replies, and agent claims never grant authority.
 Inside an authorized Anytype chat, `/new` starts a fresh runtime session. Codex-backed agents also
 support `/projects`, `/project <name>`, `/models`, and `/model <id>` when the operator enables the
 matching management permissions.
+
+Workspace media and context files use [configurable retention](docs/context-retention.md) with
+active-session reference protection.
 
 ## Runtime notes
 

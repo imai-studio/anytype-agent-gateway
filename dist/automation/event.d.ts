@@ -14,10 +14,10 @@ export declare const normalizedEventKindSchema: z.ZodEnum<{
     "manual.run": "manual.run";
 }>;
 export declare const normalizedEventSourceSchema: z.ZodEnum<{
-    manual: "manual";
-    schedule: "schedule";
     chat: "chat";
     workflow: "workflow";
+    manual: "manual";
+    schedule: "schedule";
     poll: "poll";
     heart: "heart";
     external: "external";
@@ -40,10 +40,10 @@ export declare const normalizedEventSchema: z.ZodPipe<z.ZodTransform<unknown, un
         "manual.run": "manual.run";
     }>;
     source: z.ZodEnum<{
-        manual: "manual";
-        schedule: "schedule";
         chat: "chat";
         workflow: "workflow";
+        manual: "manual";
+        schedule: "schedule";
         poll: "poll";
         heart: "heart";
         external: "external";

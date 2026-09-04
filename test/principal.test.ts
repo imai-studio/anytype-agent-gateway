@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { configSchema } from "../src/config.js";
 import {
+  globalIdentity,
   principalAllowed,
   principalAuditFields,
   principalFromActorRecord,
@@ -56,6 +57,16 @@ describe("authenticated Anytype principals", () => {
     expect(sameIdentity("_member_identity01", "_participant_space1_identity01")).toBe(true);
     expect(sameIdentity("_member_identity01", "_participant_space1_identity02")).toBe(false);
     expect(sameIdentity("_participant_operator_01", "_participant_agent_01")).toBe(false);
+  });
+
+  it("does not equate arbitrary underscore suffixes or truncate global IDs", () => {
+    expect(sameIdentity("arbitrary_owner", "owner")).toBe(false);
+    expect(sameIdentity("_participant_other_owner", "arbitrary_owner")).toBe(false);
+    expect(globalIdentity("stable_global_identity")).toBe("stable_global_identity");
+    expect(globalIdentity("_participant_space_suffix_identity")).toBe("identity");
+    expect(globalIdentity("_member_identity")).toBe("identity");
+    expect(globalIdentity("_member_")).toBeUndefined();
+    expect(globalIdentity("identity with spaces")).toBeUndefined();
   });
 
   it("fails closed when native identity is missing or malformed", () => {

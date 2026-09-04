@@ -30,6 +30,7 @@ export declare class Store {
     private migrateToVersion15;
     private migrateToVersion16;
     private migrateToVersion17;
+    private migrateToVersion18;
     isInitialized(routeId: string): boolean;
     initialize(routeId: string, newestOrderId?: string): void;
     cursor(routeId: string): string | undefined;
@@ -223,8 +224,8 @@ export declare class Store {
     hasNormalizedObjectEvent(spaceId: string, objectId: string): boolean;
     hasNormalizedDefinitionRevision(spaceId: string, objectId: string, modifiedAt: number, fingerprint: string): boolean;
     private workflowApprovalBySequence;
-    revokeManagementCapabilities(routeId: string): void;
-    issueManagementCapability(routeId: string, participantId: string, scope: ManagementCapabilityScope, ttlMs?: number): string;
-    consumeManagementCapability(token: string, routeId: string, scope: ManagementCapabilityScope): string | undefined;
+    revokeManagementCapabilities(routeId: string, threadKey?: string): void;
+    issueManagementCapability(routeId: string, participantId: string, scope: ManagementCapabilityScope, ttlMs?: number, threadKey?: string): string;
+    consumeManagementCapability(token: string, routeId: string, scope: ManagementCapabilityScope, threadKey?: string): string | undefined;
     close(): void;
 }

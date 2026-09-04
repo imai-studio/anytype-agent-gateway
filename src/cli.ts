@@ -131,6 +131,16 @@ program
     console.log(
       `ok: migration compatibility (config=${legacyConfig ? "legacy" : "knot"}, state=${legacyState ? "legacy" : "knot"})`,
     );
+    const diagnostics = new Store(config.state.path);
+    try {
+      const counts = diagnostics.outboundStatusCounts();
+      const report = counts.failed || counts.dead ? console.warn : console.log;
+      report(
+        `${counts.failed || counts.dead ? "warning" : "ok"}: reply outbox (pending=${counts.pending}, in_flight=${counts.claimed}, failed=${counts.failed}, dead=${counts.dead}); failed replies retain automatic retries, dead replies require operator recovery`,
+      );
+    } finally {
+      diagnostics.close();
+    }
     await access(config.anytype.apiKeyFile, constants.R_OK);
     const anytype = await AnytypeClient.create(config);
     for (const configuredSpace of config.spaces) {

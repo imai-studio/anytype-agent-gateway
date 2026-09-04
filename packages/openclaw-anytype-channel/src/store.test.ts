@@ -99,42 +99,58 @@ describe("BridgeStore", () => {
     store.close();
   }, 15_000);
 
-  it("retains recent nonterminal events and bounds abandoned pending history by age", () => {
+  it("compacts delivered payloads without reopening their idempotency barrier", () => {
     const store = makeStore();
-    const old = createDelivery({
-      sourceKey: "old-delta",
+    const delivery = createDelivery({
+      sourceKey: "durable-final",
       accountId: "default",
-      sessionKey: "native",
+      route: inbound.route,
+      kind: "message-final",
+      message: { text: "delivered answer" },
+    });
+    store.putDelivery(delivery, 10);
+    store.acknowledgeDelivery(delivery.id, 20);
+    expect(store.compactDelivered(100)).toBe(1);
+    expect(store.compactDelivered(100)).toBe(0);
+    expect(store.putDelivery({ ...delivery, id: "replayed" }, 200)).toBe(false);
+    expect(store.pendingDeliveries(300)).toEqual([]);
+    store.close();
+  });
+
+  it("preserves old pending final replies and recovery events during every retention sweep", () => {
+    const store = makeStore();
+    const final = createDelivery({
+      sourceKey: "old-final",
+      accountId: "default",
+      route: inbound.route,
+      kind: "message-final",
+      message: { text: "recoverable answer" },
+    });
+    const event = createDelivery({
+      sourceKey: "old-assistant",
+      accountId: "default",
       route: inbound.route,
       kind: "agent-event",
       agentEvent: {
-        runId: "still-no-terminal-event",
+        runId: "run",
         seq: 1,
         stream: "assistant",
         timestamp: 1,
-        data: { delta: "partial" },
+        data: { text: "answer" },
       },
     });
-    const recent = createDelivery({
-      sourceKey: "recent-delta",
-      accountId: "default",
-      sessionKey: "native",
-      route: inbound.route,
-      kind: "agent-event",
-      agentEvent: {
-        runId: "active-run",
-        seq: 1,
-        stream: "thinking",
-        timestamp: 200,
-        data: { delta: "working" },
-      },
-    });
-    store.putDelivery(old, 10);
-    store.putDelivery(recent, 200);
-    expect(store.pruneExpiredPending(100)).toBe(1);
-    expect(store.pendingDeliveries(300)).toEqual([
-      expect.objectContaining({ id: recent.id, kind: "agent-event" }),
+    store.putDelivery(final, 10);
+    store.putDelivery(event, 10);
+    store.retryDelivery(final.id, "offline", 20);
+    const afterLongOutage = 31 * 24 * 60 * 60 * 1_000;
+    store.compactDelivered(afterLongOutage);
+    store.pruneExpiredThinking(afterLongOutage);
+    store.pruneOwnedRuns(afterLongOutage);
+    expect(store.pendingDeliveries(afterLongOutage)).toEqual([
+      expect.objectContaining({ id: final.id, attempts: 1, lastError: "offline" }),
+      expect.objectContaining({ id: event.id }),
     ]);
+    expect(store.putDelivery({ ...final, id: "retry-duplicate" }, afterLongOutage)).toBe(false);
     store.close();
   });
 

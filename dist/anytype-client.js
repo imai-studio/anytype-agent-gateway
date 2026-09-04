@@ -1,8 +1,24 @@
 import { openAsBlob } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { runProcess } from "./process.js";
 import { sameIdentity } from "./principal.js";
+// Cancellation here only removes a queued waiter. No HTTP operation has begun.
+async function waitForWriteTurn(previous, signal) {
+    if (!signal) {
+        await previous;
+        return;
+    }
+    signal.throwIfAborted();
+    await new Promise((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        previous
+            .then(() => resolve(), reject)
+            .finally(() => signal.removeEventListener("abort", abort));
+    });
+}
 const MAX_OBJECT_RESPONSE_BYTES = 2 * 1024 * 1024;
 const WORKFLOW_OBJECT_READ_CONCURRENCY = 4;
 export class AnytypeHttpError extends Error {
@@ -44,8 +60,14 @@ export class AnytypeClient {
         const method = init.method ?? "GET";
         const streaming = new Headers(init.headers).get("Accept") === "text/event-stream";
         if (method !== "GET" && !streaming) {
-            const write = this.writeTail.then(() => this.requestWithRetry(path, init, method, streaming));
-            this.writeTail = write.catch(() => undefined);
+            const previous = this.writeTail;
+            const write = (async () => {
+                await waitForWriteTurn(previous, init.signal);
+                return this.requestWithRetry(path, init, method, streaming);
+            })();
+            // A cancelled waiter must not let later writes bypass the current owner.
+            const settled = write.catch(() => undefined);
+            this.writeTail = previous.then(() => settled);
             return write;
         }
         return this.requestWithRetry(path, init, method, streaming);
@@ -55,6 +77,7 @@ export class AnytypeClient {
         let lastError;
         for (let attempt = 0; attempt < attempts; attempt += 1) {
             try {
+                init.signal?.throwIfAborted();
                 const timeout = streaming ? undefined : AbortSignal.timeout(15_000);
                 const signal = timeout && init.signal
                     ? AbortSignal.any([timeout, init.signal])
@@ -74,7 +97,9 @@ export class AnytypeClient {
                 if (attempt + 1 >= attempts || !retryable)
                     throw error;
                 lastError = error;
-                await new Promise((resolve) => setTimeout(resolve, retryAfter ?? 250 * 2 ** attempt));
+                await delay(retryAfter ?? 250 * 2 ** attempt, undefined, {
+                    signal: init.signal ?? undefined,
+                });
                 continue;
             }
             catch (error) {
@@ -82,7 +107,7 @@ export class AnytypeClient {
                 if (attempt + 1 >= attempts || init.signal?.aborted || method !== "GET")
                     throw error;
             }
-            await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+            await delay(250 * 2 ** attempt, undefined, { signal: init.signal ?? undefined });
         }
         throw lastError;
     }
@@ -133,8 +158,8 @@ export class AnytypeClient {
             throw new Error("Anytype returned no chat ID");
         return { id: String(chat.id), name: String(chat.name || input.name || chat.id) };
     }
-    async downloadFile(spaceId, fileId, maxBytes) {
-        const response = await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/files/${encodeURIComponent(fileId)}`);
+    async downloadFile(spaceId, fileId, maxBytes, signal) {
+        const response = await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/files/${encodeURIComponent(fileId)}`, signal ? { signal } : {});
         const declaredSize = Number(response.headers.get("content-length") ?? 0);
         if (declaredSize > maxBytes)
             throw new Error(`Anytype attachment exceeds the ${maxBytes}-byte download limit`);
@@ -163,16 +188,16 @@ export class AnytypeClient {
         const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
         return { bytes, ...(contentType ? { contentType } : {}) };
     }
-    async getMessage(spaceId, chatId, messageId) {
-        const json = (await (await this.request(this.messagePath(spaceId, chatId, messageId))).json());
+    async getMessage(spaceId, chatId, messageId, signal) {
+        const json = (await (await this.request(this.messagePath(spaceId, chatId, messageId), signal ? { signal } : {})).json());
         return json.message;
     }
-    async listMessages(spaceId, chatId, limit, afterOrderId) {
+    async listMessages(spaceId, chatId, limit, afterOrderId, signal) {
         const query = new URLSearchParams({
             limit: String(limit),
             ...(afterOrderId ? { after_order_id: afterOrderId } : {}),
         });
-        const json = (await (await this.request(`${this.messagesPath(spaceId, chatId)}?${query}`)).json());
+        const json = (await (await this.request(`${this.messagesPath(spaceId, chatId)}?${query}`, signal ? { signal } : {})).json());
         return json.messages ?? [];
     }
     async sendMessage(spaceId, chatId, input, signal) {
@@ -413,25 +438,26 @@ export class AnytypeClient {
             ...(signal ? { signal } : {}),
         });
     }
-    async listViews(spaceId, listId) {
-        return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/views`);
+    async listViews(spaceId, listId, signal) {
+        return this.listPages(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/views`, signal);
     }
-    async listViewObjects(spaceId, listId, viewId, page = { offset: 0, limit: 50 }) {
+    async listViewObjects(spaceId, listId, viewId, page = { offset: 0, limit: 50 }, signal) {
         const path = `/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/views/${encodeURIComponent(viewId)}/objects?offset=${page.offset}&limit=${page.limit}`;
-        const json = (await (await this.request(path)).json());
+        const json = (await (await this.request(path, signal ? { signal } : {})).json());
         if (!Array.isArray(json.data))
             throw new Error(`Anytype ${path} returned an invalid list payload`);
         return json.data;
     }
-    async removeObjectFromList(spaceId, listId, objectId) {
-        await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/objects/${encodeURIComponent(objectId)}`, { method: "DELETE" });
+    async removeObjectFromList(spaceId, listId, objectId, signal) {
+        await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/lists/${encodeURIComponent(listId)}/objects/${encodeURIComponent(objectId)}`, { method: "DELETE", ...(signal ? { signal } : {}) });
     }
-    async uploadFile(spaceId, path) {
+    async uploadFile(spaceId, path, signal) {
         const form = new FormData();
         form.append("file", await openAsBlob(path), basename(path));
         return (await (await this.request(`/v1/spaces/${encodeURIComponent(spaceId)}/files`, {
             method: "POST",
             body: form,
+            ...(signal ? { signal } : {}),
         })).json());
     }
     async setProfileImage(spaceId, path) {
@@ -452,12 +478,12 @@ export class AnytypeClient {
     messagePath(spaceId, chatId, messageId) {
         return `${this.messagesPath(spaceId, chatId)}/${encodeURIComponent(messageId)}`;
     }
-    async listPages(path) {
+    async listPages(path, signal) {
         const items = [];
         const seen = new Set();
         for (let offset = 0, pageNumber = 0; pageNumber < 100; pageNumber += 1) {
             const separator = path.includes("?") ? "&" : "?";
-            const json = (await (await this.request(`${path}${separator}offset=${offset}&limit=100`)).json());
+            const json = (await (await this.request(`${path}${separator}offset=${offset}&limit=100`, signal ? { signal } : {})).json());
             if (!Array.isArray(json.data))
                 throw new Error(`Anytype ${path} returned an invalid list payload`);
             const rawPage = json.data;

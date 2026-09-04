@@ -1,10 +1,10 @@
-import { spawn } from "node:child_process";
 import { copyFile, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { runProcess } from "./process.js";
 import { resolveProductEnvironment } from "./compatibility.js";
 
 type LocalProject = {
@@ -132,12 +132,13 @@ export async function hydrateCodexDesktopTask(input: {
   debug(`restored controller task ${sourceThreadId}`);
 }
 
-function spawnAndWait(command: string, args: string[]): Promise<boolean> {
-  return new Promise((resolveResult) => {
-    const child = spawn(command, args, { stdio: "ignore" });
-    child.once("error", () => resolveResult(false));
-    child.once("close", (code) => resolveResult(code === 0));
-  });
+async function spawnAndWait(command: string, args: string[]): Promise<boolean> {
+  try {
+    await runProcess(command, args, { timeoutMs: 10_000 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function navigateCodexDesktopThread(input: {
@@ -233,49 +234,22 @@ async function runCodexAppToolsHelper(input: {
     timeoutMs: input.timeoutMs,
     ...(input.title ? { title: input.title } : {}),
   });
-  return new Promise((resolveResult, rejectResult) => {
-    const child = spawn(
-      codexNodePath,
-      [...(input.nodeArguments ?? []), "--input-type=module", "-e", helperSource],
-      {
-        env: {
-          ...process.env,
-          AAG_CODEX_APP_TOOLS_INPUT: helperInput,
-          KNOT_CODEX_APP_TOOLS_INPUT: helperInput,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
+  const { stdout } = await runProcess(
+    codexNodePath,
+    [...(input.nodeArguments ?? []), "--input-type=module", "-e", helperSource],
+    {
+      env: {
+        ...process.env,
+        AAG_CODEX_APP_TOOLS_INPUT: helperInput,
+        KNOT_CODEX_APP_TOOLS_INPUT: helperInput,
       },
-    );
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (error) rejectResult(error);
-      else {
-        const parsed = JSON.parse(stdout.trim()) as { threadId?: string; hydrated?: boolean };
-        resolveResult(
-          input.action === "hydrate" ? (parsed.hydrated ? "hydrated" : undefined) : parsed.threadId,
-        );
-      }
-    };
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-      finish(new Error("Codex Desktop task creation timed out"));
-    }, input.timeoutMs + 5_000);
-    timeout.unref?.();
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.on("error", finish);
-    child.on("close", (code) => {
-      if (code === 0) finish();
-      else finish(new Error(stderr.trim() || `Codex Desktop helper exited with code ${code}`));
-    });
-  });
+      timeoutMs: input.timeoutMs + 5_000,
+    },
+  );
+  // Parsing belongs to the async operation so malformed helper output follows the
+  // caller's best-effort fallback instead of throwing from a child event listener.
+  const parsed = JSON.parse(stdout.trim()) as { threadId?: string; hydrated?: boolean };
+  return input.action === "hydrate" ? (parsed.hydrated ? "hydrated" : undefined) : parsed.threadId;
 }
 
 function findCodexBundledNode(): string | undefined {

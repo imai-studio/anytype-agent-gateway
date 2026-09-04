@@ -1,6 +1,6 @@
 import type { AgentConfig } from "./config.js";
 import { type CloudCommandEnvelope, type CloudCommandResult } from "./cloud-contract.js";
-import type { CloudClient } from "./cloud-client.js";
+import { type CloudClient } from "./cloud-client.js";
 import type { CloudConfig } from "./cloud-config.js";
 import type { Store } from "./store.js";
 import type { AnytypePort } from "./types.js";
@@ -30,13 +30,14 @@ export interface CloudCommandClient {
     serverAdjustedNow(): number;
     claimCommands(input?: {
         leaseSeconds?: number;
+        signal?: AbortSignal;
     }): ReturnType<CloudClient["claimCommands"]>;
-    extendLease(command: CloudCommandEnvelope, extendBySeconds?: number): ReturnType<CloudClient["extendLease"]>;
-    submitResult(command: CloudCommandEnvelope, result: CloudCommandResult): ReturnType<CloudClient["submitResult"]>;
+    extendLease(command: CloudCommandEnvelope, extendBySeconds?: number, signal?: AbortSignal): ReturnType<CloudClient["extendLease"]>;
+    submitResult(command: CloudCommandEnvelope, result: CloudCommandResult, signal?: AbortSignal): ReturnType<CloudClient["submitResult"]>;
     controlPublication: CloudClient["controlPublication"];
 }
 export interface CloudCommandExecutionPort {
-    execute(command: CloudCommandEnvelope, effectKey: string): Promise<CloudCommandResult>;
+    execute(command: CloudCommandEnvelope, effectKey: string, signal?: AbortSignal): Promise<CloudCommandResult>;
 }
 export declare class CloudCommandStore {
     private readonly store;
@@ -63,7 +64,8 @@ export declare class CloudCommandStore {
         retryable: boolean;
         retryAt?: number;
     }, maximumAttempts?: number, now?: number): boolean;
-    terminalPending(): CloudCommandRecord[];
+    leaseCandidates(afterCommandId?: string): CloudCommandRecord[];
+    terminalPending(afterCommandId?: string): CloudCommandRecord[];
     markSubmitted(commandId: string, result: CloudCommandResult, now?: number): boolean;
     updateLease(commandId: string, leaseExpiresAtSeconds: number, now?: number): void;
     expire(now?: number): number;
@@ -92,16 +94,29 @@ export declare class CloudWorkflowExtension implements WorkflowRunnerExtension {
     private readonly config;
     private readonly anytype;
     private readonly log;
+    private readonly options;
     private readonly inbox;
     private readonly projectionWorkerId;
     private nextPollAt;
     private recovered;
+    private readonly stopped;
+    private beforeTask;
+    private afterTask;
+    private nextCloudAttemptAt;
+    private lastLeaseCommandId;
+    private lastResultCommandId;
+    private nextNetworkPhase;
     private inFlight;
-    constructor(store: Store, client: CloudCommandClient, executor: CloudCommandExecutionPort, config: AgentConfig["cloudCommands"], anytype: AnytypePort, log: (event: string, fields?: Record<string, unknown>) => void, now?: () => number);
+    constructor(store: Store, client: CloudCommandClient, executor: CloudCommandExecutionPort, config: AgentConfig["cloudCommands"], anytype: AnytypePort, log: (event: string, fields?: Record<string, unknown>) => void, now?: () => number, options?: {
+        tickBudgetMilliseconds?: number;
+    });
     private readonly now;
-    beforeTick(): Promise<void>;
+    beforeTick(parentSignal?: AbortSignal): Promise<void>;
+    private tickSignal;
+    private tick;
     stop(): Promise<void>;
-    afterTick(): Promise<void>;
+    afterTick(parentSignal?: AbortSignal): Promise<void>;
+    private project;
     private poll;
     private extendLeases;
     private execute;
@@ -115,6 +130,6 @@ export declare class AnytypeCloudCommandExecutor implements CloudCommandExecutio
     private readonly agentParticipantId;
     private readonly allowedOriginParticipantIds;
     constructor(anytype: AnytypePort, cloud: CloudCommandClient, cloudConfig: CloudConfig, agentParticipantId: string, allowedOriginParticipantIds?: readonly string[]);
-    execute(command: CloudCommandEnvelope, effectKey: string): Promise<CloudCommandResult>;
+    execute(command: CloudCommandEnvelope, effectKey: string, signal?: AbortSignal): Promise<CloudCommandResult>;
 }
 export {};

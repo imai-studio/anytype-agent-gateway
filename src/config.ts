@@ -1,3 +1,4 @@
+import { globalIdentity } from "./principal.js";
 import { constants } from "node:fs";
 import { access, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -110,6 +111,17 @@ const directMessagesSchema = z
     wake: wakeSchema.optional(),
   })
   .superRefine((value, context) => {
+    if (
+      value.enabled &&
+      value.createMissing &&
+      value.wake?.allowedUsers.some((id) => !globalIdentity(id))
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["wake", "allowedUsers"],
+        message:
+          "Direct-message creation requires native identities without whitespace or empty native ID components",
+      });
     if (value.enabled && !value.wake)
       context.addIssue({
         code: "custom",
@@ -442,12 +454,23 @@ const baseConfigSchema = z.object({
       historyMessages: z.number().int().min(0).max(200).default(30),
       replyDepth: z.number().int().min(0).max(50).default(12),
       referencedObjects: z.number().int().min(0).max(20).default(8),
+      retention: z
+        .object({
+          maxAgeDays: z.number().int().min(1).default(30),
+          maxBytes: z
+            .number()
+            .int()
+            .min(1)
+            .default(1024 * 1024 * 1024),
+        })
+        .default({ maxAgeDays: 30, maxBytes: 1024 * 1024 * 1024 }),
     })
     .default({
       promptMode: "full",
       historyMessages: 30,
       replyDepth: 12,
       referencedObjects: 8,
+      retention: { maxAgeDays: 30, maxBytes: 1024 * 1024 * 1024 },
     }),
   coordination: z
     .object({

@@ -27,6 +27,7 @@ export declare class Gateway {
     private resolveTerminal;
     private rejectTerminal;
     constructor(anytype: AnytypePort, runtime: RuntimeDriver, config: AgentConfig, store: Store, discussions: HeartDiscussionAdapter, log: (event: string, fields?: Record<string, unknown>) => void, managementCommand?: (routeId: string, capabilities?: ManagementActorCapabilities) => string, enrollChat?: ((spaceId: string, spaceName: string, chatId: string, chatName: string, wake: WakeConfig) => Promise<"enrolled" | "existing" | "disabled">) | undefined);
+    private pruneContext;
     start(): Promise<void>;
     stop(options?: {
         drain?: boolean;

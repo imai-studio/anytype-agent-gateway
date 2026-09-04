@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AgentConfig } from "./config.js";
 import type { AnytypePort, ChatMessage, ContextBundle, ConversationRef } from "./types.js";
+import { prepareWorkspaceDirectory, recordWorkspaceSession } from "./context-retention.js";
 import { principalFromMessage } from "./principal.js";
 
 export async function buildContext(
@@ -258,7 +259,11 @@ export async function preparePrompt(
   managementCommand?: string,
   options: { bootstrapWorkspace?: boolean } = {},
 ): Promise<string> {
+  const attachmentPaths = (bundle.attachments ?? []).flatMap((item) =>
+    item.localPath ? [item.localPath] : [],
+  );
   if (config.context.promptMode !== "workspace" || !config.runtime.defaultProject) {
+    if (attachmentPaths.length) await recordWorkspaceSession(config, sessionKey, attachmentPaths);
     return formatPrompt(bundle, config, managementCommand);
   }
 
@@ -276,13 +281,18 @@ export async function preparePrompt(
   const contextDirectory = dirname(contextFile);
   const contextName = basename(contextFile);
   const temporaryFile = join(contextDirectory, `.${contextName}.${randomUUID()}.tmp`);
-  await mkdir(contextDirectory, { recursive: true, mode: 0o700 });
-  await writeFile(
-    temporaryFile,
-    `${JSON.stringify({ updatedAt: new Date().toISOString(), ...payload }, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-  await rename(temporaryFile, contextFile);
+  await prepareWorkspaceDirectory(config, contextDirectory);
+  try {
+    await writeFile(
+      temporaryFile,
+      `${JSON.stringify({ updatedAt: new Date().toISOString(), ...payload }, null, 2)}\n`,
+      { mode: 0o600, flag: "wx" },
+    );
+    await rename(temporaryFile, contextFile);
+    await recordWorkspaceSession(config, sessionKey, [...attachmentPaths, contextFile]);
+  } finally {
+    await unlink(temporaryFile).catch(() => undefined);
+  }
   return formatPrompt(bundle, config, managementCommand, contextFile, options);
 }
 
@@ -341,8 +351,14 @@ async function materializeAttachments(
         safePathSegment(messageId),
       );
       const localPath = join(directory, `${safePathSegment(attachment.target)}${extension}`);
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      await writeFile(localPath, downloaded.bytes, { mode: 0o600 });
+      await prepareWorkspaceDirectory(config, directory);
+      const temporary = join(directory, `.${basename(localPath)}.${randomUUID()}.tmp`);
+      try {
+        await writeFile(temporary, downloaded.bytes, { mode: 0o600, flag: "wx" });
+        await rename(temporary, localPath);
+      } finally {
+        await unlink(temporary).catch(() => undefined);
+      }
       output.push({
         messageId,
         objectId: attachment.target,
@@ -460,7 +476,10 @@ function collectMentionTargets(
   const targets = new Map<string, { name: string; participantId: string }>();
   for (const message of messages) {
     if (message.creator && message.creator_name)
-      targets.set(message.creator, { name: message.creator_name, participantId: message.creator });
+      targets.set(JSON.stringify([message.creator, message.creator_name]), {
+        name: message.creator_name,
+        participantId: message.creator,
+      });
     const text = message.content?.text ?? "";
     for (const mark of message.content?.marks ?? []) {
       if (
@@ -471,7 +490,8 @@ function collectMentionTargets(
       )
         continue;
       const name = text.slice(mark.from, mark.to).replace(/^@/, "").trim();
-      if (name) targets.set(mark.param, { name, participantId: mark.param });
+      if (name)
+        targets.set(JSON.stringify([mark.param, name]), { name, participantId: mark.param });
     }
   }
   return [...targets.values()];

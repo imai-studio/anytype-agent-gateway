@@ -1,5 +1,6 @@
 import { createHash, createPrivateKey, randomBytes, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { z, type ZodType } from "zod";
 import { validateCloudKey, type CloudConfig } from "./cloud-config.js";
 import {
@@ -52,7 +53,7 @@ export interface CloudClientOptions {
   fetch?: typeof fetch;
   now?: () => number;
   random?: () => number;
-  sleep?: (milliseconds: number) => Promise<void>;
+  sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   requestTimeoutMilliseconds?: number;
   maximumAttempts?: number;
   assetUploadTimeoutMilliseconds?: number;
@@ -62,7 +63,7 @@ export class CloudClient {
   private readonly fetchImplementation: typeof fetch;
   private readonly now: () => number;
   private readonly random: () => number;
-  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   private readonly requestTimeoutMilliseconds: number;
   private readonly maximumAttempts: number;
   private readonly assetUploadTimeoutMilliseconds: number;
@@ -76,8 +77,7 @@ export class CloudClient {
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.sleep =
-      options.sleep ??
-      ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+      options.sleep ?? ((milliseconds, signal) => delay(milliseconds, undefined, { signal }));
     this.requestTimeoutMilliseconds = options.requestTimeoutMilliseconds ?? 15_000;
     this.maximumAttempts = options.maximumAttempts ?? 4;
     this.assetUploadTimeoutMilliseconds = options.assetUploadTimeoutMilliseconds ?? 5 * 60_000;
@@ -112,7 +112,7 @@ export class CloudClient {
     });
   }
 
-  async claimCommands(input: { leaseSeconds?: number } = {}) {
+  async claimCommands(input: { leaseSeconds?: number; signal?: AbortSignal } = {}) {
     const connectorId = this.pairedConnectorId();
     const response = await this.request({
       method: "POST",
@@ -124,12 +124,13 @@ export class CloudClient {
       },
       schema: commandClaimResponseSchema,
       signed: true,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     for (const command of response.commands) this.assertCommandConnector(command);
     return response;
   }
 
-  async extendLease(command: CloudCommandEnvelope, extendBySeconds = 60) {
+  async extendLease(command: CloudCommandEnvelope, extendBySeconds = 60, signal?: AbortSignal) {
     const connectorId = this.pairedConnectorId();
     this.assertCommandConnector(command);
     return this.request({
@@ -144,10 +145,16 @@ export class CloudClient {
       },
       schema: commandLeaseExtendedSchema,
       signed: true,
+      commandScoped: true,
+      ...(signal ? { signal } : {}),
     });
   }
 
-  async submitResult(command: CloudCommandEnvelope, result: CloudCommandResult) {
+  async submitResult(
+    command: CloudCommandEnvelope,
+    result: CloudCommandResult,
+    signal?: AbortSignal,
+  ) {
     const connectorId = this.pairedConnectorId();
     this.assertCommandConnector(command);
     return this.request({
@@ -162,6 +169,8 @@ export class CloudClient {
       },
       schema: commandResultReceiptSchema,
       signed: true,
+      commandScoped: true,
+      ...(signal ? { signal } : {}),
     });
   }
 
@@ -202,6 +211,10 @@ export class CloudClient {
 
   async uploadAsset(upload: AssetUploadCreated, bytes: Uint8Array): Promise<void> {
     const target = assetUploadCreatedSchema.parse(upload);
+    if (isLocalServiceUrl(target.uploadUrl) && !isLocalServiceUrl(this.config.baseUrl))
+      throw new CloudRequestError("Remote Knot Cloud cannot upload to a local service", {
+        retryable: false,
+      });
     const response = await this.fetchImplementation(target.uploadUrl, {
       method: "PUT",
       headers: target.requiredHeaders,
@@ -254,7 +267,7 @@ export class CloudClient {
     });
   }
 
-  async controlPublication(input: PublicationControlRequest) {
+  async controlPublication(input: PublicationControlRequest, signal?: AbortSignal) {
     const parsed = connectorPublicationControlRequestSchema.parse(input);
     const connectorId = this.pairedConnectorId();
     if (parsed.connectorId !== connectorId)
@@ -270,6 +283,7 @@ export class CloudClient {
       body: parsed,
       schema: publicationControlResultSchema,
       signed: true,
+      ...(signal ? { signal } : {}),
     });
   }
 
@@ -296,12 +310,15 @@ export class CloudClient {
     body?: unknown;
     schema: ZodType<T>;
     signed: boolean;
+    commandScoped?: boolean;
+    signal?: AbortSignal;
   }): Promise<T> {
     const body =
       input.body === undefined ? new Uint8Array() : Buffer.from(JSON.stringify(input.body));
     let lastError: unknown;
     for (let attempt = 0; attempt < this.maximumAttempts; attempt += 1) {
       try {
+        input.signal?.throwIfAborted();
         const url = new URL(input.path, `${this.config.baseUrl}/`);
         const headers = new Headers({ Accept: "application/json" });
         if (input.body !== undefined) headers.set("Content-Type", "application/json");
@@ -311,15 +328,27 @@ export class CloudClient {
           ))
             headers.set(name, value);
         }
+        input.signal?.throwIfAborted();
+        const timeout = AbortSignal.timeout(this.requestTimeoutMilliseconds);
+        const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
         const response = await this.fetchImplementation(url, {
           method: input.method,
           headers,
           ...(input.body === undefined ? {} : { body }),
-          signal: AbortSignal.timeout(this.requestTimeoutMilliseconds),
+          signal,
         });
-        const responseBody = await readBoundedResponse(response);
+        const responseBody = await readBoundedResponse(response, signal);
+        signal.throwIfAborted();
         if (!response.ok) {
-          const error = cloudError(response, responseBody);
+          let error = cloudError(response, responseBody);
+          if (
+            input.commandScoped &&
+            response.status >= 400 &&
+            response.status < 500 &&
+            ![408, 429].includes(response.status) &&
+            error.options.code !== "clock-skew"
+          )
+            error = new CloudRequestError(error.message, { ...error.options, retryable: false });
           if (error.options.serverUnixSeconds !== undefined) {
             this.clockOffsetSeconds =
               error.options.serverUnixSeconds - Math.floor(this.now() / 1_000);
@@ -330,11 +359,13 @@ export class CloudClient {
           if (!clockSkewRetry)
             await this.sleep(
               backoffMilliseconds(attempt, this.random, error.options.retryAfterSeconds),
+              input.signal,
             );
           continue;
         }
         return input.schema.parse(parseJson(responseBody));
       } catch (error) {
+        input.signal?.throwIfAborted();
         lastError = error;
         if (
           error instanceof z.ZodError ||
@@ -344,7 +375,7 @@ export class CloudClient {
         if (attempt + 1 >= this.maximumAttempts) break;
         const retryAfter =
           error instanceof CloudRequestError ? error.options.retryAfterSeconds : undefined;
-        await this.sleep(backoffMilliseconds(attempt, this.random, retryAfter));
+        await this.sleep(backoffMilliseconds(attempt, this.random, retryAfter), input.signal);
       }
     }
     if (lastError instanceof Error) throw lastError;
@@ -404,14 +435,67 @@ export function backoffMilliseconds(
   return Math.round(base * (0.75 + random() * 0.5));
 }
 
-async function readBoundedResponse(response: Response): Promise<Uint8Array> {
+function isLocalServiceUrl(value: string): boolean {
+  const hostname = new URL(value).hostname.toLowerCase().replace(/\.$/u, "");
+  if (
+    hostname === "localhost" ||
+    hostname === "0.0.0.0" ||
+    hostname === "[::]" ||
+    hostname === "[::1]" ||
+    /^127\./u.test(hostname)
+  )
+    return true;
+  // URL parsing canonicalizes mapped IPv4 addresses to IPv6 hexadecimal words,
+  // including dotted inputs such as [::ffff:127.0.0.1].
+  const mapped = /^\[::ffff:([\da-f]{1,4}):([\da-f]{1,4})\]$/u.exec(hostname);
+  if (!mapped) return false;
+  const high = Number.parseInt(mapped[1]!, 16);
+  const low = Number.parseInt(mapped[2]!, 16);
+  return high >>> 8 === 127 || (high === 0 && low === 0);
+}
+
+async function readBoundedResponse(response: Response, signal: AbortSignal): Promise<Uint8Array> {
+  const oversized = () =>
+    new CloudRequestError("Knot Cloud returned an oversized response", {
+      retryable: false,
+    });
   const contentLength = response.headers.get("Content-Length");
-  if (contentLength && Number(contentLength) > maximumResponseBytes)
-    throw new CloudRequestError("Knot Cloud returned an oversized response", { retryable: false });
-  const body = new Uint8Array(await response.arrayBuffer());
-  if (body.byteLength > maximumResponseBytes)
-    throw new CloudRequestError("Knot Cloud returned an oversized response", { retryable: false });
-  return body;
+  if (contentLength && Number(contentLength) > maximumResponseBytes) {
+    await response.body?.cancel();
+    throw oversized();
+  }
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  const abort = () => {
+    void reader.cancel(signal.reason).catch(() => undefined);
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    signal.throwIfAborted();
+    while (true) {
+      const { done, value } = await reader.read();
+      signal.throwIfAborted();
+      if (done) break;
+      length += value.byteLength;
+      if (length > maximumResponseBytes) {
+        await reader.cancel();
+        throw oversized();
+      }
+      chunks.push(value);
+    }
+    const body = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return body;
+  } finally {
+    signal.removeEventListener("abort", abort);
+    reader.releaseLock();
+  }
 }
 
 function parseJson(body: Uint8Array): unknown {

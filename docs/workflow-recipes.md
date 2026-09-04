@@ -608,9 +608,25 @@ replace sender IDs through `aag_set_access`. The tool rejects wildcard grants an
 from removing an access admin.
 
 Authorization is based on the native Anytype sender, never a display name or an ID supplied by the
-model. Codex binds the sender directly to its turn. For OpenClaw, Knot supplies an opaque,
-single-use capability scoped to that sender, route, and management action; the next human turn
-invalidates any unused capability. Do not add a static actor ID to OpenClaw's MCP configuration.
+model. Codex binds the sender directly to its turn. For OpenClaw, Knot supplies an opaque
+capability scoped to that sender, route, and management action. Its source conversation thread
+controls lifecycle and revocation; model mutations also enforce that thread as their target.
+Wake, access, and model mutations are single-use. Publishing permits up to 16 calls in a turn,
+including status reads, so status followed by multiple authorized publishes works. All capabilities
+expire after five minutes; an accepted successor in the same thread or completion/cancellation
+revokes the previous set. Ignored messages and unrelated discussion roots do not revoke it.
+An expired, exhausted, revoked, or mismatched capability requires a new authenticated turn;
+this is separate from a sender denied by the configured allowlist. The schema 18 upgrade expires
+pre-upgrade ephemeral capabilities because they lack a source thread; users need a new turn.
+It preserves durable sessions, replies, workflow approvals, and replay records. Do not add a static actor ID to OpenClaw's MCP configuration.
+
+The source thread controls a capability's lifetime. It is also the target scope for model changes:
+unbound OpenClaw calls supply `discussion_root_id`, which must match the model token's source root.
+Wake/access changes intentionally update the entire route, including every root of that discussion;
+they do not have a root-specific target. Publishing targets the configured site/slug/lifecycle
+policy, with no discussion-root target. These route/site operations do not require a bound MCP
+discussion root. Requiring one would disable supported unbound OpenClaw calls and would not add
+independently authenticated caller provenance.
 
 The change is scoped to the current chat or discussion and applies to the next message without a
 restart. Direct-message policy stays in operator configuration and cannot be changed through route

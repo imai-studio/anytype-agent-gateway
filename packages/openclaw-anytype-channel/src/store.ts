@@ -217,18 +217,15 @@ export class BridgeStore {
     }));
   }
 
-  pruneDelivered(before: number): number {
+  compactDelivered(before: number): number {
+    // Keep the unique idempotency key and row sequence after dropping old content.
+    // Deleting the record would let a replayed source enqueue another final reply.
     return Number(
       this.#db
-        .prepare("DELETE FROM bridge_outbound WHERE status = 'delivered' AND updated_at < ?")
-        .run(before).changes,
-    );
-  }
-
-  pruneExpiredPending(before: number): number {
-    return Number(
-      this.#db
-        .prepare("DELETE FROM bridge_outbound WHERE status = 'pending' AND created_at < ?")
+        .prepare(
+          `UPDATE bridge_outbound SET payload = '{}', last_error = NULL
+           WHERE status = 'delivered' AND updated_at < ? AND payload <> '{}'`,
+        )
         .run(before).changes,
     );
   }

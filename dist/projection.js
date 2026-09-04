@@ -1,3 +1,4 @@
+import { sameIdentity } from "./principal.js";
 import { mentionMarker, objectCardMarker, objectMarker, replyMarker } from "./protocol-markers.js";
 export class RunProjection {
     anytype;
@@ -496,14 +497,25 @@ export function renderCoordination(text, config, dynamicTargets = []) {
     for (const peer of config.coordination.peers)
         for (const name of [peer.name, ...peer.aliases])
             peers.set(name.toLocaleLowerCase(), peer);
-    for (const target of dynamicTargets)
-        peers.set(target.name.toLocaleLowerCase(), {
-            name: target.name,
-            participantId: target.participantId,
-            aliases: [],
-        });
+    const configuredNames = new Set(peers.keys());
+    const ambiguousNames = new Set();
+    for (const target of dynamicTargets) {
+        const name = target.name.trim().replace(/^@/, "");
+        const key = name.toLocaleLowerCase();
+        if (!name || configuredNames.has(key) || ambiguousNames.has(key))
+            continue;
+        const previous = peers.get(key);
+        if (previous && !sameIdentity(previous.participantId, target.participantId)) {
+            peers.delete(key);
+            ambiguousNames.add(key);
+            continue;
+        }
+        if (!previous)
+            peers.set(key, { name, participantId: target.participantId, aliases: [] });
+    }
     const marks = [];
     const tagged = new Set();
+    const alreadyTagged = (participantId) => [...tagged].some((previous) => sameIdentity(previous, participantId));
     const matcher = new RegExp(mentionMarker.source, mentionMarker.flags);
     let rendered = "";
     let cursor = 0;
@@ -512,12 +524,12 @@ export function renderCoordination(text, config, dynamicTargets = []) {
         cursor = match.index + match[0].length;
         const peer = peers.get((match[1] ?? "").trim().replace(/^@/, "").toLocaleLowerCase());
         if (!peer ||
-            (!tagged.has(peer.participantId) && tagged.size >= config.coordination.maxFanout)) {
+            (!alreadyTagged(peer.participantId) && tagged.size >= config.coordination.maxFanout)) {
             rendered += match[0];
             continue;
         }
         const mention = `@${peer.name}`;
-        if (!tagged.has(peer.participantId)) {
+        if (!alreadyTagged(peer.participantId)) {
             marks.push({
                 type: "mention",
                 from: rendered.length,
@@ -530,15 +542,23 @@ export function renderCoordination(text, config, dynamicTargets = []) {
     }
     rendered += text.slice(cursor);
     const occupied = marks.map((mark) => [mark.from ?? 0, mark.to ?? 0]);
-    const uniqueTargets = new Map([...peers.values()].map((target) => [target.participantId, target]));
-    for (const target of uniqueTargets.values()) {
-        const matcher = new RegExp(`@${escapeRegExp(target.name)}(?![\\p{L}\\p{N}_])`, "giu");
+    const uniqueTargets = [];
+    for (const target of peers.values()) {
+        const previous = uniqueTargets.find((candidate) => sameIdentity(candidate.participantId, target.participantId));
+        if (previous)
+            previous.names.add(target.name);
+        else
+            uniqueTargets.push({ participantId: target.participantId, names: new Set([target.name]) });
+    }
+    for (const target of uniqueTargets) {
+        const names = [...target.names].map(escapeRegExp).join("|");
+        const matcher = new RegExp(`@(?:${names})(?![\\p{L}\\p{N}_])`, "giu");
         for (let match = matcher.exec(rendered); match; match = matcher.exec(rendered)) {
             const from = match.index;
             const to = from + match[0].length;
             if (occupied.some(([occupiedFrom, occupiedTo]) => from < occupiedTo && to > occupiedFrom))
                 continue;
-            if (!tagged.has(target.participantId) && tagged.size >= config.coordination.maxFanout)
+            if (alreadyTagged(target.participantId) || tagged.size >= config.coordination.maxFanout)
                 continue;
             marks.push({ type: "mention", from, to, param: target.participantId });
             tagged.add(target.participantId);

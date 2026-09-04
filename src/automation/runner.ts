@@ -61,8 +61,8 @@ const SOURCE_REFETCH_REQUIRED =
 const MAXIMUM_DELIVERY_DISPATCH_ATTEMPTS = 24;
 
 export interface WorkflowRunnerExtension {
-  beforeTick?(): Promise<void>;
-  afterTick?(): Promise<void>;
+  beforeTick?(signal?: AbortSignal): Promise<void>;
+  afterTick?(signal?: AbortSignal): Promise<void>;
   stop?(): Promise<void>;
 }
 
@@ -135,9 +135,13 @@ export class WorkflowRunner {
   }
 
   async tickOnce(signal: AbortSignal = new AbortController().signal): Promise<void> {
+    // Revoke authority and cancel running work before any extension or source
+    // lookup can wait on a network dependency.
+    const revoked = this.reauthorizeActiveRuns(this.now());
+    this.reconcileInFlight(this.now());
     for (const extension of this.extensions) {
       try {
-        await extension.beforeTick?.();
+        await extension.beforeTick?.(signal);
       } catch (error) {
         this.log("workflow_runner_extension_failed", {
           phase: "before_tick",
@@ -148,7 +152,6 @@ export class WorkflowRunner {
     const now = this.now();
     const initialized = this.queue.initializeMatcher(now);
     const sourceResumed = await this.resumeSourceRefetchSteps(now, signal);
-    const revoked = this.reauthorizeActiveRuns(now);
     this.reconcileInFlight(now);
     const expired = this.queue.expireRunDeadlines(now, this.config.runner.batchSize);
     const recovered = this.queue.recoverExpiredLeases(
@@ -203,7 +206,7 @@ export class WorkflowRunner {
       });
     for (const extension of this.extensions) {
       try {
-        await extension.afterTick?.();
+        await extension.afterTick?.(signal);
       } catch (error) {
         this.log("workflow_runner_extension_failed", {
           phase: "after_tick",

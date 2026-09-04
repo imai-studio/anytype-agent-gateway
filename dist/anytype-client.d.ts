@@ -46,12 +46,12 @@ export declare class AnytypeClient implements AnytypePort {
         id: string;
         name: string;
     }>;
-    downloadFile(spaceId: string, fileId: string, maxBytes: number): Promise<{
+    downloadFile(spaceId: string, fileId: string, maxBytes: number, signal?: AbortSignal): Promise<{
         bytes: Uint8Array;
         contentType?: string;
     }>;
-    getMessage(spaceId: string, chatId: string, messageId: string): Promise<ChatMessage>;
-    listMessages(spaceId: string, chatId: string, limit: number, afterOrderId?: string): Promise<ChatMessage[]>;
+    getMessage(spaceId: string, chatId: string, messageId: string, signal?: AbortSignal): Promise<ChatMessage>;
+    listMessages(spaceId: string, chatId: string, limit: number, afterOrderId?: string, signal?: AbortSignal): Promise<ChatMessage[]>;
     sendMessage(spaceId: string, chatId: string, input: {
         text: string;
         replyTo?: string;
@@ -109,13 +109,13 @@ export declare class AnytypeClient implements AnytypePort {
     }, signal?: AbortSignal): Promise<JsonRecord>;
     archiveObject(spaceId: string, objectId: string, signal?: AbortSignal): Promise<JsonRecord>;
     addObjectsToList(spaceId: string, listId: string, objectIds: string[], signal?: AbortSignal): Promise<void>;
-    listViews(spaceId: string, listId: string): Promise<JsonRecord[]>;
+    listViews(spaceId: string, listId: string, signal?: AbortSignal): Promise<JsonRecord[]>;
     listViewObjects(spaceId: string, listId: string, viewId: string, page?: {
         offset: number;
         limit: number;
-    }): Promise<JsonRecord[]>;
-    removeObjectFromList(spaceId: string, listId: string, objectId: string): Promise<void>;
-    uploadFile(spaceId: string, path: string): Promise<JsonRecord>;
+    }, signal?: AbortSignal): Promise<JsonRecord[]>;
+    removeObjectFromList(spaceId: string, listId: string, objectId: string, signal?: AbortSignal): Promise<void>;
+    uploadFile(spaceId: string, path: string, signal?: AbortSignal): Promise<JsonRecord>;
     setProfileImage(spaceId: string, path: string): Promise<JsonRecord>;
     private messagesPath;
     private messagePath;

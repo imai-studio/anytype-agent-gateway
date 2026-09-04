@@ -35,9 +35,30 @@ export function principalAllowed(principal, configuredParticipantIds) {
 // Anytype APIs may expose the same immutable identity as either a global member
 // ID or a space-scoped participant ID. Retain that released compatibility while
 // never consulting display names or message content.
+export function globalIdentity(value) {
+    if (!principalFromParticipantId(value) || value === "*")
+        return undefined;
+    if (value.startsWith("_member_") || value.startsWith("_participant_")) {
+        // Heart constructs participant IDs as prefix + encoded space + '_' +
+        // identity (core/domain/id.go). Only strip recognized native prefixes;
+        // arbitrary global IDs must never be truncated at underscores.
+        const parts = value.split("_");
+        if (parts.slice(2).some((part) => !part))
+            return undefined;
+        return parts.at(-1);
+    }
+    return value;
+}
 export function sameIdentity(left, right) {
-    if (left === right || left.endsWith(`_${right}`) || right.endsWith(`_${left}`))
+    if (left === right)
         return true;
+    const leftGlobal = globalIdentity(left);
+    const rightGlobal = globalIdentity(right);
+    if (!leftGlobal || !rightGlobal)
+        return false;
+    const scoped = (value) => value.startsWith("_member_") || value.startsWith("_participant_");
+    if (scoped(left) !== scoped(right))
+        return leftGlobal === rightGlobal;
     const memberAndParticipant = (left.startsWith("_member_") && right.startsWith("_participant_")) ||
         (right.startsWith("_member_") && left.startsWith("_participant_"));
     return memberAndParticipant && left.split("_").at(-1) === right.split("_").at(-1);

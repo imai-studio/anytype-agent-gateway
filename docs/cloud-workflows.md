@@ -128,3 +128,21 @@ success and dead-letter after bounded retries.
 
 Use `knot cloud commands list` for local state and the Cloud operation endpoint for the remote
 state. Do not infer success from a lost lease or a missing worker process.
+
+## Local responsiveness and cancellation
+
+Cloud command lease/result/poll work shares a one-second budget per runner tick. The first network
+failure defers remaining network work until the configured poll interval. Status projection has a
+separate one-second budget. Local run reauthorization and cancellation run before extension I/O.
+The built-in Cloud and Anytype clients propagate cancellation through queued and active HTTP
+requests and retry delays; extension shutdown aborts and awaits its tracked work. Custom injected
+ports must honor the supplied AbortSignal.
+
+If shutdown interrupts an effect that may have reached Anytype, its durable receipt becomes
+`outcome_unknown`. Knot does not guess success or automatically repeat an uncertain write. A late
+network response cannot persist a new lease or command after cancellation.
+
+`chat.send` reads the native origin again and checks its sender against current local policy. It
+does not impose an origin age limit or bind the requested text to a command-specific native consent
+message. Keep this default-off bridge disabled where that stronger consent policy is required;
+the age/content policy remains planned work.

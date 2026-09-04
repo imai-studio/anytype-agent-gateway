@@ -102,12 +102,11 @@ for (const [path, fragments] of Object.entries({
 const expectedAagOccurrences = JSON.parse(
   readFileSync(resolve(root, "scripts/aag-occurrences.json"), "utf8"),
 );
-const tracked = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
+const tracked = execFileSync("git", ["ls-files", "--cached", "-z"], {
   cwd: root,
   encoding: "utf8",
 })
-  .trim()
-  .split("\n")
+  .split("\0")
   .filter(Boolean);
 const actualAagOccurrences = {};
 for (const path of tracked) {
@@ -119,7 +118,9 @@ for (const path of tracked) {
     path === "scripts/release-audit.mjs"
   )
     continue;
-  const contents = readFileSync(resolve(root, path), "utf8");
+  const bytes = readFileSync(resolve(root, path));
+  if (bytes.includes(0)) continue;
+  const contents = bytes.toString("utf8");
   const count = [...contents.matchAll(/AAG|anytype-agent-gateway|@imai\/aag/giu)].length;
   if (count > 0) actualAagOccurrences[path] = count;
 }

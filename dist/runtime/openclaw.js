@@ -25,6 +25,9 @@ export class OpenClawDriver {
         modelSelection: true,
     };
     client;
+    pendingClient;
+    rejectPendingConnection;
+    closed = false;
     connecting;
     connected = false;
     connectionGeneration = 0;
@@ -73,6 +76,10 @@ export class OpenClawDriver {
         return results;
     }
     async close() {
+        this.closed = true;
+        this.rejectPendingConnection?.(new Error("OpenClaw driver closed"));
+        if (this.pendingClient)
+            this.disconnect(this.pendingClient);
         if (this.client)
             this.disconnect(this.client);
         this.rejectConnectionWaiters(new Error("OpenClaw driver closed"));
@@ -81,6 +88,8 @@ export class OpenClawDriver {
         if (this.bridgePollTimer)
             clearInterval(this.bridgePollTimer);
         this.bridgePollTimer = undefined;
+        for (const observer of this.bridgeObservers.values())
+            observer.abort.abort();
         this.bridgeObservers.clear();
     }
     async configureModel(input) {
@@ -347,6 +356,8 @@ export class OpenClawDriver {
             throw new Error(`OpenClaw Anytype channel binding failed with HTTP ${response.status}`);
     }
     async observeBridgeSession(sessionKey, conversation, onOutput) {
+        if (this.closed)
+            throw new Error("OpenClaw driver closed");
         const id = crypto.randomUUID();
         const state = {
             id,
@@ -356,10 +367,13 @@ export class OpenClawDriver {
             runs: new Map(),
             recentOutputs: new Map(),
             afterSequence: 0,
+            abort: new AbortController(),
         };
         this.bridgeObservers.set(id, state);
         try {
             await this.pollBridgeOutbox();
+            if (state.abort.signal.aborted)
+                throw new Error("OpenClaw observer closed");
         }
         catch (error) {
             this.bridgeObservers.delete(id);
@@ -374,6 +388,7 @@ export class OpenClawDriver {
         return {
             ...(state.cursor ? { cursor: state.cursor } : {}),
             close: async () => {
+                state.abort.abort();
                 this.bridgeObservers.delete(id);
                 state.runs.clear();
                 state.recentOutputs.clear();
@@ -398,6 +413,8 @@ export class OpenClawDriver {
         }
     }
     reportBridgePollError(error) {
+        if (this.closed)
+            return;
         const now = Date.now();
         if (now - this.lastBridgePollErrorAt < 60_000)
             return;
@@ -406,7 +423,13 @@ export class OpenClawDriver {
     }
     async drainBridgeOutbox(token) {
         for (const observer of [...this.bridgeObservers.values()]) {
-            await this.drainBridgeObserver(token, observer);
+            try {
+                await this.drainBridgeObserver(token, observer);
+            }
+            catch (error) {
+                if (!observer.abort.signal.aborted)
+                    throw error;
+            }
         }
     }
     async drainBridgeObserver(token, observer) {
@@ -425,20 +448,25 @@ export class OpenClawDriver {
                 query.set("afterSequence", String(observer.afterSequence));
             const response = await fetch(new URL(`/v1/outbox?${query}`, this.config.channelBridge.url), {
                 headers: { authorization: `Bearer ${token}` },
-                signal: AbortSignal.timeout(10_000),
+                signal: AbortSignal.any([observer.abort.signal, AbortSignal.timeout(10_000)]),
             });
             if (!response.ok)
                 throw new Error(`OpenClaw Anytype channel outbox returned HTTP ${response.status}`);
             const body = (await response.json());
+            if (!this.bridgeObservers.has(observer.id))
+                return;
             const deliveries = body.deliveries ?? [];
             for (const delivery of deliveries) {
+                if (!this.bridgeObservers.has(observer.id))
+                    return;
                 if (!bridgeDeliveryMatches(observer, delivery))
                     continue;
                 observer.cursor = delivery.idempotencyKey;
                 if (delivery.kind === "message-final" && delivery.message) {
                     const text = delivery.message.text;
                     const owned = text ? this.consumeOwnedTerminalText(observer.sessionKey, text) : false;
-                    if (text && !owned && !shouldSuppressBridgeTwin(observer, text, "message-final"))
+                    let delivered = false;
+                    if (text && !owned && !shouldSuppressBridgeTwin(observer, text, "message-final")) {
                         await observer.onOutput({
                             id: delivery.idempotencyKey,
                             cursor: delivery.idempotencyKey,
@@ -447,7 +475,20 @@ export class OpenClawDriver {
                             ],
                             result: parseSilence(text),
                         });
-                    await this.ackBridgeDelivery(delivery.id, token);
+                        delivered = true;
+                    }
+                    if (!delivered && !this.bridgeObservers.has(observer.id))
+                        return;
+                    try {
+                        // A successful local delivery must finish its receipt even if close
+                        // cancelled the observer while onOutput was awaiting the send.
+                        await this.ackBridgeDelivery(delivery.id, token, delivered ? undefined : observer.abort.signal);
+                    }
+                    catch (error) {
+                        if (owned)
+                            this.markOwnedTerminalText(observer.sessionKey, text);
+                        throw error;
+                    }
                     continue;
                 }
                 if (delivery.kind !== "agent-event" || !delivery.agentEvent)
@@ -466,9 +507,10 @@ export class OpenClawDriver {
                 if (!bridgeEventTerminal(event))
                     continue;
                 const owned = delivery.owned === true || this.ownedRunIds.has(event.runId);
+                let delivered = false;
                 if (!owned) {
                     const text = renderBridgeRun(run) || bridgeTerminalFailure(event);
-                    if (text && !shouldSuppressBridgeTwin(observer, text, "agent-event"))
+                    if (text && !shouldSuppressBridgeTwin(observer, text, "agent-event")) {
                         await observer.onOutput({
                             id: event.runId,
                             cursor: run.cursor,
@@ -477,8 +519,12 @@ export class OpenClawDriver {
                             ],
                             result: parseSilence(text),
                         });
+                        delivered = true;
+                    }
                 }
-                await this.ackBridgeDeliveries(run.deliveryIds, token);
+                if (!delivered && !this.bridgeObservers.has(observer.id))
+                    return;
+                await this.ackBridgeDeliveries(run.deliveryIds, token, delivered ? undefined : observer.abort.signal);
                 if (owned)
                     this.ownedRunIds.delete(event.runId);
                 observer.runs.delete(event.runId);
@@ -492,11 +538,13 @@ export class OpenClawDriver {
                 return;
         }
     }
-    async ackBridgeDelivery(id, token) {
+    async ackBridgeDelivery(id, token, signal) {
         const response = await fetch(new URL(`/v1/outbox/${encodeURIComponent(id)}/ack`, this.config.channelBridge.url), {
             method: "POST",
             headers: { authorization: `Bearer ${token}` },
-            signal: AbortSignal.timeout(10_000),
+            signal: signal
+                ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+                : AbortSignal.timeout(10_000),
         });
         if (!response.ok)
             throw new Error(`OpenClaw Anytype channel acknowledgement returned HTTP ${response.status}`);
@@ -512,12 +560,14 @@ export class OpenClawDriver {
         if (!response.ok)
             throw new Error(`OpenClaw Anytype channel owned-run registration failed with HTTP ${response.status}`);
     }
-    async ackBridgeDeliveries(ids, token) {
+    async ackBridgeDeliveries(ids, token, signal) {
         const response = await fetch(new URL("/v1/outbox/ack", this.config.channelBridge.url), {
             method: "POST",
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
             body: JSON.stringify({ ids }),
-            signal: AbortSignal.timeout(10_000),
+            signal: signal
+                ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+                : AbortSignal.timeout(10_000),
         });
         if (!response.ok)
             throw new Error(`OpenClaw Anytype channel batch acknowledgement returned HTTP ${response.status}`);
@@ -584,6 +634,8 @@ export class OpenClawDriver {
         return true;
     }
     async getClient() {
+        if (this.closed)
+            throw new Error("OpenClaw driver closed");
         if (this.client)
             return this.client;
         if (this.connecting)
@@ -591,12 +643,15 @@ export class OpenClawDriver {
         this.connecting = (async () => {
             const Client = this.clientConstructor ?? (await this.loadClientConstructor());
             const token = await this.readToken();
+            if (this.closed)
+                throw new Error("OpenClaw driver closed");
             let settle;
             let fail;
             const connected = new Promise((resolve, reject) => {
                 settle = resolve;
                 fail = reject;
             });
+            this.rejectPendingConnection = fail;
             const client = new Client({
                 url: this.config.gateway.url,
                 token,
@@ -610,6 +665,8 @@ export class OpenClawDriver {
                 minProtocol: this.config.gateway.protocolVersion,
                 maxProtocol: this.config.gateway.protocolVersion,
                 onHelloOk: () => {
+                    if (this.closed || (this.pendingClient !== client && this.client !== client))
+                        return;
                     this.connected = true;
                     this.connectionGeneration += 1;
                     this.resolveConnectionWaiters();
@@ -617,6 +674,8 @@ export class OpenClawDriver {
                 },
                 onConnectError: fail,
                 onClose: () => {
+                    if (this.pendingClient !== client && this.client !== client)
+                        return;
                     this.connected = false;
                 },
                 onEvent: (event) => {
@@ -669,10 +728,25 @@ export class OpenClawDriver {
                         });
                 },
             });
-            client.start();
-            await connected;
-            this.client = client;
-            return client;
+            this.pendingClient = client;
+            try {
+                client.start();
+                await connected;
+                if (this.closed)
+                    throw new Error("OpenClaw driver closed");
+                this.client = client;
+                return client;
+            }
+            catch (error) {
+                if (this.pendingClient === client)
+                    this.disconnect(client);
+                throw error;
+            }
+            finally {
+                if (this.pendingClient === client)
+                    this.pendingClient = undefined;
+                this.rejectPendingConnection = undefined;
+            }
         })().finally(() => {
             this.connecting = undefined;
         });
@@ -697,7 +771,11 @@ export class OpenClawDriver {
     }
     async request(client, method, params, options) {
         for (let attempt = 1; attempt <= MAX_GATEWAY_REQUEST_ATTEMPTS; attempt += 1) {
+            if (this.closed)
+                throw new Error("OpenClaw driver closed");
             await this.waitForConnection(this.connectionGeneration - (this.connected ? 1 : 0));
+            if (this.closed)
+                throw new Error("OpenClaw driver closed");
             const generation = this.connectionGeneration;
             try {
                 return await client.request(method, params, options);
@@ -711,6 +789,8 @@ export class OpenClawDriver {
         throw new Error(`OpenClaw ${method} request exhausted reconnect attempts`);
     }
     waitForConnection(afterGeneration) {
+        if (this.closed)
+            return Promise.reject(new Error("OpenClaw driver closed"));
         if (this.connected && this.connectionGeneration > afterGeneration)
             return Promise.resolve();
         return new Promise((resolve, reject) => {
@@ -747,6 +827,8 @@ export class OpenClawDriver {
         client.stop();
         if (this.client === client)
             this.client = undefined;
+        if (this.pendingClient === client)
+            this.pendingClient = undefined;
         this.connected = false;
     }
     async clientModuleCandidates() {

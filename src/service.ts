@@ -378,11 +378,13 @@ async function installSystemdService(configPath: string): Promise<void> {
       config.anytype.cli.command,
       config.anytype.cli.dataPath,
     );
-  const dependencies = localAnytype
-    ? " network-online.target anytype.service"
-    : " network-online.target";
-  const pathEnvironment = servicePathEnvironment(process.execPath);
-  const unit = `[Unit]\nDescription=Knot\nAfter=${dependencies.trim()}\nWants=${dependencies.trim()}\n\n[Service]\nType=simple\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(executable)} run --config ${systemdQuote(resolve(configPath))}\nEnvironment=${systemdQuote(`PATH=${pathEnvironment}`)}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
+  const unit = buildSystemdUnit({
+    nodePath: process.execPath,
+    cliPath: executable,
+    configPath: resolve(configPath),
+    pathEnvironment: servicePathEnvironment(process.execPath),
+    localAnytype,
+  });
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, unit, { mode: 0o600 });
   await chmod(target, 0o600);
@@ -753,8 +755,21 @@ function xmlEscape(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+export function buildSystemdUnit(input: {
+  nodePath: string;
+  cliPath: string;
+  configPath: string;
+  pathEnvironment: string;
+  localAnytype: boolean;
+}): string {
+  const dependencies = input.localAnytype
+    ? "network-online.target anytype.service"
+    : "network-online.target";
+  return `[Unit]\nDescription=Knot\nAfter=${dependencies}\nWants=${dependencies}\n\n[Service]\nType=simple\nExecStart=${systemdQuote(input.nodePath)} ${systemdQuote(input.cliPath)} run --config ${systemdQuote(input.configPath)}\nEnvironment=${systemdQuote(`PATH=${input.pathEnvironment}`)}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`;
+}
+
 function systemdQuote(value: string): string {
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return `"${value.replace(/%/g, "%%").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 async function installAnytypeUnitIfMissing(

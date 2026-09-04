@@ -352,6 +352,10 @@ export declare const configSchema: z.ZodObject<{
         historyMessages: z.ZodDefault<z.ZodNumber>;
         replyDepth: z.ZodDefault<z.ZodNumber>;
         referencedObjects: z.ZodDefault<z.ZodNumber>;
+        retention: z.ZodDefault<z.ZodObject<{
+            maxAgeDays: z.ZodDefault<z.ZodNumber>;
+            maxBytes: z.ZodDefault<z.ZodNumber>;
+        }, z.core.$strip>>;
     }, z.core.$strip>>;
     coordination: z.ZodDefault<z.ZodObject<{
         peers: z.ZodDefault<z.ZodArray<z.ZodObject<{

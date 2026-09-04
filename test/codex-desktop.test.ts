@@ -20,6 +20,36 @@ afterEach(async () => {
 });
 
 describe("Codex Desktop project association", () => {
+  it.each(["", "not-json"])(
+    "handles malformed helper output %j without escaping the fallback",
+    async (output) => {
+      const fixture = await helperFixture(`process.stdout.write(${JSON.stringify(output)});`);
+      await expect(createCodexDesktopThread(fixture)).resolves.toBeUndefined();
+    },
+  );
+
+  it("kills an unresponsive helper after its timeout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "aag-codex-timeout-pid-"));
+    temporaryDirectories.push(root);
+    const pidPath = join(root, "helper.pid");
+    const fixture = await helperFixture(
+      `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); process.on("SIGTERM", () => {}); setInterval(() => {}, 100);`,
+    );
+    await expect(createCodexDesktopThread({ ...fixture, timeoutMs: 20 })).resolves.toBeUndefined();
+    const pid = Number(await readFile(pidPath, "utf8"));
+    // Process-group termination may take a scheduling turn to become observable.
+    await expect
+      .poll(() => {
+        try {
+          process.kill(pid, 0);
+          return false;
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code === "ESRCH";
+        }
+      })
+      .toBe(true);
+  }, 10_000);
+
   it("creates a native project task through the authenticated Codex app tools", async () => {
     const root = await mkdtemp(join(tmpdir(), "aag-codex-native-thread-"));
     temporaryDirectories.push(root);
@@ -365,4 +395,31 @@ function writeFrame(socket: NodeJS.WritableStream, message: unknown): void {
   frame.writeUInt32LE(body.length, 0);
   body.copy(frame, 4);
   socket.write(frame);
+}
+
+async function helperFixture(source: string) {
+  const root = await mkdtemp(join(tmpdir(), "aag-codex-helper-fallback-"));
+  temporaryDirectories.push(root);
+  const codexHome = join(root, ".codex");
+  const workspace = join(root, "workspace");
+  await mkdir(codexHome);
+  await mkdir(workspace);
+  await writeFile(
+    join(codexHome, ".codex-global-state.json"),
+    JSON.stringify({
+      "local-projects": { "project-fixture": { name: "fixture", rootPaths: [workspace] } },
+    }),
+  );
+  createCodexDatabase(codexHome).close();
+  const helperPath = join(root, "helper.js");
+  await writeFile(helperPath, source);
+  return {
+    sourceThreadId: "fixture-controller",
+    title: "Fixture",
+    codexHome,
+    workspace,
+    pipePath: join(root, "unused.sock"),
+    codexNodePath: process.execPath,
+    helperPath,
+  };
 }

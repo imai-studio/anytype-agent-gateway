@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalStoredWorkflowApproval, canonicalStoredWorkflowDefinition, canonicalWorkflowDefinition, redactStoredWorkflowJson, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 18;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -86,6 +86,8 @@ export class Store {
                 this.migrateToVersion16();
             if (current < 17)
                 this.migrateToVersion17();
+            if (current < 18)
+                this.migrateToVersion18();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -948,6 +950,16 @@ export class Store {
         BEGIN SELECT RAISE(ABORT,'workflow operator audit is append-only'); END;
     `);
     }
+    migrateToVersion18() {
+        // Pre-upgrade capabilities lack an authenticated source thread. Expire that
+        // transient authority instead of guessing a discussion root or widening use.
+        this.db.exec(`
+      ALTER TABLE management_actor_capabilities ADD COLUMN thread_key TEXT NOT NULL DEFAULT '';
+      ALTER TABLE management_actor_capabilities ADD COLUMN uses_remaining INTEGER NOT NULL DEFAULT 1 CHECK(uses_remaining >= 0);
+      DELETE FROM management_actor_capabilities;
+      CREATE INDEX idx_management_actor_capabilities_thread ON management_actor_capabilities(thread_key);
+    `);
+    }
     isInitialized(routeId) {
         return Boolean(this.db.prepare("SELECT 1 FROM cursors WHERE route_id = ?").get(routeId));
     }
@@ -1085,6 +1097,9 @@ export class Store {
         return Number(row.count);
     }
     prune(before) {
+        this.db
+            .prepare("DELETE FROM management_actor_capabilities WHERE expires_at<=?")
+            .run(Date.now());
         this.db.prepare("DELETE FROM handled_messages WHERE handled_at < ?").run(before);
         this.db
             .prepare("DELETE FROM handled_message_versions WHERE NOT EXISTS (SELECT 1 FROM handled_messages h WHERE h.route_id=handled_message_versions.route_id AND h.message_id=handled_message_versions.message_id)")
@@ -1975,38 +1990,43 @@ export class Store {
             .get(sequence);
         return row ? mapWorkflowApprovalDecision(row) : undefined;
     }
-    revokeManagementCapabilities(routeId) {
+    revokeManagementCapabilities(routeId, threadKey) {
         this.db
-            .prepare("DELETE FROM management_actor_capabilities WHERE route_id=? OR expires_at<=?")
-            .run(routeId, Date.now());
+            .prepare("DELETE FROM management_actor_capabilities WHERE (route_id=? AND (? IS NULL OR thread_key=?)) OR expires_at<=?")
+            .run(routeId, threadKey ?? null, threadKey ?? null, Date.now());
     }
-    issueManagementCapability(routeId, participantId, scope, ttlMs = 5 * 60 * 1_000) {
+    issueManagementCapability(routeId, participantId, scope, ttlMs = 5 * 60 * 1_000, threadKey = routeId) {
         const now = Date.now();
         const token = randomUUID();
         this.db
             .prepare(`INSERT INTO management_actor_capabilities
-          (token_hash,route_id,participant_id,scope,expires_at,created_at)
-         VALUES(?,?,?,?,?,?)`)
-            .run(managementCapabilityHash(token), routeId, participantId, scope, now + ttlMs, now);
+          (token_hash,route_id,participant_id,scope,expires_at,created_at,thread_key,uses_remaining)
+         VALUES(?,?,?,?,?,?,?,?)`)
+            .run(managementCapabilityHash(token), routeId, participantId, scope, now + ttlMs, now, threadKey, scope === "publish" ? 16 : 1);
         return token;
     }
-    consumeManagementCapability(token, routeId, scope) {
+    consumeManagementCapability(token, routeId, scope, threadKey) {
         if (!/^[0-9a-f-]{36}$/i.test(token))
             return undefined;
         const tokenHash = managementCapabilityHash(token);
         this.db.exec("BEGIN IMMEDIATE");
         try {
             const row = this.db
-                .prepare(`SELECT participant_id,route_id,scope,expires_at
+                .prepare(`SELECT participant_id,route_id,scope,expires_at,thread_key,uses_remaining
              FROM management_actor_capabilities WHERE token_hash=?`)
                 .get(tokenHash);
-            this.db
-                .prepare("DELETE FROM management_actor_capabilities WHERE token_hash=?")
-                .run(tokenHash);
+            const valid = row &&
+                row.route_id === routeId &&
+                row.scope === scope &&
+                row.expires_at > Date.now() &&
+                row.uses_remaining > 0 &&
+                (threadKey === undefined || row.thread_key === threadKey);
+            if (valid)
+                this.db
+                    .prepare("UPDATE management_actor_capabilities SET uses_remaining=uses_remaining-1 WHERE token_hash=?")
+                    .run(tokenHash);
             this.db.exec("COMMIT");
-            if (!row || row.route_id !== routeId || row.scope !== scope || row.expires_at <= Date.now())
-                return undefined;
-            return row.participant_id;
+            return valid ? row.participant_id : undefined;
         }
         catch (error) {
             this.db.exec("ROLLBACK");

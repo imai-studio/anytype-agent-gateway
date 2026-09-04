@@ -78,6 +78,45 @@ func TestRenderMessageHydratesBlockBasedComment(t *testing.T) {
 	}
 }
 
+func TestRenderMessageRebasesMultiBlockMentionsInUTF16(t *testing.T) {
+	message := &model.ChatMessage{HasMention: true}
+	for _, value := range []struct {
+		text  string
+		marks []*model.BlockContentTextMark
+	}{
+		{text: "Héllo • 😀 中文"},
+		{text: "Anya 👋", marks: []*model.BlockContentTextMark{{
+			Type: model.BlockContentTextMark_Mention, Param: "peer-one", Range: &model.Range{From: 0, To: 4},
+		}}},
+		{text: "é 中 Raj", marks: []*model.BlockContentTextMark{{
+			Type: model.BlockContentTextMark_Mention, Param: "peer-two", Range: &model.Range{From: 4, To: 7},
+		}}},
+	} {
+		message.Blocks = append(message.Blocks, &model.ChatMessageMessageBlock{
+			Content: &model.ChatMessageMessageBlockContentOfText{Text: &model.ChatMessageMessageBlockText{
+				Text: value.text, Marks: value.marks,
+			}},
+		})
+	}
+	rendered := renderMessage(message)
+	if rendered.Content.Text != "Héllo • 😀 中文\nAnya 👋\né 中 Raj" {
+		t.Fatalf("unexpected text %q", rendered.Content.Text)
+	}
+	// The first line has 13 UTF-16 code units; the second has seven.
+	want := []textMark{
+		{Type: "mention", Param: "peer-one", From: 14, To: 18},
+		{Type: "mention", Param: "peer-two", From: 26, To: 29},
+	}
+	if len(rendered.Content.Marks) != len(want) {
+		t.Fatalf("unexpected marks %#v", rendered.Content.Marks)
+	}
+	for i, mark := range rendered.Content.Marks {
+		if mark != want[i] {
+			t.Fatalf("mark %d: got %#v, want %#v", i, mark, want[i])
+		}
+	}
+}
+
 func TestOutboundMessageUsesBlockContent(t *testing.T) {
 	message := outboundMessage(mutationRequest{
 		Text:    "Working...",

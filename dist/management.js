@@ -24,7 +24,7 @@ export async function enrollChatRoute(input) {
         chats.push({ id: input.chatId, name: input.chatName, wake: input.wake });
         rawSpace.chats = chats;
         configSchema.parse(configFile.raw);
-        await writePrivateFileAtomic(configFile.absolute, serializeConfig(configFile.raw, configFile.extension));
+        await writePrivateFileAtomic(configFile.absolute, serializeConfig(configFile));
         return "enrolled";
     });
 }
@@ -100,6 +100,8 @@ async function resolveRouteConfig(configPath, routeId, knownSpaceName) {
     return {
         absolute: configFile.absolute,
         extension: configFile.extension,
+        document: configFile.document,
+        original: configFile.original,
         raw: configFile.raw,
         parsed: configFile.parsed,
         rawSpace: configFile.rawSpaces[configFile.spaceIndex],
@@ -121,7 +123,7 @@ async function persistRouteWake(route, wake) {
         overrides[overrideIndex] = next;
     route.rawSpace.wakeOverrides = overrides;
     configSchema.parse(route.raw);
-    await writePrivateFileAtomic(route.absolute, serializeConfig(route.raw, route.extension));
+    await writePrivateFileAtomic(route.absolute, serializeConfig(route));
     const config = await loadConfig(route.absolute);
     const store = new Store(config.state.path);
     try {
@@ -136,7 +138,13 @@ async function resolveConfigFile(configPath, spaceId, knownSpaceName) {
     const extension = extname(absolute).toLowerCase();
     if (extension === ".toml")
         throw new Error("Runtime configuration changes support YAML and JSON files only");
-    const raw = parseConfig(await readFile(absolute, "utf8"), extension);
+    const text = await readFile(absolute, "utf8");
+    const document = extension === ".json" ? undefined : YAML.parseDocument(text);
+    if (document?.errors.length)
+        throw document.errors[0];
+    const original = document ? document.toJS() : JSON.parse(text);
+    // Detach YAML aliases before changing a route so another alias stays untouched.
+    const raw = JSON.parse(JSON.stringify(original));
     const parsed = configSchema.parse(raw);
     const rawSpaces = raw.spaces;
     let spaceIndex = parsed.spaces.findIndex((space) => space.id === spaceId);
@@ -150,7 +158,7 @@ async function resolveConfigFile(configPath, spaceId, knownSpaceName) {
     }
     if (spaceIndex < 0)
         throw new Error(`Space ${spaceId} is not configured by ID`);
-    return { absolute, extension, raw, parsed, rawSpaces, spaceIndex };
+    return { absolute, extension, document, original, raw, parsed, rawSpaces, spaceIndex };
 }
 async function resolveRouteSpaceName(configPath, routeId) {
     const match = /^(?:chat|discussion):([^:]+):.+$/.exec(routeId);
@@ -173,11 +181,45 @@ async function withConfigWriteLock(configPath, operation) {
         await release();
     }
 }
-function parseConfig(text, extension) {
-    return extension === ".json" ? JSON.parse(text) : YAML.parse(text);
+function serializeConfig(config) {
+    if (!config.document)
+        return `${JSON.stringify(config.raw, null, 2)}\n`;
+    patchDocument(config.document, [], config.original, config.raw);
+    return config.document.toString();
 }
-function serializeConfig(value, extension) {
-    return extension === ".json" ? `${JSON.stringify(value, null, 2)}\n` : YAML.stringify(value);
+function patchDocument(document, path, before, after) {
+    if (JSON.stringify(before) === JSON.stringify(after))
+        return;
+    const node = document.getIn(path, true);
+    if (YAML.isNode(node) && !YAML.isAlias(node) && node.anchor) {
+        const anchor = node.anchor;
+        YAML.visit(document, {
+            Alias: (_key, alias) => (alias.source === anchor ? document.createNode(before) : undefined),
+        });
+    }
+    // Updating through an alias would change its anchor and all other consumers.
+    if (YAML.isAlias(node)) {
+        document.setIn(path, document.createNode(after));
+    }
+    else if (Array.isArray(before) && Array.isArray(after) && YAML.isSeq(node)) {
+        for (let index = before.length - 1; index >= after.length; index -= 1)
+            document.deleteIn([...path, index]);
+        for (let index = 0; index < after.length; index += 1)
+            patchDocument(document, [...path, index], before[index], after[index]);
+    }
+    else if (isRecord(before) && isRecord(after) && YAML.isMap(node)) {
+        for (const key of Object.keys(before))
+            if (!(key in after))
+                document.deleteIn([...path, key]);
+        for (const [key, value] of Object.entries(after))
+            patchDocument(document, [...path, key], before[key], value);
+    }
+    else {
+        document.setIn(path, after);
+    }
+}
+function isRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 async function writePrivateFileAtomic(target, contents) {
     const temporary = join(dirname(target), `.${basename(target)}.${process.pid}.${randomUUID()}.tmp`);

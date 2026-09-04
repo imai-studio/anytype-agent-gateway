@@ -90,6 +90,57 @@ describe("protocol boundaries", () => {
     expect(rendered.marks).toEqual([{ type: "mention", from: 4, to: 12, param: "peer-1" }]);
   });
 
+  it("keeps configured peer names and aliases authoritative over observed mentions", () => {
+    const value = config({
+      coordination: { peers: [{ name: "Builder", participantId: "peer-1", aliases: ["Build"] }] },
+    });
+    const rendered = renderCoordination("@Builder [[AAG_MENTION:Build]]", value, [
+      { name: "Builder", participantId: "spoof" },
+      { name: "BUILD", participantId: "spoof" },
+      { name: "Alternate", participantId: "peer-1" },
+    ]);
+    expect(rendered.text).toBe("@Builder @Builder");
+    expect(rendered.marks.every((mark) => mark.param === "peer-1")).toBe(true);
+  });
+
+  it.each([
+    "@Builder @Person @Builder @Reviewer",
+    "@Person @Reviewer",
+    "[[KNOT_MENTION:Builder]] [[KNOT_MENTION:Person]] @Builder @Person @Reviewer",
+  ])("counts equivalent native identities once across mention forms: %s", (text) => {
+    const value = config({
+      coordination: {
+        peers: [
+          { name: "Builder", participantId: "_member_person" },
+          { name: "Reviewer", participantId: "reviewer" },
+        ],
+        maxFanout: 2,
+      },
+    });
+    const rendered = renderCoordination(text, value, [{ name: "Person", participantId: "person" }]);
+    expect(rendered.marks.map((mark) => mark.param)).toEqual(["_member_person", "reviewer"]);
+  });
+
+  it("drops ambiguous dynamic names regardless of order while retaining identity-equivalent hydration", () => {
+    const targets = [
+      { name: "Person", participantId: "person-a" },
+      { name: "PERSON", participantId: "person-b" },
+      { name: "Person", participantId: "person-a" },
+      { name: "Known", participantId: "_member_known" },
+      { name: "KNOWN", participantId: "known" },
+    ];
+    for (const observed of [targets, [...targets].reverse()]) {
+      const rendered = renderCoordination(
+        "@Person [[AAG_MENTION:Person]] @Known",
+        config(),
+        observed,
+      );
+      expect(rendered.text).toContain("[[AAG_MENTION:Person]]");
+      expect(rendered.marks).toHaveLength(1);
+      expect(["known", "_member_known"]).toContain(rendered.marks[0]?.param);
+    }
+  });
+
   it("normalizes Markdown and creates native mentions for observed participants", () => {
     const rendered = renderForAnytype("@HELD Hi!\n- **Important** detail with `code`.", config(), [
       { name: "HELD", participantId: "person-held" },

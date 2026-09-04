@@ -269,6 +269,6 @@ For a local headless API at `127.0.0.1:31012`, the installer creates `anytype.se
 - Chat ingestion is at-least-once and deduplicated in the local database. The workflow runner and
   outbound outbox have durable retry state, but Knot does not provide cross-machine exactly-once
   delivery.
-- It does not attach files or emit rich Anytype blocks; progress and final projections are bounded plain text with optional mention marks.
+- Knot renders supported rich-text marks and native object cards. Arbitrary rich block layouts remain unsupported.
 - It has no Windows service installer yet.
 - The Heart adapter is deliberately version-pinned and private-API dependent.

@@ -25,6 +25,9 @@ export declare class OpenClawDriver implements RuntimeDriver {
         readonly modelSelection: true;
     };
     private client;
+    private pendingClient;
+    private rejectPendingConnection;
+    private closed;
     private connecting;
     private connected;
     private connectionGeneration;

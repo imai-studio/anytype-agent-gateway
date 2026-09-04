@@ -117,6 +117,131 @@ describe("example workflows", () => {
     store.close();
   });
 
+  it("preserves active turn authority for ignored messages and independent discussion roots", async () => {
+    const anytype = new FakeAnytype();
+    const runtime = new FakeRuntime();
+    Object.defineProperty(runtime, "name", { value: "openclaw" });
+    const start = runtime.start.bind(runtime);
+    runtime.start = async (input, onEvent) => {
+      const handle = await start(input, onEvent);
+      const pending = runtime.current;
+      return {
+        ...handle,
+        cancel: async () => {
+          pending.resolve({ text: "cancelled" });
+        },
+      };
+    };
+    const store = new Store(":memory:");
+    const config = configSchema.parse({
+      version: 1,
+      agent: { name: "AAG", participantId: "bot" },
+      anytype: { apiKeyFile: "/fixture/key" },
+      spaces: [{ id: "space" }],
+      runtime: { kind: "openclaw" },
+      management: { allowAccessChanges: true, accessAdmins: ["human-1"] },
+    });
+    const tokens: string[] = [];
+    const controller = new AgentController(
+      anytype,
+      runtime,
+      config,
+      store,
+      () => undefined,
+      undefined,
+      (_route, capabilities) => {
+        tokens.push(capabilities!.access!);
+        return "trusted metadata";
+      },
+    );
+    const target: ConversationRef = {
+      ...conversation,
+      kind: "discussion",
+      routeId: "discussion:space:chat",
+    };
+    const policy = { ...wake, allowedUsers: ["human-1", "human-2"] };
+    const send = async (id: string, creator: string, mentioned: boolean, parent?: string) => {
+      const message = incoming({
+        id,
+        creator,
+        mentioned,
+        content: { text: "hello" },
+        ...(parent ? { reply_to_message_id: parent } : {}),
+      });
+      anytype.messages.push(message);
+      await controller.process(target, policy, message);
+    };
+    try {
+      await send("first", "human-1", true);
+      await send("ignored-intruder", "intruder", true, "first");
+      await send("ignored-no-wake", "human-2", false, "first");
+      expect(tokens).toHaveLength(1);
+      // Validate without spending the active access token.
+      expect(
+        store.db
+          .prepare("SELECT uses_remaining FROM management_actor_capabilities WHERE scope='access'")
+          .get()?.uses_remaining,
+      ).toBe(1);
+      await send("second-root", "human-2", true);
+      expect(store.consumeManagementCapability(tokens[0]!, target.routeId, "access")).toBe(
+        "human-1",
+      );
+      await send("successor", "human-1", true, "second-root");
+      expect(
+        store.consumeManagementCapability(tokens[1]!, target.routeId, "access"),
+      ).toBeUndefined();
+      expect(store.consumeManagementCapability(tokens[2]!, target.routeId, "access")).toBe(
+        "human-1",
+      );
+    } finally {
+      await controller.stop();
+      store.close();
+    }
+  });
+
+  it.each(["_member_peer", "peer", "_participant_other_peer"])(
+    "enforces hop limits across identity forms (%s) and cyclic ancestry",
+    async (ancestor) => {
+      const anytype = new FakeAnytype();
+      const runtime = new FakeRuntime();
+      const store = new Store(":memory:");
+      const config = configSchema.parse({
+        version: 1,
+        agent: { name: "AAG", participantId: "bot" },
+        anytype: { apiKeyFile: "/fixture/key" },
+        spaces: [{ id: "space" }],
+        runtime: { kind: "openclaw" },
+        coordination: {
+          agentParticipants: ["peer"],
+          peers: [{ name: "Peer", participantId: "_member_peer" }],
+          maxHops: 2,
+        },
+      });
+      const events: string[] = [];
+      const controller = new AgentController(anytype, runtime, config, store, (event) =>
+        events.push(event),
+      );
+      anytype.messages.push(
+        incoming({ id: "ancestor", creator: ancestor, reply_to_message_id: "ancestor" }),
+      );
+      const trigger = incoming({
+        id: "trigger",
+        creator: "_participant_space_peer",
+        mentioned: true,
+        reply_to_message_id: "ancestor",
+      });
+      anytype.messages.push(trigger);
+      try {
+        await controller.process(conversation, wake, trigger);
+        expect(events).toContain("hop_limit");
+        expect(runtime.starts).toHaveLength(0);
+      } finally {
+        await controller.stop();
+        store.close();
+      }
+    },
+  );
+
   it("lists and changes the native harness model per Anytype chat", async () => {
     const anytype = new FakeAnytype();
     const runtime = new FakeRuntime();

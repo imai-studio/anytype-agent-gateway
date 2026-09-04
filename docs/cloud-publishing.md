@@ -188,3 +188,8 @@ approval is mandatory. Changing document text, destination, lifecycle operation,
 local named-connection policy invalidates the applicable approval. Publication text is not retained
 in the workflow database; execution refetches and re-verifies the Anytype definition before the
 existing Cloud publication outbox commits the effect.
+
+Cloud response bodies are streamed with a one-MiB consumption limit. An explicitly loopback asset
+upload destination is accepted only when the configured Cloud server is also loopback, preserving
+local development without allowing a remote Cloud server to select a literal local upload target.
+This check is not a DNS-rebinding or general network-isolation boundary.

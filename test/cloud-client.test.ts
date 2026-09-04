@@ -1,15 +1,274 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { CloudClient, backoffMilliseconds } from "../src/cloud-client.js";
 import { initializeCloudConfig, resolveCloudPaths, type CloudConfig } from "../src/cloud-config.js";
+import type { CloudCommandEnvelope } from "../src/cloud-contract.js";
 
 const connectorId = "00000000-0000-4000-8000-000000000011";
 const commandId = "00000000-0000-4000-8000-000000000021";
+const fencedCommand: CloudCommandEnvelope = {
+  protocolVersion: "1.0",
+  commandId,
+  connectorId,
+  requiredScope: "anytype.objects.read",
+  createdBy: "consumer-api-key",
+  actor: { principalDigest: "a".repeat(64), digestVersion: 1, provenance: "consumer-api-key" },
+  createdAt: 1,
+  notBefore: 1,
+  expiresAt: 100,
+  attempt: 1,
+  leaseToken: "l".repeat(32),
+  leaseExpiresAt: 50,
+  payload: {
+    domain: "anytype",
+    operation: { type: "object.read", spaceId: "space", objectId: "object" },
+  },
+};
 
 describe("CloudClient", () => {
+  it.each(["extend", "result"])(
+    "does not retry %s command conflicts marked retryable",
+    async (operation) => {
+      const config = await pairedConfig();
+      const fetchMock = vi.fn(async () =>
+        Response.json(
+          {
+            type: "https://knot.example/problems/stale-fence",
+            title: "Stale command fence",
+            status: 409,
+            code: "stale-fence",
+            requestId: "test-request-id",
+            retryable: true,
+          },
+          { status: 409 },
+        ),
+      );
+      const sleep = vi.fn(async () => undefined);
+      const client = new CloudClient(config, { fetch: fetchMock, sleep, maximumAttempts: 4 });
+      const pending =
+        operation === "extend"
+          ? client.extendLease(fencedCommand)
+          : client.rejectByLocalPolicy(fencedCommand, "sender-denied");
+      await expect(pending).rejects.toMatchObject({ options: { status: 409, retryable: false } });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([401, 408, 429])(
+    "keeps bounded retries for command status %s clock or transport failures",
+    async (status) => {
+      const config = await pairedConfig();
+      const fetchMock = vi.fn(async () => {
+        if (fetchMock.mock.calls.length === 1)
+          return Response.json(
+            {
+              type: "https://knot.example/problems/retry",
+              title: "Try again",
+              status,
+              code: status === 401 ? "clock-skew" : "temporarily-unavailable",
+              requestId: "test-request-id",
+              retryable: status !== 401,
+              ...(status === 401 ? { serverUnixSeconds: 1_788_220_890 } : {}),
+            },
+            { status },
+          );
+        return Response.json({
+          protocolVersion: "1.0",
+          commandId,
+          attempt: 1,
+          leaseExpiresAt: 100,
+        });
+      });
+      const client = new CloudClient(config, {
+        fetch: fetchMock,
+        sleep: async () => undefined,
+        maximumAttempts: 2,
+      });
+      await expect(client.extendLease(fencedCommand)).resolves.toMatchObject({
+        commandId,
+        leaseExpiresAt: 100,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("aborts the native HTTP request when a Cloud deadline expires", async () => {
+    let entered!: () => void;
+    let closed!: () => void;
+    const requestEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const requestClosed = new Promise<void>((resolve) => {
+      closed = resolve;
+    });
+    const server = createServer((_request, response) => {
+      response.on("close", closed);
+      entered();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing server address");
+      const config = { ...(await pairedConfig()), baseUrl: `http://127.0.0.1:${address.port}` };
+      const client = new CloudClient(config);
+      const controller = new AbortController();
+      const pending = client.claimCommands({ signal: controller.signal });
+      const rejected = expect(pending).rejects.toThrow("cloud tick elapsed");
+      await requestEntered;
+      controller.abort(new Error("cloud tick elapsed"));
+      await rejected;
+      await requestClosed;
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("cancels oversized chunked replies before consuming the whole body", async () => {
+    const config = await pairedConfig();
+    let chunksRead = 0;
+    const cancel = vi.fn();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              chunksRead += 1;
+              controller.enqueue(new Uint8Array(256 * 1024));
+              if (chunksRead === 100) controller.close();
+            },
+            cancel,
+          }),
+        ),
+    );
+    const client = new CloudClient(config, { fetch: fetchMock, maximumAttempts: 4 });
+    await expect(client.protocolStatus()).rejects.toThrow("oversized response");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(chunksRead).toBeLessThan(10);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a stalled response body at the request deadline", async () => {
+    const config = await pairedConfig();
+    const cancel = vi.fn();
+    const client = new CloudClient(config, {
+      fetch: vi.fn(async () => new Response(new ReadableStream({ cancel }))),
+      requestTimeoutMilliseconds: 30,
+      maximumAttempts: 1,
+    });
+    await expect(client.protocolStatus()).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("aborts requests without retrying after their caller cancels", async () => {
+    const config = await pairedConfig();
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+        controller.abort(new Error("tick budget elapsed"));
+      });
+    });
+    const client = new CloudClient(config, { fetch: fetchMock, maximumAttempts: 4 });
+    await expect(client.claimCommands({ signal: controller.signal })).rejects.toThrow(
+      "tick budget elapsed",
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("cancels Retry-After sleep without another request", async () => {
+    const config = await pairedConfig();
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async () => {
+      setTimeout(() => controller.abort(new Error("stopped")), 20);
+      return Response.json(
+        {
+          type: "https://knot.example/problems/unavailable",
+          title: "Unavailable",
+          status: 503,
+          code: "unavailable",
+          retryable: true,
+          retryAfterSeconds: 3600,
+        },
+        { status: 503 },
+      );
+    });
+    const client = new CloudClient(config, { fetch: fetchMock });
+    await expect(client.claimCommands({ signal: controller.signal })).rejects.toThrow("stopped");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "http://127.0.0.1:8080/object",
+    "https://localhost./object",
+    "https://127.1/object",
+    "https://2130706433/object",
+    "https://0177.0.0.1/object",
+    "https://0.0.0.0/object",
+    "https://0/object",
+    "https://0x0/object",
+    "https://[::]/object",
+    "https://[0:0:0:0:0:0:0:0]/object",
+    "https://[0:0:0:0:0:0:0:1]/object",
+    "https://[::ffff:127.0.0.1]/object",
+    "https://[::ffff:7f00:1]/object",
+    "https://[0:0:0:0:0:ffff:7f00:1]/object",
+    "https://[::ffff:127.255.255.254]/object",
+    "https://[::ffff:0.0.0.0]/object",
+  ])("permits local upload target %s only for a locally configured Cloud", async (uploadUrl) => {
+    const config = await pairedConfig({ scopes: ["publications.write"] });
+    const upload = {
+      protocolVersion: "1.0" as const,
+      assetId: "00000000-0000-4000-8000-000000000071",
+      uploadId: "00000000-0000-4000-8000-000000000072",
+      method: "PUT" as const,
+      uploadUrl,
+      requiredHeaders: {},
+      expiresAt: 1_788_220_900,
+    };
+    const fetchMock = vi.fn(async () => new Response(null));
+    const remote = new CloudClient(config, { fetch: fetchMock });
+    await expect(remote.uploadAsset(upload, Buffer.from("asset"))).rejects.toThrow(
+      "cannot upload to a local service",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    const local = new CloudClient(
+      { ...config, baseUrl: "http://localhost:8081" },
+      { fetch: fetchMock },
+    );
+    await expect(local.uploadAsset(upload, Buffer.from("asset"))).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each(["https://192.0.2.1/object", "https://[::ffff:192.0.2.1]/object"])(
+    "does not classify nonlocal numeric upload target %s as loopback",
+    async (uploadUrl) => {
+      const config = await pairedConfig({ scopes: ["publications.write"] });
+      const fetchMock = vi.fn(async () => new Response(null));
+      const client = new CloudClient(config, { fetch: fetchMock });
+      await expect(
+        client.uploadAsset(
+          {
+            protocolVersion: "1.0",
+            assetId: "00000000-0000-4000-8000-000000000071",
+            uploadId: "00000000-0000-4000-8000-000000000072",
+            method: "PUT",
+            uploadUrl,
+            requiredHeaders: {},
+            expiresAt: 1_788_220_900,
+          },
+          Buffer.from("asset"),
+        ),
+      ).resolves.toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledOnce();
+    },
+  );
+
   it("uses only the frozen signed publication routes and validates their replies", async () => {
     const config = await pairedConfig({
       scopes: ["publications.read", "publications.write", "publications.unpublish"],
