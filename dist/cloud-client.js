@@ -93,6 +93,7 @@ export class CloudClient {
             },
             schema: commandLeaseExtendedSchema,
             signed: true,
+            commandScoped: true,
             ...(signal ? { signal } : {}),
         });
     }
@@ -111,6 +112,7 @@ export class CloudClient {
             },
             schema: commandResultReceiptSchema,
             signed: true,
+            commandScoped: true,
             ...(signal ? { signal } : {}),
         });
     }
@@ -148,8 +150,8 @@ export class CloudClient {
     }
     async uploadAsset(upload, bytes) {
         const target = assetUploadCreatedSchema.parse(upload);
-        if (isLoopbackUrl(target.uploadUrl) && !isLoopbackUrl(this.config.baseUrl))
-            throw new CloudRequestError("Remote Knot Cloud cannot upload to a loopback service", {
+        if (isLocalServiceUrl(target.uploadUrl) && !isLocalServiceUrl(this.config.baseUrl))
+            throw new CloudRequestError("Remote Knot Cloud cannot upload to a local service", {
                 retryable: false,
             });
         const response = await this.fetchImplementation(target.uploadUrl, {
@@ -254,7 +256,13 @@ export class CloudClient {
                 const responseBody = await readBoundedResponse(response, signal);
                 signal.throwIfAborted();
                 if (!response.ok) {
-                    const error = cloudError(response, responseBody);
+                    let error = cloudError(response, responseBody);
+                    if (input.commandScoped &&
+                        response.status >= 400 &&
+                        response.status < 500 &&
+                        ![408, 429].includes(response.status) &&
+                        error.options.code !== "clock-skew")
+                        error = new CloudRequestError(error.message, { ...error.options, retryable: false });
                     if (error.options.serverUnixSeconds !== undefined) {
                         this.clockOffsetSeconds =
                             error.options.serverUnixSeconds - Math.floor(this.now() / 1_000);
@@ -327,9 +335,22 @@ export function backoffMilliseconds(attempt, random = Math.random, retryAfterSec
     const base = Math.min(30_000, 500 * 2 ** Math.max(0, attempt));
     return Math.round(base * (0.75 + random() * 0.5));
 }
-function isLoopbackUrl(value) {
+function isLocalServiceUrl(value) {
     const hostname = new URL(value).hostname.toLowerCase().replace(/\.$/u, "");
-    return hostname === "localhost" || hostname === "[::1]" || /^127\./u.test(hostname);
+    if (hostname === "localhost" ||
+        hostname === "0.0.0.0" ||
+        hostname === "[::]" ||
+        hostname === "[::1]" ||
+        /^127\./u.test(hostname))
+        return true;
+    // URL parsing canonicalizes mapped IPv4 addresses to IPv6 hexadecimal words,
+    // including dotted inputs such as [::ffff:127.0.0.1].
+    const mapped = /^\[::ffff:([\da-f]{1,4}):([\da-f]{1,4})\]$/u.exec(hostname);
+    if (!mapped)
+        return false;
+    const high = Number.parseInt(mapped[1], 16);
+    const low = Number.parseInt(mapped[2], 16);
+    return high >>> 8 === 127 || (high === 0 && low === 0);
 }
 async function readBoundedResponse(response, signal) {
     const oversized = () => new CloudRequestError("Knot Cloud returned an oversized response", {

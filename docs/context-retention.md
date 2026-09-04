@@ -41,11 +41,33 @@ under symlinked directories are left untouched and are outside the byte target.
 Inspect those files separately before operator cleanup. Reusing a legacy filename
 through a normal turn registers the newly written copy.
 
+Writes also refuse symlinked managed directories, including `.aag` itself,
+`.aag/context`, `.aag/attachments`, and each attachment subdirectory. An affected
+attachment is reported unavailable; a blocked context-directory write prevents
+workspace prompt preparation. To repair this, stop the agent, inspect and preserve
+the symlink target's data, and replace the symlink with a real directory inside
+the configured workspace. If the target is the intended workspace, configure that
+workspace explicitly instead. Knot will not traverse the link or move its target
+data automatically.
+
 Keep the registry with the state database when backing up or moving an agent.
 Missing registry data safely leaves existing files unmanaged. The registry and
 path checks protect against accidental deletion; they are not an isolation
 boundary against another process with the same OS user's access to the workspace
 and state directory.
+
+Registry maintenance is best effort. If another process holds its lock, Knot skips
+that update immediately. Unreadable, nonregular or corrupt registry data also
+causes maintenance to skip, before deleting any managed files. Knot preserves the
+registry evidence instead of replacing it with an empty map. These registry
+failures do not prevent attachment delivery or prompt preparation when the
+workspace itself is writable.
+
+For a damaged registry, preserve a copy and restore a known-good backup after
+stopping the agent. Do not replace it with an empty map to force cleanup. The next
+turn or scheduled sweep retries maintenance once state access is restored. Files
+written during skipped registration remain unmanaged until a normal turn writes
+and registers them again; restoring a backup does not automatically claim them.
 
 Runtime route-management changes preserve YAML comments and untouched formatting
 through document-node edits. When changing an anchored policy, Knot detaches alias

@@ -1,11 +1,12 @@
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
 import { configSchema, loadConfig } from "../src/config.js";
 import { callTool, toolDefinitions } from "../src/mcp.js";
 import { Store } from "../src/store.js";
+import { runProcess } from "../src/process.js";
 import type { AnytypeClient } from "../src/anytype-client.js";
 import {
   initializeCloudConfig,
@@ -116,9 +117,13 @@ describe("AAG Anytype MCP policy", () => {
     ).rejects.toThrow("current Anytype sender is not allowed to publish");
   });
 
-  it.each(["bound", "capability"])(
-    "publishes through the constrained tool (%s) with status then multiple pushes",
-    async (authority) => {
+  it.each([
+    { authority: "bound", routeId: "chat:space-1:chat" },
+    { authority: "capability", routeId: "chat:space-1:chat" },
+    { authority: "capability", routeId: "discussion:space-1:discussion" },
+  ])(
+    "publishes through the constrained tool ($authority, $routeId) with status then multiple pushes",
+    async ({ authority, routeId }) => {
       const directory = await mkdtemp(join(tmpdir(), "knot-mcp-publish-"));
       const paths = resolveCloudPaths({ configFile: join(directory, "cloud.json") });
       const base = await initializeCloudConfig({
@@ -183,14 +188,18 @@ describe("AAG Anytype MCP policy", () => {
           },
         });
         const store = new Store(configured.state.path);
-        const capability = store.issueManagementCapability("chat:space-1:chat", "owner", "publish");
+        const capability = store.issueManagementCapability(
+          routeId,
+          "owner",
+          "publish",
+          undefined,
+          routeId.startsWith("discussion:") ? `${routeId}:root:source` : routeId,
+        );
         store.close();
         const actorId = authority === "bound" ? "owner" : undefined;
         const metadata =
-          authority === "capability"
-            ? { actor_capability: capability, route_id: "chat:space-1:chat" }
-            : {};
-        const boundRoute = authority === "bound" ? "chat:space-1:chat" : undefined;
+          authority === "capability" ? { actor_capability: capability, route_id: routeId } : {};
+        const boundRoute = authority === "bound" ? routeId : undefined;
         await expect(
           callTool(
             client(),
@@ -921,6 +930,255 @@ describe("AAG Anytype MCP policy", () => {
       ),
     ).rejects.toThrow("could not be verified");
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it("preserves route-wide discussion management and thread-specific models in unbound OpenClaw MCP", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "knot-mcp-discussion-capability-"));
+    const configPath = join(directory, "agent.yaml");
+    const statePath = join(directory, "state.sqlite");
+    const routeId = "discussion:space-1:discussion";
+    const threadKey = `${routeId}:root:source`;
+    await writeFile(
+      configPath,
+      YAML.stringify({
+        version: 1,
+        agent: { name: "Anya", participantId: "bot" },
+        anytype: { apiKeyFile: "/private/key" },
+        spaces: [
+          {
+            id: "space-1",
+            comments: {
+              mode: "all",
+              wake: { humans: "mention", agents: "never", allowedUsers: ["admin"] },
+            },
+          },
+        ],
+        runtime: { kind: "openclaw" },
+        tools: { anytype: { enabled: true, allowWrite: false, allowedSpaceIds: ["space-1"] } },
+        management: {
+          allowWakeChanges: true,
+          allowAccessChanges: true,
+          accessAdmins: ["admin"],
+          allowModelChanges: true,
+          modelAdmins: ["admin"],
+        },
+        models: { enabled: true },
+        state: { path: statePath },
+      }),
+    );
+    const managed = await loadConfig(configPath);
+    const store = new Store(statePath);
+    try {
+      const wake = store.issueManagementCapability(routeId, "admin", "wake", undefined, threadKey);
+      const access = store.issueManagementCapability(
+        routeId,
+        "admin",
+        "access",
+        undefined,
+        threadKey,
+      );
+      const model = store.issueManagementCapability(
+        routeId,
+        "admin",
+        "model",
+        undefined,
+        threadKey,
+      );
+      const invoke = (name: string, input: Record<string, unknown>) =>
+        callTool(client(), managed, configPath, undefined, undefined, name, {
+          route_id: routeId,
+          ...input,
+        });
+
+      await expect(
+        invoke("aag_set_wake", {
+          route_id: "discussion:space-1:other",
+          humans: "every-message",
+          actor_capability: wake,
+        }),
+      ).rejects.toThrow("could not be verified");
+      await expect(
+        invoke("aag_set_wake", {
+          humans: "every-message",
+          actor_capability: wake,
+        }),
+      ).resolves.toMatchObject({ route_id: routeId, humans: "every-message" });
+      await expect(
+        invoke("aag_set_access", {
+          operation: "add",
+          participant_ids: ["member"],
+          actor_capability: access,
+        }),
+      ).resolves.toMatchObject({ allowed_users: ["admin", "member"] });
+      const persisted = await loadConfig(configPath);
+      expect(persisted.spaces[0]!.wakeOverrides).toEqual([
+        {
+          kind: "discussion",
+          id: "discussion",
+          wake: expect.objectContaining({
+            humans: "every-message",
+            allowedUsers: ["admin", "member"],
+          }),
+        },
+      ]);
+
+      await expect(
+        invoke("aag_set_model", {
+          model_id: "default",
+          actor_capability: model,
+        }),
+      ).rejects.toThrow("discussion_root_id is required");
+      await expect(
+        invoke("aag_set_model", {
+          model_id: "default",
+          discussion_root_id: "other",
+          actor_capability: model,
+        }),
+      ).rejects.toThrow("could not be verified");
+      await expect(
+        invoke("aag_set_model", {
+          model_id: "default",
+          discussion_root_id: "source",
+          actor_capability: model,
+        }),
+      ).resolves.toMatchObject({ thread_key: threadKey, applies: "next turn" });
+      expect(store.conversationModel(threadKey, "openclaw")).toMatchObject({ useDefault: true });
+      expect(store.conversationModel(`${routeId}:root:other`, "openclaw")).toBeUndefined();
+      await expect(
+        invoke("aag_set_model", {
+          model_id: "default",
+          discussion_root_id: "source",
+          actor_capability: model,
+        }),
+      ).rejects.toThrow("could not be verified");
+    } finally {
+      store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves unbound capability metadata through the real MCP stdio subprocess", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "knot-mcp-stdio-"));
+    const configPath = join(directory, "agent.yaml");
+    const statePath = join(directory, "state.sqlite");
+    const apiKeyFile = join(directory, "synthetic-key");
+    const routeId = "discussion:space-1:discussion";
+    const threadKey = `${routeId}:root:source`;
+    await writeFile(apiKeyFile, "synthetic-unused-key");
+    await writeFile(
+      configPath,
+      YAML.stringify({
+        version: 1,
+        agent: { name: "Anya", participantId: "bot" },
+        anytype: { apiKeyFile, apiBase: "http://127.0.0.1:1" },
+        spaces: [{ id: "space-1" }],
+        runtime: { kind: "openclaw" },
+        tools: { anytype: { enabled: true, allowWrite: false, allowedSpaceIds: ["space-1"] } },
+        models: { enabled: true },
+        management: { allowModelChanges: true, modelAdmins: ["admin"] },
+        state: { path: statePath },
+      }),
+    );
+    const store = new Store(statePath);
+    const capability = store.issueManagementCapability(
+      routeId,
+      "admin",
+      "model",
+      undefined,
+      threadKey,
+    );
+    store.close();
+    const environment = { ...process.env };
+    // Isolate from the operator's MCP bindings and credentials. ACTOR_ID alone
+    // deliberately claims admin, proving it cannot substitute for a capability.
+    for (const key of Object.keys(environment))
+      if (/^(?:KNOT_|AAG_|ANYTYPE_|OPENCLAW_)/u.test(key)) delete environment[key];
+    environment.KNOT_ACTOR_ID = "admin";
+    const argumentsForModel = {
+      route_id: routeId,
+      discussion_root_id: "source",
+      model_id: "default",
+    };
+    const requests = [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "aag_set_model", arguments: argumentsForModel },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "aag_set_model",
+          arguments: {
+            ...argumentsForModel,
+            discussion_root_id: "other",
+            actor_capability: capability,
+          },
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "aag_set_model",
+          arguments: { ...argumentsForModel, actor_capability: capability },
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: {
+          name: "aag_set_model",
+          arguments: { ...argumentsForModel, actor_capability: capability },
+        },
+      },
+    ];
+    try {
+      const result = await runProcess(
+        process.execPath,
+        [resolve("dist/cli.js"), "mcp", "--config", configPath],
+        {
+          env: environment,
+          stdin: requests.map((request) => JSON.stringify(request)).join("\n") + "\n",
+          timeoutMs: 5_000,
+        },
+      );
+      const responses = result.stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(responses.map((response) => response.id)).toEqual([1, 2, 3, 4, 5]);
+      expect(responses[0].result).toMatchObject({ protocolVersion: "2025-06-18" });
+      expect(responses[1].result.isError).toBe(true);
+      expect(responses[1].result.content[0].text).toContain("not allowed to change models");
+      for (const index of [2, 4]) {
+        expect(responses[index].result.isError).toBe(true);
+        expect(responses[index].result.content[0].text).toContain("could not be verified");
+      }
+      expect(responses[3].result.isError).toBeUndefined();
+      expect(JSON.parse(responses[3].result.content[0].text)).toMatchObject({
+        thread_key: threadKey,
+        applies: "next turn",
+      });
+      const reopened = new Store(statePath);
+      try {
+        expect(reopened.conversationModel(threadKey, "openclaw")).toMatchObject({
+          useDefault: true,
+          updatedBy: "admin",
+        });
+        expect(reopened.conversationModel(`${routeId}:root:other`, "openclaw")).toBeUndefined();
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("keeps archive independent from general write permission", async () => {

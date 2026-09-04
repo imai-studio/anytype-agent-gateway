@@ -410,7 +410,7 @@ async function helperFixture(source: string) {
       "local-projects": { "project-fixture": { name: "fixture", rootPaths: [workspace] } },
     }),
   );
-  createCodexDatabase(codexHome);
+  createCodexDatabase(codexHome).close();
   const helperPath = join(root, "helper.js");
   await writeFile(helperPath, source);
   return {

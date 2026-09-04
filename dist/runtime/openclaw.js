@@ -465,7 +465,8 @@ export class OpenClawDriver {
                 if (delivery.kind === "message-final" && delivery.message) {
                     const text = delivery.message.text;
                     const owned = text ? this.consumeOwnedTerminalText(observer.sessionKey, text) : false;
-                    if (text && !owned && !shouldSuppressBridgeTwin(observer, text, "message-final"))
+                    let delivered = false;
+                    if (text && !owned && !shouldSuppressBridgeTwin(observer, text, "message-final")) {
                         await observer.onOutput({
                             id: delivery.idempotencyKey,
                             cursor: delivery.idempotencyKey,
@@ -474,10 +475,14 @@ export class OpenClawDriver {
                             ],
                             result: parseSilence(text),
                         });
-                    if (!this.bridgeObservers.has(observer.id))
+                        delivered = true;
+                    }
+                    if (!delivered && !this.bridgeObservers.has(observer.id))
                         return;
                     try {
-                        await this.ackBridgeDelivery(delivery.id, token, observer.abort.signal);
+                        // A successful local delivery must finish its receipt even if close
+                        // cancelled the observer while onOutput was awaiting the send.
+                        await this.ackBridgeDelivery(delivery.id, token, delivered ? undefined : observer.abort.signal);
                     }
                     catch (error) {
                         if (owned)
@@ -502,9 +507,10 @@ export class OpenClawDriver {
                 if (!bridgeEventTerminal(event))
                     continue;
                 const owned = delivery.owned === true || this.ownedRunIds.has(event.runId);
+                let delivered = false;
                 if (!owned) {
                     const text = renderBridgeRun(run) || bridgeTerminalFailure(event);
-                    if (text && !shouldSuppressBridgeTwin(observer, text, "agent-event"))
+                    if (text && !shouldSuppressBridgeTwin(observer, text, "agent-event")) {
                         await observer.onOutput({
                             id: event.runId,
                             cursor: run.cursor,
@@ -513,10 +519,12 @@ export class OpenClawDriver {
                             ],
                             result: parseSilence(text),
                         });
+                        delivered = true;
+                    }
                 }
-                if (!this.bridgeObservers.has(observer.id))
+                if (!delivered && !this.bridgeObservers.has(observer.id))
                     return;
-                await this.ackBridgeDeliveries(run.deliveryIds, token, observer.abort.signal);
+                await this.ackBridgeDeliveries(run.deliveryIds, token, delivered ? undefined : observer.abort.signal);
                 if (owned)
                     this.ownedRunIds.delete(event.runId);
                 observer.runs.delete(event.runId);
@@ -534,7 +542,9 @@ export class OpenClawDriver {
         const response = await fetch(new URL(`/v1/outbox/${encodeURIComponent(id)}/ack`, this.config.channelBridge.url), {
             method: "POST",
             headers: { authorization: `Bearer ${token}` },
-            signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+            signal: signal
+                ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+                : AbortSignal.timeout(10_000),
         });
         if (!response.ok)
             throw new Error(`OpenClaw Anytype channel acknowledgement returned HTTP ${response.status}`);
@@ -555,7 +565,9 @@ export class OpenClawDriver {
             method: "POST",
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
             body: JSON.stringify({ ids }),
-            signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+            signal: signal
+                ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+                : AbortSignal.timeout(10_000),
         });
         if (!response.ok)
             throw new Error(`OpenClaw Anytype channel batch acknowledgement returned HTTP ${response.status}`);

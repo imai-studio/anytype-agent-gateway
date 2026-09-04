@@ -667,6 +667,10 @@ export async function callTool(anytype, config, configPath, routeId, defaultSpac
     }
     throw rpcError(-32602, `Unknown tool: ${name}`);
 }
+// Model mutations select a target thread and must match the token's source
+// thread. Wake/access affect the whole route; publishing is constrained by
+// site/slug/lifecycle policy. Their source thread governs token revocation,
+// not a caller-provided or unavailable OpenClaw MCP process binding.
 function verifiedManagementPrincipal(config, routeId, scope, input, boundActorId, threadKey) {
     const directlyBound = boundActorId ? principalFromParticipantId(boundActorId) : undefined;
     if (directlyBound)

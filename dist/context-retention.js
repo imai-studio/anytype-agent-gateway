@@ -41,10 +41,10 @@ export async function prepareWorkspaceDirectory(config, directory) {
             throw new Error("Unsafe Knot context directory");
     }
 }
-/** Record only files this process just wrote, outside the runtime project. */
-export async function recordWorkspaceFile(config, path, kind) {
-    await withRegistry(config, async (registry, project) => {
+async function registerFiles(registry, project, paths) {
+    for (const path of paths) {
         const local = relative(project, path);
+        const kind = validManagedPath(local, "context") ? "context" : "attachment";
         if (!validManagedPath(local, kind) || !(await safeParents(project, local)))
             throw new Error("Unsafe Knot context file location");
         const info = await lstat(path);
@@ -58,10 +58,13 @@ export async function recordWorkspaceFile(config, path, kind) {
             dev: info.dev,
             usedAt: Date.now(),
         };
-    });
+    }
 }
 export async function recordWorkspaceSession(config, sessionKey, paths) {
-    await withRegistry(config, async (registry, project) => {
+    await withRegistry(config, true, async (registry, project) => {
+        // Register files and session references atomically. A skipped update must not
+        // leave registered media unprotected while its runtime session is active.
+        await registerFiles(registry, project, paths);
         const key = sessionHash(sessionKey);
         const previous = registry.sessions[key]?.paths ?? [];
         // Resumed sessions can refer back to media from any earlier turn.
@@ -76,7 +79,7 @@ export async function pruneWorkspaceContext(config, activeSessionKeys, now = Dat
     const result = { removedFiles: 0, retainedBytes: 0 };
     if (!config.runtime.defaultProject)
         return result;
-    await withRegistry(config, async (registry, project) => {
+    await withRegistry(config, false, async (registry, project) => {
         const active = new Set(activeSessionKeys.map(sessionHash));
         const cutoff = now - config.context.retention.maxAgeDays * 86_400_000;
         const maxBytes = config.context.retention.maxBytes;
@@ -157,6 +160,40 @@ function referencedPaths(registry, retainedSessions) {
 function sessionHash(key) {
     return createHash("sha256").update(key).digest("hex");
 }
+function plainRecord(value) {
+    return (value !== null &&
+        typeof value === "object" &&
+        (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null));
+}
+function nonnegativeNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+function validRegistry(value) {
+    if (!plainRecord(value) ||
+        value.version !== 1 ||
+        !plainRecord(value.files) ||
+        !plainRecord(value.sessions))
+        return false;
+    for (const [path, file] of Object.entries(value.files)) {
+        if (!plainRecord(file) ||
+            (file.kind !== "context" && file.kind !== "attachment") ||
+            !validManagedPath(path, file.kind) ||
+            ![file.size, file.ino, file.dev].every((field) => nonnegativeNumber(field) && Number.isInteger(field)) ||
+            !nonnegativeNumber(file.mtimeMs) ||
+            !nonnegativeNumber(file.usedAt))
+            return false;
+    }
+    for (const [key, session] of Object.entries(value.sessions)) {
+        if (!/^[a-f0-9]{64}$/u.test(key) ||
+            !plainRecord(session) ||
+            !nonnegativeNumber(session.usedAt) ||
+            !Array.isArray(session.paths) ||
+            !session.paths.every((path) => typeof path === "string" &&
+                (validManagedPath(path, "context") || validManagedPath(path, "attachment"))))
+            return false;
+    }
+    return true;
+}
 function validManagedPath(path, kind) {
     return kind === "context"
         ? /^\.aag\/context\/[a-f0-9]{20}\.json$/u.test(path)
@@ -193,35 +230,46 @@ async function removeManagedFile(project, path, file) {
         await rmdir(dirname(join(project, path))).catch(() => undefined);
     return true;
 }
-async function withRegistry(config, operation) {
+async function withRegistry(config, createIfMissing, operation) {
     if (!config.runtime.defaultProject)
         return;
     const project = resolve(config.runtime.defaultProject);
     const registryPath = join(dirname(resolve(config.state.path)), `context-${sessionHash(project)}.json`);
-    await mkdir(dirname(registryPath), { recursive: true, mode: 0o700 });
-    const release = await acquireProcessLock(`${registryPath}.lock`, {
-        attempts: 101,
-        waitMilliseconds: 20,
-        contentionMessage: () => "Another process is maintaining Knot context files",
-    });
     const temporary = `${registryPath}.${randomUUID()}.tmp`;
+    let release;
     try {
-        const contents = await readFile(registryPath, "utf8").catch((error) => {
+        // Retention is best effort: contention or inaccessible state must never delay
+        // attachment delivery or prevent the runtime from receiving its prompt.
+        release = await acquireProcessLock(`${registryPath}.lock`, {
+            attempts: 1,
+            waitMilliseconds: 0,
+        });
+        const info = await lstat(registryPath).catch((error) => {
             if (error.code === "ENOENT")
                 return undefined;
             throw error;
         });
-        const registry = contents
-            ? JSON.parse(contents)
+        if (info && (!info.isFile() || info.isSymbolicLink()))
+            return;
+        if (!info && !createIfMissing)
+            return;
+        const registry = info
+            ? JSON.parse(await readFile(registryPath, "utf8"))
             : { version: 1, files: {}, sessions: {} };
-        if (registry.version !== 1 || !registry.files || !registry.sessions)
-            throw new Error("Invalid Knot context retention registry");
+        // Validate everything before considering a single deletion. Preserve corrupt
+        // evidence for the operator; do not replace it with an empty or partial map.
+        if (!validRegistry(registry))
+            return;
         await operation(registry, project);
         await writeFile(temporary, `${JSON.stringify(registry)}\n`, { mode: 0o600, flag: "wx" });
         await rename(temporary, registryPath);
     }
+    catch {
+        // Unregistered files remain unmanaged. A later successful turn can register
+        // them, while damaged registry data requires operator repair.
+    }
     finally {
         await unlink(temporary).catch(() => undefined);
-        await release();
+        await release?.().catch(() => undefined);
     }
 }

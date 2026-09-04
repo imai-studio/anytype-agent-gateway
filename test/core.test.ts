@@ -103,6 +103,24 @@ describe("protocol boundaries", () => {
     expect(rendered.marks.every((mark) => mark.param === "peer-1")).toBe(true);
   });
 
+  it.each([
+    "@Builder @Person @Builder @Reviewer",
+    "@Person @Reviewer",
+    "[[KNOT_MENTION:Builder]] [[KNOT_MENTION:Person]] @Builder @Person @Reviewer",
+  ])("counts equivalent native identities once across mention forms: %s", (text) => {
+    const value = config({
+      coordination: {
+        peers: [
+          { name: "Builder", participantId: "_member_person" },
+          { name: "Reviewer", participantId: "reviewer" },
+        ],
+        maxFanout: 2,
+      },
+    });
+    const rendered = renderCoordination(text, value, [{ name: "Person", participantId: "person" }]);
+    expect(rendered.marks.map((mark) => mark.param)).toEqual(["_member_person", "reviewer"]);
+  });
+
   it("drops ambiguous dynamic names regardless of order while retaining identity-equivalent hydration", () => {
     const targets = [
       { name: "Person", participantId: "person-a" },

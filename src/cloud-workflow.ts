@@ -9,7 +9,7 @@ import {
   type CloudCommandEnvelope,
   type CloudCommandResult,
 } from "./cloud-contract.js";
-import type { CloudClient } from "./cloud-client.js";
+import { CloudRequestError, type CloudClient } from "./cloud-client.js";
 import type { CloudConfig } from "./cloud-config.js";
 import type { Store } from "./store.js";
 import type { AnytypePort } from "./types.js";
@@ -512,16 +512,28 @@ export class CloudCommandStore {
     }
   }
 
-  terminalPending(): CloudCommandRecord[] {
+  leaseCandidates(afterCommandId = ""): CloudCommandRecord[] {
+    return (
+      this.store.db
+        .prepare(
+          `SELECT * FROM cloud_command_inbox
+           WHERE state IN ('received','awaiting_approval','queued','running','terminal_pending')
+           ORDER BY CASE WHEN command_id>? THEN 0 ELSE 1 END,command_id LIMIT 100`,
+        )
+        .all(afterCommandId) as unknown as CommandRow[]
+    ).map(mapCommand);
+  }
+
+  terminalPending(afterCommandId = ""): CloudCommandRecord[] {
     return (
       this.store.db
         .prepare(
           `SELECT * FROM cloud_command_inbox
            WHERE state='terminal_pending'
               OR (state='dead_letter' AND result_json IS NOT NULL AND completed_at IS NULL)
-           ORDER BY updated_at,command_id LIMIT 20`,
+           ORDER BY CASE WHEN command_id>? THEN 0 ELSE 1 END,command_id LIMIT 20`,
         )
-        .all() as unknown as CommandRow[]
+        .all(afterCommandId) as unknown as CommandRow[]
     ).map(mapCommand);
   }
 
@@ -730,6 +742,9 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
   private beforeTask: Promise<void> | undefined;
   private afterTask: Promise<void> | undefined;
   private nextCloudAttemptAt = 0;
+  private lastLeaseCommandId = "";
+  private lastResultCommandId = "";
+  private nextNetworkPhase = 0;
   private inFlight: { commandId: string; promise: Promise<void> } | undefined;
 
   constructor(
@@ -779,18 +794,32 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
     this.inbox.expire(now);
     if (now >= this.nextCloudAttemptAt) {
       try {
-        await this.extendLeases(now, signal);
-        await this.submitTerminalResults(now, signal);
-        if (now >= this.nextPollAt) await this.poll(now, signal);
+        const phases = [
+          () => this.extendLeases(now, signal),
+          () => this.submitTerminalResults(now, signal),
+          async () => {
+            if (now >= this.nextPollAt) await this.poll(now, signal);
+          },
+        ];
+        const firstPhase = this.nextNetworkPhase;
+        for (let offset = 0; offset < phases.length; offset += 1) {
+          signal.throwIfAborted();
+          const phase = (firstPhase + offset) % phases.length;
+          // A slow or unavailable phase gets its next turn after the others.
+          this.nextNetworkPhase = (phase + 1) % phases.length;
+          await phases[phase]!();
+        }
+        this.nextNetworkPhase = 0;
       } catch (error) {
         this.nextCloudAttemptAt = this.now() + this.config.pollIntervalSeconds * 1_000;
         this.log("cloud_command_network_deferred", { error: message(error) });
       }
     }
-    if (signal.aborted) return;
-    const ready = this.inbox.nextReady(now);
-    if (ready && ready.leaseExpiresAt > now && !this.inFlight) {
-      const promise = this.execute(ready, now, executionSignal)
+    if (executionSignal.aborted) return;
+    const executionNow = this.now();
+    const ready = this.inbox.nextReady(executionNow);
+    if (ready && ready.leaseExpiresAt > executionNow && !this.inFlight) {
+      const promise = this.execute(ready, executionNow, executionSignal)
         .catch((error) =>
           this.log("cloud_command_execution_failed", {
             commandId: ready.commandId,
@@ -823,6 +852,7 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
   }
 
   private async project(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
     const projection = this.inbox.claimProjection(this.projectionWorkerId, this.now());
     if (!projection) return;
     try {
@@ -834,7 +864,8 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
         },
         signal,
       );
-      signal.throwIfAborted();
+      // A returned message ID confirms the send. Record it even if cancellation
+      // arrived with the response, otherwise the next tick could send it again.
       this.inbox.completeProjection(
         projection.projectionId,
         this.projectionWorkerId,
@@ -887,10 +918,11 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
   }
 
   private async extendLeases(now: number, signal: AbortSignal): Promise<void> {
-    for (const command of this.inbox.list(100)) {
+    for (const command of this.inbox.leaseCandidates(this.lastLeaseCommandId)) {
       signal.throwIfAborted();
+      this.lastLeaseCommandId = command.commandId;
       if (
-        (terminalStates.has(command.state) && command.completedAt !== undefined) ||
+        terminalStates.has(command.state) ||
         command.leaseExpiresAt - now > Math.max(5_000, (this.config.leaseSeconds * 1_000) / 2)
       )
         continue;
@@ -906,7 +938,7 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
           commandId: command.commandId,
           error: message(error),
         });
-        throw error;
+        if (shouldDeferCloudRequests(error, signal)) throw error;
       }
     }
   }
@@ -979,25 +1011,44 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
   }
 
   private async submitTerminalResults(now: number, signal: AbortSignal): Promise<void> {
-    for (const record of this.inbox.terminalPending()) {
+    for (const record of this.inbox.terminalPending(this.lastResultCommandId)) {
       signal.throwIfAborted();
+      this.lastResultCommandId = record.commandId;
       if (!record.result) continue;
       try {
         const command = this.inbox.envelope(record.commandId);
         const receipt = await this.client.submitResult(command, record.result, signal);
-        signal.throwIfAborted();
         if (receipt.commandId !== record.commandId || receipt.attempt !== command.attempt)
           throw new Error("Cloud acknowledged a different command fence");
+        // A matching receipt confirms submission even if cancellation arrived
+        // with the reply. Retire that result instead of replaying a known ACK.
         this.inbox.markSubmitted(record.commandId, record.result, now);
       } catch (error) {
         this.log("cloud_command_result_submission_failed", {
           commandId: record.commandId,
           error: message(error),
         });
-        throw error;
+        if (shouldDeferCloudRequests(error, signal)) throw error;
       }
     }
   }
+}
+
+function shouldDeferCloudRequests(error: unknown, signal: AbortSignal): boolean {
+  if (signal.aborted) return true;
+  if (error instanceof CloudRequestError) {
+    const status = error.options.status;
+    if (status !== undefined && status >= 400 && status < 500 && ![408, 429].includes(status))
+      return false;
+    return error.options.retryable;
+  }
+  // Native fetch reports network failures as TypeError, while request deadlines
+  // and caller cancellation use these named errors. Command/fence rejections
+  // must not prevent other results or newly claimed commands from progressing.
+  return (
+    error instanceof TypeError ||
+    (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name))
+  );
 }
 
 export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {

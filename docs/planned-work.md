@@ -70,6 +70,12 @@ an Anytype sender, choose a credential, or bypass the local executor catalog.
   operator-managed SSH tunnel or authenticated encrypted private network.
 - A replay-safe archival/tombstone protocol for durable workflow, approval, and Cloud command
   records, and a supported operator recovery interface for permanently undeliverable chat replies.
+- OpenClaw bridge diagnostics for pending final/event counts, oldest pending age, delivered
+  tombstone count, and database size, through an authenticated aggregate-only endpoint usable
+  across separate hosts. `knot doctor` currently reports only the Knot reply outbox, not the
+  plugin's separate SQLite store. Bridge pending finals/events and idempotency tombstones can
+  grow indefinitely; payload compaction does not bound row count. A replay-safe archive/recovery
+  policy must precede any deletion of those records.
 - A product policy for Cloud `chat.send` origin recency and content binding; today it rechecks the
   native origin sender against current local policy but does not require recent command-specific
   consent.

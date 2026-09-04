@@ -119,7 +119,8 @@ For a proactive job that has never received an Anytype message, use OpenClaw's n
 - A session becomes eligible for event mirroring only after its route binding exists. This prevents output from unrelated OpenClaw sessions leaking into Anytype.
 - Pull recovery matches deliveries carrying `sessionKey` only against that exact active key. Route fallback applies only to deliveries without a session key, so output from a pre-`/new` generation cannot leak into the replacement session.
 - Knot binds the route only after OpenClaw accepts a run, using the canonical `agent:<id>:...` session key returned in that acknowledgement. The requested alias is not written to the plugin binding table.
-- Unacknowledged outbound records are durable across restarts. Delivered records and owned-run markers are retained for seven days; abandoned pending records are retained for 30 days, except plaintext thinking events, which expire after one hour. Cleanup never cancels or times out an OpenClaw run.
+- Unacknowledged final replies and recovery events are durable across restarts until acknowledged. Delivered payloads and owned-run markers are retained for seven days; delivered idempotency records survive payload compaction. Abandoned pending plaintext thinking events expire after one hour. Cleanup never cancels or times out an OpenClaw run.
+- Pending final/event rows and delivered idempotency records can grow indefinitely. `knot doctor` reports Knot's reply outbox, not this plugin's separate store. Bridge counts, oldest pending age, database size, and replay-safe archival remain tracked in [planned work](../../docs/planned-work.md#gateway-gaps); payload compaction does not bound the number of rows.
 - One plugin process may host multiple configured accounts, but every account needs a distinct loopback port and SQLite path.
 
 ## Package checks

@@ -659,6 +659,8 @@ export function renderCoordination(
   }
   const marks: TextMark[] = [];
   const tagged = new Set<string>();
+  const alreadyTagged = (participantId: string) =>
+    [...tagged].some((previous) => sameIdentity(previous, participantId));
   const matcher = new RegExp(mentionMarker.source, mentionMarker.flags);
   let rendered = "";
   let cursor = 0;
@@ -668,13 +670,13 @@ export function renderCoordination(
     const peer = peers.get((match[1] ?? "").trim().replace(/^@/, "").toLocaleLowerCase());
     if (
       !peer ||
-      (!tagged.has(peer.participantId) && tagged.size >= config.coordination.maxFanout)
+      (!alreadyTagged(peer.participantId) && tagged.size >= config.coordination.maxFanout)
     ) {
       rendered += match[0];
       continue;
     }
     const mention = `@${peer.name}`;
-    if (!tagged.has(peer.participantId)) {
+    if (!alreadyTagged(peer.participantId)) {
       marks.push({
         type: "mention",
         from: rendered.length,
@@ -687,17 +689,23 @@ export function renderCoordination(
   }
   rendered += text.slice(cursor);
   const occupied = marks.map((mark) => [mark.from ?? 0, mark.to ?? 0] as const);
-  const uniqueTargets = new Map<string, AgentConfig["coordination"]["peers"][number]>();
-  for (const target of peers.values())
-    if (!uniqueTargets.has(target.participantId)) uniqueTargets.set(target.participantId, target);
-  for (const target of uniqueTargets.values()) {
-    const matcher = new RegExp(`@${escapeRegExp(target.name)}(?![\\p{L}\\p{N}_])`, "giu");
+  const uniqueTargets: Array<{ participantId: string; names: Set<string> }> = [];
+  for (const target of peers.values()) {
+    const previous = uniqueTargets.find((candidate) =>
+      sameIdentity(candidate.participantId, target.participantId),
+    );
+    if (previous) previous.names.add(target.name);
+    else uniqueTargets.push({ participantId: target.participantId, names: new Set([target.name]) });
+  }
+  for (const target of uniqueTargets) {
+    const names = [...target.names].map(escapeRegExp).join("|");
+    const matcher = new RegExp(`@(?:${names})(?![\\p{L}\\p{N}_])`, "giu");
     for (let match = matcher.exec(rendered); match; match = matcher.exec(rendered)) {
       const from = match.index;
       const to = from + match[0].length;
       if (occupied.some(([occupiedFrom, occupiedTo]) => from < occupiedTo && to > occupiedFrom))
         continue;
-      if (!tagged.has(target.participantId) && tagged.size >= config.coordination.maxFanout)
+      if (alreadyTagged(target.participantId) || tagged.size >= config.coordination.maxFanout)
         continue;
       marks.push({ type: "mention", from, to, param: target.participantId });
       tagged.add(target.participantId);

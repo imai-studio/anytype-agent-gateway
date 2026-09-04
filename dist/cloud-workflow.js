@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { z } from "zod";
 import { commandEnvelopeSchema, commandResultSchema, } from "./cloud-contract.js";
+import { CloudRequestError } from "./cloud-client.js";
 import { canonicalJson } from "./automation/workflow.js";
 import { principalAllowed, principalFromMessage } from "./principal.js";
 export class CloudCommandStore {
@@ -282,13 +283,20 @@ export class CloudCommandStore {
             throw error;
         }
     }
-    terminalPending() {
+    leaseCandidates(afterCommandId = "") {
+        return this.store.db
+            .prepare(`SELECT * FROM cloud_command_inbox
+           WHERE state IN ('received','awaiting_approval','queued','running','terminal_pending')
+           ORDER BY CASE WHEN command_id>? THEN 0 ELSE 1 END,command_id LIMIT 100`)
+            .all(afterCommandId).map(mapCommand);
+    }
+    terminalPending(afterCommandId = "") {
         return this.store.db
             .prepare(`SELECT * FROM cloud_command_inbox
            WHERE state='terminal_pending'
               OR (state='dead_letter' AND result_json IS NOT NULL AND completed_at IS NULL)
-           ORDER BY updated_at,command_id LIMIT 20`)
-            .all().map(mapCommand);
+           ORDER BY CASE WHEN command_id>? THEN 0 ELSE 1 END,command_id LIMIT 20`)
+            .all(afterCommandId).map(mapCommand);
     }
     markSubmitted(commandId, result, now = Date.now()) {
         let state = result.outcome === "succeeded"
@@ -422,6 +430,9 @@ export class CloudWorkflowExtension {
     beforeTask;
     afterTask;
     nextCloudAttemptAt = 0;
+    lastLeaseCommandId = "";
+    lastResultCommandId = "";
+    nextNetworkPhase = 0;
     inFlight;
     constructor(store, client, executor, config, anytype, log, now, options = {}) {
         this.client = client;
@@ -463,21 +474,35 @@ export class CloudWorkflowExtension {
         this.inbox.expire(now);
         if (now >= this.nextCloudAttemptAt) {
             try {
-                await this.extendLeases(now, signal);
-                await this.submitTerminalResults(now, signal);
-                if (now >= this.nextPollAt)
-                    await this.poll(now, signal);
+                const phases = [
+                    () => this.extendLeases(now, signal),
+                    () => this.submitTerminalResults(now, signal),
+                    async () => {
+                        if (now >= this.nextPollAt)
+                            await this.poll(now, signal);
+                    },
+                ];
+                const firstPhase = this.nextNetworkPhase;
+                for (let offset = 0; offset < phases.length; offset += 1) {
+                    signal.throwIfAborted();
+                    const phase = (firstPhase + offset) % phases.length;
+                    // A slow or unavailable phase gets its next turn after the others.
+                    this.nextNetworkPhase = (phase + 1) % phases.length;
+                    await phases[phase]();
+                }
+                this.nextNetworkPhase = 0;
             }
             catch (error) {
                 this.nextCloudAttemptAt = this.now() + this.config.pollIntervalSeconds * 1_000;
                 this.log("cloud_command_network_deferred", { error: message(error) });
             }
         }
-        if (signal.aborted)
+        if (executionSignal.aborted)
             return;
-        const ready = this.inbox.nextReady(now);
-        if (ready && ready.leaseExpiresAt > now && !this.inFlight) {
-            const promise = this.execute(ready, now, executionSignal)
+        const executionNow = this.now();
+        const ready = this.inbox.nextReady(executionNow);
+        if (ready && ready.leaseExpiresAt > executionNow && !this.inFlight) {
+            const promise = this.execute(ready, executionNow, executionSignal)
                 .catch((error) => this.log("cloud_command_execution_failed", {
                 commandId: ready.commandId,
                 error: message(error),
@@ -509,6 +534,8 @@ export class CloudWorkflowExtension {
         return this.afterTask;
     }
     async project(signal) {
+        if (signal.aborted)
+            return;
         const projection = this.inbox.claimProjection(this.projectionWorkerId, this.now());
         if (!projection)
             return;
@@ -516,7 +543,8 @@ export class CloudWorkflowExtension {
             const messageId = await this.anytype.sendMessage(this.config.projection.spaceId, this.config.projection.chatId, {
                 text: `Knot Cloud command ${projection.commandId}: ${projection.payload.state}`,
             }, signal);
-            signal.throwIfAborted();
+            // A returned message ID confirms the send. Record it even if cancellation
+            // arrived with the response, otherwise the next tick could send it again.
             this.inbox.completeProjection(projection.projectionId, this.projectionWorkerId, messageId, this.now());
         }
         catch (error) {
@@ -555,9 +583,10 @@ export class CloudWorkflowExtension {
         }
     }
     async extendLeases(now, signal) {
-        for (const command of this.inbox.list(100)) {
+        for (const command of this.inbox.leaseCandidates(this.lastLeaseCommandId)) {
             signal.throwIfAborted();
-            if ((terminalStates.has(command.state) && command.completedAt !== undefined) ||
+            this.lastLeaseCommandId = command.commandId;
+            if (terminalStates.has(command.state) ||
                 command.leaseExpiresAt - now > Math.max(5_000, (this.config.leaseSeconds * 1_000) / 2))
                 continue;
             try {
@@ -573,7 +602,8 @@ export class CloudWorkflowExtension {
                     commandId: command.commandId,
                     error: message(error),
                 });
-                throw error;
+                if (shouldDeferCloudRequests(error, signal))
+                    throw error;
             }
         }
     }
@@ -634,16 +664,18 @@ export class CloudWorkflowExtension {
         }
     }
     async submitTerminalResults(now, signal) {
-        for (const record of this.inbox.terminalPending()) {
+        for (const record of this.inbox.terminalPending(this.lastResultCommandId)) {
             signal.throwIfAborted();
+            this.lastResultCommandId = record.commandId;
             if (!record.result)
                 continue;
             try {
                 const command = this.inbox.envelope(record.commandId);
                 const receipt = await this.client.submitResult(command, record.result, signal);
-                signal.throwIfAborted();
                 if (receipt.commandId !== record.commandId || receipt.attempt !== command.attempt)
                     throw new Error("Cloud acknowledged a different command fence");
+                // A matching receipt confirms submission even if cancellation arrived
+                // with the reply. Retire that result instead of replaying a known ACK.
                 this.inbox.markSubmitted(record.commandId, record.result, now);
             }
             catch (error) {
@@ -651,10 +683,26 @@ export class CloudWorkflowExtension {
                     commandId: record.commandId,
                     error: message(error),
                 });
-                throw error;
+                if (shouldDeferCloudRequests(error, signal))
+                    throw error;
             }
         }
     }
+}
+function shouldDeferCloudRequests(error, signal) {
+    if (signal.aborted)
+        return true;
+    if (error instanceof CloudRequestError) {
+        const status = error.options.status;
+        if (status !== undefined && status >= 400 && status < 500 && ![408, 429].includes(status))
+            return false;
+        return error.options.retryable;
+    }
+    // Native fetch reports network failures as TypeError, while request deadlines
+    // and caller cancellation use these named errors. Command/fence rejections
+    // must not prevent other results or newly claimed commands from progressing.
+    return (error instanceof TypeError ||
+        (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)));
 }
 export class AnytypeCloudCommandExecutor {
     anytype;

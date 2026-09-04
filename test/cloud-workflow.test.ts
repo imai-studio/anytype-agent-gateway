@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { configSchema, type AgentConfig } from "../src/config.js";
 import {
@@ -9,6 +10,7 @@ import {
   type CloudCommandExecutionPort,
 } from "../src/cloud-workflow.js";
 import { cloudConfigSchema } from "../src/cloud-config.js";
+import { CloudRequestError } from "../src/cloud-client.js";
 import {
   commandEnvelopeSchema,
   commandResultSchema,
@@ -455,6 +457,302 @@ describe("cloud workflow bridge", () => {
     store.close();
   });
 
+  it("submits quarantined results without extending their terminal leases", async () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    const item = command({ leaseExpiresAt: 999 });
+    inbox.persistClaim(item, 1_000_000);
+    inbox.prepare(item.commandId, false, 1_000_000);
+    inbox.startEffect(item.commandId, 1_000_000);
+    inbox.recoverInterruptedEffects(1_000_000);
+    expect(inbox.command(item.commandId)).toMatchObject({ state: "dead_letter" });
+    expect(inbox.command(item.commandId)?.completedAt).toBeUndefined();
+    const { client, extendLease, submitResult, claimCommands } = clientFor([]);
+    extendLease.mockRejectedValue(
+      new CloudRequestError("Lease expired", {
+        status: 409,
+        code: "lease-expired",
+        retryable: false,
+      }),
+    );
+    let now = 1_000_000;
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({ approval: "all" }),
+      new FakeAnytype(),
+      () => undefined,
+      () => now,
+    );
+    for (let tick = 0; tick < 6; tick += 1) {
+      await extension.beforeTick();
+      now += 5_000;
+    }
+    expect(extendLease).not.toHaveBeenCalled();
+    expect(submitResult).toHaveBeenCalledOnce();
+    expect(claimCommands).toHaveBeenCalledTimes(6);
+    expect(inbox.command(item.commandId)).toMatchObject({
+      state: "dead_letter",
+      completedAt: 1_000_000,
+      lastErrorCode: "effect-outcome-unknown",
+    });
+    await extension.stop();
+    store.close();
+  });
+
+  it.each(["rejected", "retryable-rejection", "wrong-fence"])(
+    "keeps healthy leases, results and polling progressing after persistent %s lease responses",
+    async (failure) => {
+      const store = new Store(":memory:");
+      const inbox = new CloudCommandStore(store);
+      const poisoned = command({ leaseExpiresAt: 999 });
+      const healthy = command({
+        commandId: "13b1731d-10a3-48ab-b8e4-5b164e536d20",
+        leaseExpiresAt: 999,
+      });
+      const terminal = command({ commandId: "23b1731d-10a3-48ab-b8e4-5b164e536d20" });
+      const fresh = command({ commandId: "33b1731d-10a3-48ab-b8e4-5b164e536d20" });
+      for (const item of [poisoned, healthy, terminal]) {
+        inbox.persistClaim(item, 1_000_000);
+        inbox.prepare(item.commandId, true, 1_000_000);
+      }
+      inbox.reject(terminal.commandId, "test-denial", 1_000_000);
+      const { client, extendLease, claimCommands } = clientFor([fresh]);
+      extendLease.mockImplementation(async (item) => {
+        if (item.commandId === poisoned.commandId && failure !== "wrong-fence")
+          throw new CloudRequestError("Lease expired", {
+            status: 409,
+            retryable: failure === "retryable-rejection",
+          });
+        return {
+          protocolVersion: "1.0",
+          commandId: item.commandId === poisoned.commandId ? fresh.commandId : item.commandId,
+          attempt: item.attempt,
+          leaseExpiresAt: 1_200,
+        };
+      });
+      const submitted: string[] = [];
+      client.submitResult = async (item) => {
+        submitted.push(item.commandId);
+        return {
+          protocolVersion: "1.0",
+          commandId: item.commandId,
+          attempt: item.attempt,
+          status: "accepted",
+          state: "rejected-by-local-policy",
+        };
+      };
+      let now = 1_000_000;
+      const log = vi.fn();
+      const extension = new CloudWorkflowExtension(
+        store,
+        client,
+        { execute: vi.fn(async () => succeeded) },
+        settings({ approval: "all" }),
+        new FakeAnytype(),
+        log,
+        () => now,
+      );
+      for (let tick = 0; tick < 3; tick += 1) {
+        await extension.beforeTick();
+        now += 5_000;
+      }
+      expect(
+        extendLease.mock.calls.filter(([item]) => item.commandId === poisoned.commandId),
+      ).toHaveLength(3);
+      expect(inbox.command(healthy.commandId)?.leaseExpiresAt).toBe(1_200_000);
+      expect(submitted).toEqual([terminal.commandId]);
+      expect(inbox.command(terminal.commandId)?.completedAt).toBe(1_000_000);
+      expect(inbox.command(fresh.commandId)?.state).toBe("awaiting_approval");
+      expect(claimCommands).toHaveBeenCalledTimes(3);
+      expect(log.mock.calls.some(([event]) => event === "cloud_command_network_deferred")).toBe(
+        false,
+      );
+      await extension.stop();
+      store.close();
+    },
+  );
+
+  it.each(["rejected", "retryable-rejection", "wrong-fence"])(
+    "rotates past a full batch of persistently %s results without blocking new commands",
+    async (failure) => {
+      const store = new Store(":memory:");
+      const inbox = new CloudCommandStore(store);
+      const items = Array.from({ length: 21 }, (_, index) =>
+        command({
+          commandId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        }),
+      );
+      for (const item of items) {
+        inbox.persistClaim(item, 1_000_000);
+        inbox.reject(item.commandId, "test-denial", 1_000_000);
+      }
+      const healthy = items[20]!;
+      const fresh = command();
+      const { client, claimCommands } = clientFor([fresh]);
+      const submitted: string[] = [];
+      client.submitResult = async (item) => {
+        submitted.push(item.commandId);
+        if (item.commandId !== healthy.commandId && failure !== "wrong-fence")
+          throw new CloudRequestError("Stale result fence", {
+            status: 409,
+            retryable: failure === "retryable-rejection",
+          });
+        return {
+          protocolVersion: "1.0",
+          commandId: item.commandId === healthy.commandId ? item.commandId : fresh.commandId,
+          attempt: item.attempt,
+          status: "accepted",
+          state: "rejected-by-local-policy",
+        };
+      };
+      let now = 1_000_000;
+      const extension = new CloudWorkflowExtension(
+        store,
+        client,
+        { execute: vi.fn(async () => succeeded) },
+        settings({ approval: "all" }),
+        new FakeAnytype(),
+        () => undefined,
+        () => now,
+      );
+      await extension.beforeTick();
+      expect(submitted).toHaveLength(20);
+      expect(inbox.command(healthy.commandId)?.completedAt).toBeUndefined();
+      expect(inbox.command(fresh.commandId)?.state).toBe("awaiting_approval");
+      now += 5_000;
+      await extension.beforeTick();
+      expect(inbox.command(healthy.commandId)?.completedAt).toBe(now);
+      expect(claimCommands).toHaveBeenCalledTimes(2);
+      expect(inbox.command(items[0]!.commandId)?.completedAt).toBeUndefined();
+      expect(inbox.command(items[0]!.commandId)?.result).toBeDefined();
+      await extension.stop();
+      store.close();
+    },
+  );
+
+  it("gives results and polling a turn after slow rejected leases exhaust the budget", async () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    for (let index = 0; index < 101; index += 1) {
+      const item = command({
+        commandId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        leaseExpiresAt: 999,
+      });
+      inbox.persistClaim(item, 1_000_000);
+      inbox.prepare(item.commandId, true, 1_000_000);
+    }
+    const terminal = command();
+    inbox.persistClaim(terminal, 1_000_000);
+    inbox.reject(terminal.commandId, "test-denial", 1_000_000);
+    const fresh = command({
+      commandId: "13b1731d-10a3-48ab-b8e4-5b164e536d20",
+      leaseExpiresAt: 1_200,
+    });
+    const { client, claimCommands } = clientFor([fresh]);
+    client.extendLease = async (_item, _seconds, signal) => {
+      await delay(10, undefined, { signal });
+      throw new CloudRequestError("Expired lease", { status: 409, retryable: false });
+    };
+    client.submitResult = async (item) => ({
+      protocolVersion: "1.0",
+      commandId: item.commandId,
+      attempt: item.attempt,
+      status: "accepted",
+      state: "rejected-by-local-policy",
+    });
+    const execute = vi.fn(async () => succeeded);
+    let now = 1_000_000;
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute },
+      settings(),
+      new FakeAnytype(),
+      () => undefined,
+      () => now,
+      { tickBudgetMilliseconds: 30 },
+    );
+    await extension.beforeTick();
+    expect(inbox.command(terminal.commandId)?.completedAt).toBeUndefined();
+    expect(claimCommands).not.toHaveBeenCalled();
+    now += 60_000;
+    await extension.beforeTick();
+    expect(inbox.command(terminal.commandId)?.completedAt).toBe(now);
+    expect(claimCommands).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(inbox.command(fresh.commandId)?.state).toBe("terminal_pending");
+    await extension.stop();
+    store.close();
+  });
+
+  it("retires a result whose matching receipt arrives with cancellation", async () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    const item = command();
+    inbox.persistClaim(item, 1_000_000);
+    inbox.reject(item.commandId, "test-denial", 1_000_000);
+    const { client, submitResult } = clientFor([]);
+    const controller = new AbortController();
+    submitResult.mockImplementation(async (submitted) => {
+      controller.abort(new Error("stopped after receipt"));
+      return {
+        protocolVersion: "1.0",
+        commandId: submitted.commandId,
+        attempt: 1,
+        status: "accepted",
+        state: "succeeded",
+      };
+    });
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({ approval: "all" }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick(controller.signal);
+    expect(inbox.command(item.commandId)?.completedAt).toBe(1_000_000);
+    await extension.beforeTick();
+    expect(submitResult).toHaveBeenCalledOnce();
+    await extension.stop();
+    store.close();
+  });
+
+  it("still defers a batch after a retryable Cloud transport failure", async () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    const item = command({ leaseExpiresAt: 999 });
+    inbox.persistClaim(item, 1_000_000);
+    inbox.prepare(item.commandId, true, 1_000_000);
+    const { client, extendLease, submitResult, claimCommands } = clientFor([]);
+    extendLease.mockRejectedValue(
+      new CloudRequestError("Cloud unavailable", {
+        status: 503,
+        retryable: true,
+      }),
+    );
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({ approval: "all" }),
+      new FakeAnytype(),
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    await extension.beforeTick();
+    expect(extendLease).toHaveBeenCalledOnce();
+    expect(submitResult).not.toHaveBeenCalled();
+    expect(claimCommands).not.toHaveBeenCalled();
+    await extension.stop();
+    store.close();
+  });
+
   it("rejects a late lease response after cancellation before changing durable state", async () => {
     const store = new Store(":memory:");
     const item = command({ leaseExpiresAt: 1_001 });
@@ -674,6 +972,102 @@ describe("cloud workflow bridge", () => {
       .prepare("SELECT COUNT(*) AS count FROM cloud_projection_outbox WHERE state='delivered'")
       .get() as { count: number };
     expect(delivered.count).toBe(1);
+    store.close();
+  });
+
+  it("does not claim an audit projection after cancellation", async () => {
+    const store = new Store(":memory:");
+    const { client } = clientFor([command()]);
+    const anytype = new FakeAnytype();
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({
+        approval: "all",
+        projection: { enabled: true, spaceId: "audit-space", chatId: "audit-chat" },
+      }),
+      anytype,
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    await extension.afterTick(AbortSignal.abort(new Error("cancelled before projection")));
+    expect(anytype.messages).toHaveLength(0);
+    expect(store.db.prepare("SELECT state,attempt FROM cloud_projection_outbox").get()).toEqual({
+      state: "pending",
+      attempt: 0,
+    });
+    await extension.afterTick();
+    expect(anytype.messages).toHaveLength(1);
+    await extension.stop();
+    store.close();
+  });
+
+  it("records a confirmed audit send after cancellation without sending it again", async () => {
+    const store = new Store(":memory:");
+    const { client } = clientFor([command()]);
+    const anytype = new FakeAnytype();
+    const controller = new AbortController();
+    const originalSend = anytype.sendMessage.bind(anytype);
+    const send = vi.spyOn(anytype, "sendMessage").mockImplementation(async (...args) => {
+      const messageId = await originalSend(...args);
+      controller.abort(new Error("cancelled after successful send"));
+      return messageId;
+    });
+    let now = 1_000_000;
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({
+        approval: "all",
+        projection: { enabled: true, spaceId: "audit-space", chatId: "audit-chat" },
+      }),
+      anytype,
+      () => undefined,
+      () => now,
+    );
+    await extension.beforeTick();
+    await extension.afterTick(controller.signal);
+    expect(
+      store.db.prepare("SELECT state,attempt,target_message_id FROM cloud_projection_outbox").get(),
+    ).toEqual({ state: "delivered", attempt: 1, target_message_id: anytype.messages[0]?.id });
+    now += 60_000;
+    await extension.afterTick();
+    expect(send).toHaveBeenCalledOnce();
+    expect(anytype.messages).toHaveLength(1);
+    await extension.stop();
+    store.close();
+  });
+
+  it("does not mark an interrupted audit send delivered without a message ID", async () => {
+    const store = new Store(":memory:");
+    const { client } = clientFor([command()]);
+    const anytype = new FakeAnytype();
+    const controller = new AbortController();
+    vi.spyOn(anytype, "sendMessage").mockImplementation(async () => {
+      controller.abort(new Error("send interrupted"));
+      throw controller.signal.reason;
+    });
+    const extension = new CloudWorkflowExtension(
+      store,
+      client,
+      { execute: vi.fn(async () => succeeded) },
+      settings({
+        approval: "all",
+        projection: { enabled: true, spaceId: "audit-space", chatId: "audit-chat" },
+      }),
+      anytype,
+      () => undefined,
+      () => 1_000_000,
+    );
+    await extension.beforeTick();
+    await extension.afterTick(controller.signal);
+    expect(
+      store.db.prepare("SELECT state,attempt,target_message_id FROM cloud_projection_outbox").get(),
+    ).toEqual({ state: "retrying", attempt: 1, target_message_id: null });
+    await extension.stop();
     store.close();
   });
 

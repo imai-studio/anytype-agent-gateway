@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { prepareWorkspaceDirectory, recordWorkspaceFile, recordWorkspaceSession, } from "./context-retention.js";
+import { prepareWorkspaceDirectory, recordWorkspaceSession } from "./context-retention.js";
 import { principalFromMessage } from "./principal.js";
 export async function buildContext(anytype, config, conversation, trigger, options = {}) {
     let history = !options.newSession && config.context.historyMessages
@@ -238,7 +238,6 @@ export async function preparePrompt(bundle, config, sessionKey, managementComman
     try {
         await writeFile(temporaryFile, `${JSON.stringify({ updatedAt: new Date().toISOString(), ...payload }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
         await rename(temporaryFile, contextFile);
-        await recordWorkspaceFile(config, contextFile, "context");
         await recordWorkspaceSession(config, sessionKey, [...attachmentPaths, contextFile]);
     }
     finally {
@@ -284,7 +283,6 @@ async function materializeAttachments(anytype, config, conversation, messages, r
             try {
                 await writeFile(temporary, downloaded.bytes, { mode: 0o600, flag: "wx" });
                 await rename(temporary, localPath);
-                await recordWorkspaceFile(config, localPath, "attachment");
             }
             finally {
                 await unlink(temporary).catch(() => undefined);

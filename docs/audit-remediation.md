@@ -43,8 +43,10 @@ release operator; local regression tests do not establish live Anytype/OpenClaw 
   Removed 30-day pending deletion; delivered payloads compact after seven days but keep durable
   idempotency tombstones. Ephemeral thinking expiry remains intentional.
 - **OpenClaw shutdown/ACK races:** a removed observer cannot process or ACK a response returned after
-  close, pending initial hello cannot resurrect a closed driver, and failed ACK preserves suppression
-  of an already locally delivered final. Four additional regressions exercise those transitions.
+  close if local delivery has not begun. Successful output already in progress completes its ACK
+  with an independent bounded request, even if the observer closes during that delivery. Pending
+  initial hello cannot resurrect a closed driver, and failed ACK preserves suppression of an already
+  locally delivered owned final. Regressions exercise these transitions for final and terminal events.
 - **Codex Desktop helper:** malformed/empty helper JSON now reaches fallback instead of throwing out
   of a child close callback. Helper/UI subprocesses use the bounded process helper.
 - **Workflow startup cancellation:** if authority is aborted while native runtime startup is pending,
@@ -68,6 +70,36 @@ security certification. No live operator identity, config, service, Cloud deploy
 was changed. No CodeRabbit CLI was used.
 
 ## Verification and release handoff
+
+PR #25 review follow-up adds these regression-backed corrections:
+
+- Quarantined terminal commands awaiting their result receipt no longer renew a terminal lease. Persistent
+  command/fence rejections are isolated from transport failures, and bounded result/lease batches
+  rotate so rejected records cannot monopolize the first page. Network phases also rotate after
+  interrupted batches, preserving opportunities for result submission and polling under slow errors.
+- A projection send that returns a valid message ID is completed even when cancellation arrives
+  with the response, preventing a later tick from sending the confirmed message again. Interrupted
+  sends without a known result retain the existing retry behavior.
+- Retention validates the entire registry before maintenance. Malformed JSON, invalid maps or
+  entries, nonregular registry paths, and lock contention skip maintenance without interrupting a
+  prompt or replacing corrupt evidence. Successful attachments, turn context, and session references
+  are registered in one transaction so a failed reference update cannot expose active media to cleanup.
+- The numeric upload guard also rejects unspecified addresses, normalized alternate IPv4 forms,
+  and IPv4-mapped loopback addresses. It remains a literal-address guard, not DNS-rebinding protection.
+- Coordination deduplicates equivalent native participant identities across marker/plain mentions
+  and fanout accounting. The Desktop helper fixture closes its SQLite connection, and the plugin
+  guide now describes durable pending replies and seven-day delivered-payload compaction.
+- The proposed blanket discussion-root binding for MCP capabilities was not applied: wake/access
+  are route-wide settings, publication is restricted by site policy, and OpenClaw uses an unbound MCP
+  process. Tests exercise real unbound discussion publication and wake/access calls, reject tokens
+  used on another route, and verify model mutations require their source root and reject replay.
+  A source root governs token lifetime; it is not an independently authenticated caller root.
+- A real MCP stdio subprocess test uses an unbound OpenClaw configuration and caller metadata;
+  it rejects a direct actor variable without a capability, mismatched roots, and token replay.
+  Process timeout coverage includes a real SIGTERM-ignoring grandchild in the owned process group.
+- The context guide explicitly documents fail-closed writes through symlinked managed directories
+  and operator remedies. OpenClaw bridge aggregate diagnostics and replay-safe archival are precise
+  tracked gaps: current doctor counts cover only the Knot outbox, and bridge row growth is unbounded.
 
 Run Node 24+/pnpm 11 frozen install, `pnpm run check`, `pnpm run release:gates`, full workspace
 `pnpm audit`, and Heart test/vet/build plus pinned `govulncheck@v1.7.0` on Go 1.26.8. Matching compiled

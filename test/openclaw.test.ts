@@ -690,6 +690,96 @@ const bridgeTestFinal = {
 };
 
 describe("OpenClaw shutdown and acknowledgement fences", () => {
+  it.each([
+    ["observer", "final"],
+    ["observer", "event"],
+    ["driver", "final"],
+    ["driver", "event"],
+  ])("acknowledges a delivered %s-close %s after onOutput finishes", async (target, kind) => {
+    vi.useFakeTimers();
+    let deliveries: Array<{ id: string }> = [];
+    let finishOutput!: () => void;
+    const outputFinished = new Promise<void>((resolve) => {
+      finishOutput = resolve;
+    });
+    const outputs = vi.fn(async () => outputFinished);
+    const acknowledged: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL, options?: RequestInit) => {
+        if (options?.method === "POST") {
+          // A real fetch rejects an already-aborted observer signal.
+          options.signal?.throwIfAborted();
+          const ids: string[] =
+            url.pathname === "/v1/outbox/ack"
+              ? (JSON.parse(String(options.body)) as { ids: string[] }).ids
+              : [url.pathname.split("/")[3]!];
+          acknowledged.push(...ids);
+          deliveries = deliveries.filter((delivery) => !ids.includes(delivery.id));
+          return Response.json({ ok: true });
+        }
+        return Response.json({ deliveries });
+      }),
+    );
+    const runtime = bridgeTestRuntime();
+    const driver = new OpenClawDriver(runtime);
+    const observer = await driver.observeSession(
+      { sessionKey: "session", conversation: bridgeTestConversation },
+      outputs,
+    );
+    const eventDeliveries = [
+      {
+        id: "text-event",
+        idempotencyKey: "text-source",
+        storeSequence: 1,
+        sessionKey: "session",
+        kind: "agent-event",
+        agentEvent: {
+          runId: "external-run",
+          seq: 1,
+          stream: "assistant",
+          timestamp: 1,
+          data: { text: "external reply" },
+        },
+      },
+      {
+        id: "terminal-event",
+        idempotencyKey: "terminal-source",
+        storeSequence: 2,
+        sessionKey: "session",
+        kind: "agent-event",
+        agentEvent: {
+          runId: "external-run",
+          seq: 2,
+          stream: "lifecycle",
+          timestamp: 2,
+          data: { phase: "completed" },
+        },
+      },
+    ];
+    deliveries = kind === "final" ? [bridgeTestFinal] : eventDeliveries;
+    const expectedIds = deliveries.map((delivery) => delivery.id);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(outputs).toHaveBeenCalledTimes(1);
+    if (target === "observer") await observer.close();
+    else await driver.close();
+    expect(acknowledged).toEqual([]);
+    finishOutput();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(acknowledged).toEqual(expectedIds);
+    expect(deliveries).toEqual([]);
+
+    const replacement = target === "observer" ? driver : new OpenClawDriver(runtime);
+    const replayed = vi.fn(async () => undefined);
+    await replacement.observeSession(
+      { sessionKey: "session", conversation: bridgeTestConversation },
+      replayed,
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    expect(replayed).not.toHaveBeenCalled();
+    await replacement.close();
+  });
+
   it.each(["observer", "driver"])(
     "does not emit or acknowledge an in-flight bridge response after %s close",
     async (target) => {

@@ -11,10 +11,11 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { configSchema } from "../src/config.js";
 import { buildContext, preparePrompt, workspaceContextFile } from "../src/context.js";
 import { holdWorkspaceContext, pruneWorkspaceContext } from "../src/context-retention.js";
+import * as processLock from "../src/process-lock.js";
 import type { ContextBundle, ConversationRef } from "../src/types.js";
 import { FakeAnytype, incoming } from "./fakes.js";
 
@@ -54,14 +55,288 @@ async function fixture(maxBytes = 1024 * 1024 * 1024, promptMode = "workspace") 
     await preparePrompt(bundle, config, sessionKey);
     return bundle;
   }
-  return { config, directory, turn };
+  return { config, directory, turn, anytype };
 }
 
 function attachment(bundle: ContextBundle): string {
   return bundle.attachments![0]!.localPath!;
 }
 
+async function registryFile(statePath: string): Promise<string> {
+  const names = await readdir(dirname(statePath));
+  return join(
+    dirname(statePath),
+    names.find((name) => /^context-[a-f0-9]+\.json$/u.test(name))!,
+  );
+}
+
+type TestRegistry = {
+  version: number;
+  files: Record<string, Record<string, unknown>>;
+  sessions: Record<string, Record<string, unknown>>;
+};
+
 describe("managed workspace context retention", () => {
+  it.each([
+    "",
+    "{broken JSON",
+    "null",
+    "[]",
+    '{"version":1,"files":[],"sessions":{}}',
+    '{"version":1,"files":{},"sessions":[]}',
+    '{"version":1,"files":null,"sessions":{}}',
+    '{"version":1,"files":{},"sessions":"invalid"}',
+    '{"version":2,"files":{},"sessions":{}}',
+  ])(
+    "preserves invalid registry evidence %j and still delivers workspace context",
+    async (corrupt) => {
+      const { config, turn } = await fixture(1);
+      const previous = await turn("previous", "previous");
+      const contextPath = workspaceContextFile(config.runtime.defaultProject!, "previous");
+      const previousContext = await readFile(contextPath, "utf8");
+      const registryPath = await registryFile(config.state.path);
+      await writeFile(registryPath, corrupt);
+
+      expect((await pruneWorkspaceContext(config, [], after31Days())).removedFiles).toBe(0);
+      const next = await turn("next", "next");
+      expect(next.attachments?.[0]?.error).toBeUndefined();
+      await expect(stat(attachment(next))).resolves.toMatchObject({ size: 3 });
+      await expect(
+        stat(workspaceContextFile(config.runtime.defaultProject!, "next")),
+      ).resolves.toBeDefined();
+      expect(await readFile(registryPath, "utf8")).toBe(corrupt);
+      expect(await readFile(contextPath, "utf8")).toBe(previousContext);
+      await expect(stat(attachment(previous))).resolves.toMatchObject({ size: 3 });
+    },
+  );
+
+  it.each([
+    [
+      "file entry",
+      (registry: TestRegistry) => {
+        Object.defineProperty(registry.files, Object.keys(registry.files)[0]!, { value: [] });
+      },
+    ],
+    [
+      "file size",
+      (registry: TestRegistry) => {
+        registry.files[Object.keys(registry.files)[0]!]!.size = "3";
+      },
+    ],
+    [
+      "file timestamp",
+      (registry: TestRegistry) => {
+        registry.files[Object.keys(registry.files)[0]!]!.mtimeMs = null;
+      },
+    ],
+    [
+      "file inode",
+      (registry: TestRegistry) => {
+        delete registry.files[Object.keys(registry.files)[0]!]!.ino;
+      },
+    ],
+    [
+      "file path",
+      (registry: TestRegistry) => {
+        registry.files["../../operator-file"] = Object.values(registry.files)[0]!;
+      },
+    ],
+    [
+      "session entry",
+      (registry: TestRegistry) => {
+        Object.defineProperty(registry.sessions, Object.keys(registry.sessions)[0]!, { value: [] });
+      },
+    ],
+    [
+      "session timestamp",
+      (registry: TestRegistry) => {
+        registry.sessions[Object.keys(registry.sessions)[0]!]!.usedAt = -1;
+      },
+    ],
+    [
+      "session paths",
+      (registry: TestRegistry) => {
+        registry.sessions[Object.keys(registry.sessions)[0]!]!.paths = "invalid";
+      },
+    ],
+    [
+      "session path entry",
+      (registry: TestRegistry) => {
+        registry.sessions[Object.keys(registry.sessions)[0]!]!.paths = [null];
+      },
+    ],
+    [
+      "session path traversal",
+      (registry: TestRegistry) => {
+        registry.sessions[Object.keys(registry.sessions)[0]!]!.paths = ["../operator-file"];
+      },
+    ],
+    [
+      "session key",
+      (registry: TestRegistry) => {
+        registry.sessions.invalid = Object.values(registry.sessions)[0]!;
+      },
+    ],
+  ])("rejects an invalid %s before deleting any valid file", async (_name, corruptRegistry) => {
+    const { config, turn } = await fixture(1);
+    const previous = await turn("previous", "previous");
+    const registryPath = await registryFile(config.state.path);
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as TestRegistry;
+    corruptRegistry(registry);
+    const corrupt = JSON.stringify(registry);
+    await writeFile(registryPath, corrupt);
+
+    expect((await pruneWorkspaceContext(config, [], after31Days())).removedFiles).toBe(0);
+    const next = await turn("next", "next");
+    await expect(stat(attachment(previous))).resolves.toMatchObject({ size: 3 });
+    await expect(stat(attachment(next))).resolves.toMatchObject({ size: 3 });
+    await expect(
+      stat(workspaceContextFile(config.runtime.defaultProject!, "previous")),
+    ).resolves.toBeDefined();
+    expect(await readFile(registryPath, "utf8")).toBe(corrupt);
+  });
+
+  it.each(["directory", "symlink"])(
+    "skips an unavailable registry replaced by a %s",
+    async (kind) => {
+      const { config, turn } = await fixture(1);
+      const previous = await turn("previous", "previous");
+      const registryPath = await registryFile(config.state.path);
+      const evidencePath = `${registryPath}.evidence`;
+      const contents = await readFile(registryPath, "utf8");
+      await rename(registryPath, evidencePath);
+      if (kind === "directory") await mkdir(registryPath);
+      else await symlink(evidencePath, registryPath);
+
+      expect((await pruneWorkspaceContext(config, [], after31Days())).removedFiles).toBe(0);
+      const next = await turn("next", "next");
+      await expect(stat(attachment(next))).resolves.toMatchObject({ size: 3 });
+      await expect(stat(attachment(previous))).resolves.toMatchObject({ size: 3 });
+      expect(await readFile(evidencePath, "utf8")).toBe(contents);
+      if (kind === "directory") expect(await readdir(registryPath)).toEqual([]);
+      else expect(await readFile(registryPath, "utf8")).toBe(contents);
+    },
+  );
+
+  it("keeps prompts working when the registry state directory is unavailable", async () => {
+    const { config, turn } = await fixture(1);
+    const previous = await turn("previous", "previous");
+    const registryPath = await registryFile(config.state.path);
+    const stateDirectory = dirname(registryPath);
+    const evidenceDirectory = `${stateDirectory}.evidence`;
+    const contents = await readFile(registryPath, "utf8");
+    await rename(stateDirectory, evidenceDirectory);
+    await writeFile(stateDirectory, "operator-owned file");
+
+    expect((await pruneWorkspaceContext(config, [], after31Days())).removedFiles).toBe(0);
+    const next = await turn("next", "next");
+    await expect(stat(attachment(next))).resolves.toMatchObject({ size: 3 });
+    await expect(stat(attachment(previous))).resolves.toMatchObject({ size: 3 });
+    expect(await readFile(stateDirectory, "utf8")).toBe("operator-owned file");
+    const evidenceRegistry = await registryFile(join(evidenceDirectory, "state.sqlite"));
+    expect(await readFile(evidenceRegistry, "utf8")).toBe(contents);
+  });
+
+  it("resumes registration after operator repair without claiming files from skipped turns", async () => {
+    const { config, turn } = await fixture(1);
+    await turn("previous", "previous");
+    const registryPath = await registryFile(config.state.path);
+    const validContents = await readFile(registryPath, "utf8");
+    await writeFile(registryPath, "corrupt");
+    const unmanaged = await turn("unmanaged", "unmanaged");
+    await writeFile(registryPath, validContents);
+    const active = await turn("active", "active");
+
+    expect((await pruneWorkspaceContext(config, ["active"], after31Days())).removedFiles).toBe(2);
+    await expect(stat(attachment(active))).resolves.toMatchObject({ size: 3 });
+    await expect(stat(attachment(unmanaged))).resolves.toMatchObject({ size: 3 });
+    await expect(
+      stat(workspaceContextFile(config.runtime.defaultProject!, "unmanaged")),
+    ).resolves.toBeDefined();
+  });
+
+  it("skips a contended registry without waiting or failing the next prompt", async () => {
+    const { config, turn } = await fixture(1);
+    const previous = await turn("previous", "previous");
+    const registryPath = await registryFile(config.state.path);
+    const contents = await readFile(registryPath, "utf8");
+    const release = await processLock.acquireProcessLock(`${registryPath}.lock`);
+    try {
+      const started = Date.now();
+      expect((await pruneWorkspaceContext(config, [], after31Days())).removedFiles).toBe(0);
+      const next = await turn("next", "next");
+      expect(Date.now() - started).toBeLessThan(1_000);
+      await expect(stat(attachment(next))).resolves.toMatchObject({ size: 3 });
+      await expect(stat(attachment(previous))).resolves.toMatchObject({ size: 3 });
+      expect(await readFile(registryPath, "utf8")).toBe(contents);
+    } finally {
+      await release();
+    }
+  });
+
+  it("does not expose staged attachments to cleanup if session registration is skipped", async () => {
+    const { config, turn, anytype } = await fixture(1);
+    await turn("previous", "previous");
+    const registryPath = await registryFile(config.state.path);
+    const bundle = await buildContext(
+      anytype,
+      config,
+      conversation,
+      incoming({
+        id: "next",
+        attachments: [{ target: "next-file", type: "file" }],
+      }),
+    );
+    const release = await processLock.acquireProcessLock(`${registryPath}.lock`);
+    try {
+      await preparePrompt(bundle, config, "active");
+    } finally {
+      await release();
+    }
+    expect((await pruneWorkspaceContext(config, ["active"], after31Days())).removedFiles).toBe(2);
+    await expect(stat(attachment(bundle))).resolves.toMatchObject({ size: 3 });
+    await expect(
+      stat(workspaceContextFile(config.runtime.defaultProject!, "active")),
+    ).resolves.toBeDefined();
+  });
+
+  it("batches successful attachments and their prompt references in one atomic update", async () => {
+    const { config } = await fixture();
+    const anytype = new (class extends FakeAnytype {
+      async downloadFile(_spaceId: string, fileId: string) {
+        if (fileId === "missing") throw new Error("File unavailable");
+        return { bytes: Uint8Array.from([1, 2, 3]), contentType: "image/png" };
+      }
+    })();
+    const lock = vi.spyOn(processLock, "acquireProcessLock");
+    try {
+      const bundle = await buildContext(
+        anytype,
+        config,
+        conversation,
+        incoming({
+          attachments: ["one", "two", "missing", "three"].map((target) => ({
+            target,
+            type: "file",
+          })),
+        }),
+      );
+      expect(lock).not.toHaveBeenCalled();
+      await preparePrompt(bundle, config, "session");
+      expect(lock).toHaveBeenCalledTimes(1);
+      const registry = JSON.parse(
+        await readFile(await registryFile(config.state.path), "utf8"),
+      ) as TestRegistry;
+      expect(Object.keys(registry.files)).toHaveLength(4);
+      expect(Object.values(registry.sessions)[0]?.paths).toHaveLength(4);
+      expect((await pruneWorkspaceContext(config, ["session"], after31Days())).removedFiles).toBe(
+        0,
+      );
+    } finally {
+      lock.mockRestore();
+    }
+  });
+
   it("reuses deterministic filenames for repeated attachments and sessions", async () => {
     const { config, turn } = await fixture();
     const first = await turn("same", "session");

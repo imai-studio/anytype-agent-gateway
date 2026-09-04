@@ -1,6 +1,6 @@
 import type { AgentConfig } from "./config.js";
 import { type CloudCommandEnvelope, type CloudCommandResult } from "./cloud-contract.js";
-import type { CloudClient } from "./cloud-client.js";
+import { type CloudClient } from "./cloud-client.js";
 import type { CloudConfig } from "./cloud-config.js";
 import type { Store } from "./store.js";
 import type { AnytypePort } from "./types.js";
@@ -64,7 +64,8 @@ export declare class CloudCommandStore {
         retryable: boolean;
         retryAt?: number;
     }, maximumAttempts?: number, now?: number): boolean;
-    terminalPending(): CloudCommandRecord[];
+    leaseCandidates(afterCommandId?: string): CloudCommandRecord[];
+    terminalPending(afterCommandId?: string): CloudCommandRecord[];
     markSubmitted(commandId: string, result: CloudCommandResult, now?: number): boolean;
     updateLease(commandId: string, leaseExpiresAtSeconds: number, now?: number): void;
     expire(now?: number): number;
@@ -102,6 +103,9 @@ export declare class CloudWorkflowExtension implements WorkflowRunnerExtension {
     private beforeTask;
     private afterTask;
     private nextCloudAttemptAt;
+    private lastLeaseCommandId;
+    private lastResultCommandId;
+    private nextNetworkPhase;
     private inFlight;
     constructor(store: Store, client: CloudCommandClient, executor: CloudCommandExecutionPort, config: AgentConfig["cloudCommands"], anytype: AnytypePort, log: (event: string, fields?: Record<string, unknown>) => void, now?: () => number, options?: {
         tickBudgetMilliseconds?: number;

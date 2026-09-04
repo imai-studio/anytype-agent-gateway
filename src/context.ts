@@ -3,11 +3,7 @@ import { rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AgentConfig } from "./config.js";
 import type { AnytypePort, ChatMessage, ContextBundle, ConversationRef } from "./types.js";
-import {
-  prepareWorkspaceDirectory,
-  recordWorkspaceFile,
-  recordWorkspaceSession,
-} from "./context-retention.js";
+import { prepareWorkspaceDirectory, recordWorkspaceSession } from "./context-retention.js";
 import { principalFromMessage } from "./principal.js";
 
 export async function buildContext(
@@ -293,7 +289,6 @@ export async function preparePrompt(
       { mode: 0o600, flag: "wx" },
     );
     await rename(temporaryFile, contextFile);
-    await recordWorkspaceFile(config, contextFile, "context");
     await recordWorkspaceSession(config, sessionKey, [...attachmentPaths, contextFile]);
   } finally {
     await unlink(temporaryFile).catch(() => undefined);
@@ -361,7 +356,6 @@ async function materializeAttachments(
       try {
         await writeFile(temporary, downloaded.bytes, { mode: 0o600, flag: "wx" });
         await rename(temporary, localPath);
-        await recordWorkspaceFile(config, localPath, "attachment");
       } finally {
         await unlink(temporary).catch(() => undefined);
       }
