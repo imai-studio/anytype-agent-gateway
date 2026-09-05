@@ -86,6 +86,9 @@ rejections, result submission is quarantined and an operator status projection i
 stored result, effect receipt, Cloud attempt/fence, and unacknowledged completion state remain
 intact. A matching late acknowledgement can still complete that exact result safely. Quarantined
 and not-yet-due records do not occupy the next submission batch; healthy commands continue.
+The listed HTTP statuses remain permanent rejections when the response body is malformed or
+exceeds the response-size limit. Knot classifies the status without reading an oversized body;
+global auth and server failures still defer the batch.
 
 Valid leases continue renewing while result submission backs off. A permanent renewal rejection
 invalidates only that fence's cached local lease expiry, so Knot cannot start work or repeatedly
@@ -103,6 +106,15 @@ This is separate from effect retry: it does not rerun an effect, renew authority
 Cloud attempt/fence. It uses the existing protected local CLI operator boundary and is not exposed
 as a model-facing management tool. Auth failures (401/403), exhausted clock correction, rate limits,
 and transport failures defer the network batch and do not spend the permanent rejection budget.
+
+Before recovery, use `knot cloud commands show <command-id> --agent-config <config-file>` to inspect
+`leaseExpiresAt`.
+`result-retry` does not mint or renew an expired lease. After quarantine, if the lease has expired,
+Cloud must first supply a valid fresh claim; an operator must then explicitly run `result-retry`.
+A fresh claim alone does not clear quarantine, and neither step repeats the stored effect. Cloud
+may be unable to re-claim a terminal or expired command; that requires operator reconciliation on
+the Cloud side rather than repeated local result retries. A matching duplicate acknowledgement
+for a result already accepted by Cloud remains safe.
 
 `notBefore` and `expiresAt` are evaluated with the same server-adjusted clock used to sign Cloud
 requests. A command received before `notBefore` remains durably queued at that timestamp; it is not

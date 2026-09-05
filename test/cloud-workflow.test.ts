@@ -398,9 +398,13 @@ describe("cloud workflow bridge", () => {
     store.close();
   });
 
-  it.each(["invalid-json", "invalid-schema", "response-too-large"])(
-    "quarantines persistent %s submissions from the real CloudClient",
-    async (failure) => {
+  it.each([
+    { failure: "invalid-json", status: 200 },
+    { failure: "invalid-schema", status: 200 },
+    ...[200, 400, 409].map((status) => ({ failure: "response-too-large", status })),
+  ])(
+    "quarantines persistent $status/$failure submissions from the real CloudClient",
+    async ({ failure, status }) => {
       let now = 1_000_000;
       const store = new Store(":memory:");
       const inbox = new CloudCommandStore(store);
@@ -412,6 +416,8 @@ describe("cloud workflow bridge", () => {
       const retained = inbox.command(item.commandId)!.result;
       const receipt = store.db.prepare("SELECT * FROM cloud_effect_receipts").get();
       let resultRequests = 0;
+      const readOversizedBody = vi.fn();
+      const cancelOversizedBody = vi.fn();
       const client = new CloudClient(await workflowClientConfig(), {
         now: () => now,
         maximumAttempts: 1,
@@ -420,7 +426,13 @@ describe("cloud workflow bridge", () => {
             resultRequests += 1;
             if (failure === "invalid-json") return new Response("{");
             if (failure === "response-too-large")
-              return new Response("", { headers: { "Content-Length": "99999999" } });
+              return new Response(
+                new ReadableStream<Uint8Array>(
+                  { pull: readOversizedBody, cancel: cancelOversizedBody },
+                  { highWaterMark: 0 },
+                ),
+                { status, headers: { "Content-Length": "99999999" } },
+              );
             return Response.json({ protocolVersion: "1.0", invalidReceipt: true });
           }
           return Response.json({ protocolVersion: "1.0", commands: [], pollAfterSeconds: 5 });
@@ -442,7 +454,7 @@ describe("cloud workflow bridge", () => {
       }
       expect(inbox.command(item.commandId)?.submissionQuarantinedAt).toBeDefined();
       expect(inbox.command(item.commandId)?.submissionLastErrorCode).toBe(
-        "submission-fence-or-response-invalid",
+        status >= 400 ? `submission-http-${status}` : "submission-fence-or-response-invalid",
       );
       now += 3_600_000;
       await extension.beforeTick();
@@ -450,6 +462,10 @@ describe("cloud workflow bridge", () => {
       expect(inbox.command(item.commandId)?.result).toEqual(retained);
       expect(inbox.command(item.commandId)?.completedAt).toBeUndefined();
       expect(store.db.prepare("SELECT * FROM cloud_effect_receipts").get()).toEqual(receipt);
+      if (failure === "response-too-large") {
+        expect(readOversizedBody).not.toHaveBeenCalled();
+        expect(cancelOversizedBody).toHaveBeenCalledTimes(5);
+      }
       await extension.stop();
       store.close();
     },
