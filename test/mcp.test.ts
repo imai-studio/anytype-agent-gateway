@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
@@ -1185,6 +1185,7 @@ describe("AAG Anytype MCP policy", () => {
   it("publishes status and multiple pushes through unbound MCP stdio and the native HTTP client", async () => {
     const directory = await mkdtemp(join(tmpdir(), "knot-mcp-stdio-publish-"));
     const siteId = "00000000-0000-4000-8000-000000000011";
+    const foreignSiteId = "00000000-0000-4000-8000-000000000066";
     const publicationId = "00000000-0000-4000-8000-000000000022";
     const requests: Array<{ method: string; signed: boolean; body: string }> = [];
     const server = createServer(async (request, response) => {
@@ -1233,7 +1234,7 @@ describe("AAG Anytype MCP policy", () => {
           connectorId: "00000000-0000-4000-8000-000000000033",
           tenantId: "00000000-0000-4000-8000-000000000044",
           scopes: ["publications.read", "publications.write"],
-          siteIds: [siteId],
+          siteIds: [siteId, foreignSiteId],
           slugGrants: ["notes/*"],
           approvedAt: 1,
         },
@@ -1290,6 +1291,7 @@ describe("AAG Anytype MCP policy", () => {
       const calls = [
         { ...status, route_id: routeId },
         { ...status, ...metadata },
+        { ...push, site_id: foreignSiteId, slug: "notes/foreign-denied" },
         { ...push, slug: "notes/one" },
         { ...push, slug: "notes/two" },
         { ...push, slug: "outside/denied" },
@@ -1297,6 +1299,8 @@ describe("AAG Anytype MCP policy", () => {
       const environment = { ...process.env };
       for (const key of Object.keys(environment))
         if (/^(?:KNOT_|AAG_|ANYTYPE_|OPENCLAW_)/u.test(key)) delete environment[key];
+      const originalPolicy = await readFile(configPath, "utf8");
+      const originalCloudGrants = await readFile(paths.configFile, "utf8");
       const { stdout } = await runProcess(
         process.execPath,
         [resolve("dist/cli.js"), "mcp", "--config", configPath],
@@ -1320,11 +1324,17 @@ describe("AAG Anytype MCP policy", () => {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line).result);
-      expect(responses).toHaveLength(5);
+      expect(responses).toHaveLength(6);
       expect(responses[0].isError).toBe(true);
-      expect(responses[4].isError).toBe(true);
+      expect(responses[2].isError).toBe(true);
+      expect(responses[2].content[0].text).toContain(
+        "The selected site is not allowed by local publication policy",
+      );
+      expect(responses[5].isError).toBe(true);
       expect(
-        responses.slice(1, 4).map((result) => JSON.parse(result.content[0].text).state),
+        [responses[1], responses[3], responses[4]].map(
+          (result) => JSON.parse(result.content[0].text).state,
+        ),
       ).toEqual(["ready", "succeeded", "succeeded"]);
       expect(requests.map((request) => request.method)).toEqual(["POST", "POST", "POST"]);
       expect(requests.every((request) => request.signed)).toBe(true);
@@ -1332,6 +1342,8 @@ describe("AAG Anytype MCP policy", () => {
         "notes/one",
         "notes/two",
       ]);
+      expect(await readFile(configPath, "utf8")).toBe(originalPolicy);
+      expect(await readFile(paths.configFile, "utf8")).toBe(originalCloudGrants);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

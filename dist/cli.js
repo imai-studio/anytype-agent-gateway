@@ -103,7 +103,7 @@ program
         report(`${counts.failed || counts.dead ? "warning" : "ok"}: reply outbox (pending=${counts.pending}, in_flight=${counts.claimed}, failed=${counts.failed}, dead=${counts.dead}); failed replies retain automatic retries, dead replies require operator recovery`);
         const submissions = new CloudCommandStore(diagnostics).submissionDiagnostics();
         const submissionReport = submissions.quarantined || submissions.backingOff ? console.warn : console.log;
-        submissionReport(`${submissions.quarantined || submissions.backingOff ? "warning" : "ok"}: cloud result submissions (pending=${submissions.pending}, backing_off=${submissions.backingOff}, quarantined=${submissions.quarantined}, next_attempt_at=${submissions.nextAttemptAt ?? "none"}); result-retry retries reporting only, never local effects`);
+        submissionReport(`${submissions.quarantined || submissions.backingOff ? "warning" : "ok"}: cloud result submissions (total_pending=${submissions.pending}, backing_off=${submissions.backingOff}, quarantined=${submissions.quarantined}, next_attempt_at=${submissions.nextAttemptAt ?? "none"}); result-retry retries reporting only, never local effects`);
     }
     finally {
         diagnostics.close();

@@ -30,6 +30,32 @@ const fencedCommand: CloudCommandEnvelope = {
 };
 
 describe("CloudClient", () => {
+  it.each([401, 403])("preserves retryable publication auth status %s", async (status) => {
+    const config = await pairedConfig({ scopes: ["publications.read"] });
+    const fetchMock = vi.fn(async () =>
+      Response.json(
+        {
+          type: "https://knot.example/problems/denied",
+          title: "Connector denied",
+          status,
+          code: "connector-denied",
+          requestId: "test-request-id",
+          retryable: true,
+        },
+        { status },
+      ),
+    );
+    const client = new CloudClient(config, {
+      fetch: fetchMock,
+      sleep: async () => undefined,
+      maximumAttempts: 2,
+    });
+    await expect(
+      client.publicationStatus("00000000-0000-4000-8000-000000000032"),
+    ).rejects.toMatchObject({ options: { status, retryable: true } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it.each(
     [400, 404, 409, 410, 422].flatMap((status) =>
       ["extend", "result"].map((operation) => ({ status, operation })),

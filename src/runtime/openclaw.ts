@@ -126,7 +126,7 @@ export class OpenClawDriver implements RuntimeDriver {
     this.bridgePollTimer = undefined;
     for (const observer of this.bridgeObservers.values()) observer.abort.abort();
     this.bridgeObservers.clear();
-    this.closing = this.drainBridgePolling(this.bridgeReceiptAbort);
+    this.closing = this.drainBridgeWork(this.bridgePolling, this.bridgeReceiptAbort);
     await this.closing;
   }
 
@@ -500,14 +500,16 @@ export class OpenClawDriver implements RuntimeDriver {
           clearInterval(this.bridgePollTimer);
           this.bridgePollTimer = undefined;
         }
-        closing = this.drainBridgePolling(state.receiptAbort);
+        closing = this.drainBridgeWork(state.inFlight, state.receiptAbort);
         await closing;
       },
     };
   }
 
-  private async drainBridgePolling(receipts: AbortController): Promise<void> {
-    const poll = this.bridgePolling;
+  private async drainBridgeWork(
+    poll: Promise<void> | undefined,
+    receipts: AbortController,
+  ): Promise<void> {
     if (!poll) return;
     // onOutput has no cancellation contract. Bound the entire drain, including
     // that callback; receipts left pending can retry against the controller's
@@ -530,7 +532,8 @@ export class OpenClawDriver implements RuntimeDriver {
       const timer = setTimeout(() => finish("timeout"), BRIDGE_SHUTDOWN_DRAIN_MS);
       void poll.then(
         () => finish(),
-        () => finish("poll_failed"),
+        (error: unknown) =>
+          finish(error instanceof Error && error.name === "AbortError" ? undefined : "poll_failed"),
       );
     });
   }
@@ -558,8 +561,10 @@ export class OpenClawDriver implements RuntimeDriver {
 
   private async drainBridgeOutbox(token: string): Promise<void> {
     for (const observer of [...this.bridgeObservers.values()]) {
+      const work = this.drainBridgeObserver(token, observer);
+      observer.inFlight = work;
       try {
-        await this.drainBridgeObserver(token, observer);
+        await work;
       } catch (error) {
         if (
           !observer.abort.signal.aborted ||
@@ -567,6 +572,8 @@ export class OpenClawDriver implements RuntimeDriver {
           error.name !== "AbortError"
         )
           throw error;
+      } finally {
+        if (observer.inFlight === work) observer.inFlight = undefined;
       }
     }
   }
@@ -1232,6 +1239,7 @@ type BridgeObserverState = {
   afterSequence: number;
   abort: AbortController;
   receiptAbort: AbortController;
+  inFlight?: Promise<void> | undefined;
   cursor?: string;
 };
 

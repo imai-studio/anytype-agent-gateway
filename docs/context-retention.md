@@ -66,11 +66,14 @@ workspace itself is writable.
 
 Skipped registration and cleanup emit `context_registry_unavailable` with the
 operation and a fixed reason such as `invalid-json`, `invalid-schema`,
-`nonregular`, `unreadable`, `lock-contended`, `registration-failed`, or
-`write-failed`. These diagnostics contain no private paths, participant or session
-identifiers, registry contents, or raw filesystem errors. A `missing` cleanup
-registry means maintenance has no ownership records yet; the next successfully
-registered turn initializes it.
+`nonregular`, `unreadable`, `lock-contended`, `lock-unavailable`,
+`registration-failed`, `cleanup-failed`, or `write-failed`. `lock-unavailable`
+means the lock could not be acquired for a reason other than a live owner holding
+it; `cleanup-failed` means an error interrupted the cleanup operation. These
+diagnostics contain no private paths, participant or session identifiers, registry
+contents, or raw filesystem errors. `missing` is a cleanup-only reason: maintenance
+has no ownership records yet, and the next successfully registered turn initializes
+the registry.
 
 `knot doctor` reports registry status, registered file count, verified managed
 file count, verified managed bytes, and whether a lock is present. Counts and bytes

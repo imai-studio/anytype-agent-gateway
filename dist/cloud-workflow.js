@@ -287,12 +287,15 @@ export class CloudCommandStore {
         }
     }
     leaseCandidates(afterCommandId = "", now = Date.now()) {
+        // Result backoff must not let a live lease lapse before the next submission.
+        // Cloud cannot extend an expired lease; quarantined submissions stop renewal.
         return this.store.db
             .prepare(`SELECT * FROM cloud_command_inbox
            WHERE state IN ('received','awaiting_approval','queued','running','terminal_pending')
-             AND (state<>'terminal_pending' OR (submission_quarantined_at IS NULL AND available_at<=?))
+             AND lease_expires_at>? AND expires_at>?
+             AND (state<>'terminal_pending' OR submission_quarantined_at IS NULL)
            ORDER BY CASE WHEN command_id>? THEN 0 ELSE 1 END,command_id LIMIT 100`)
-            .all(now, afterCommandId).map(mapCommand);
+            .all(now, now, afterCommandId).map(mapCommand);
     }
     terminalPending(afterCommandId = "", now = Date.now()) {
         return this.store.db
@@ -388,6 +391,15 @@ export class CloudCommandStore {
             .prepare(`UPDATE cloud_command_inbox SET lease_expires_at=?,updated_at=?
          WHERE command_id=? AND state IN ('received','awaiting_approval','queued','running','terminal_pending')`)
             .run(leaseExpiresAtSeconds * 1_000, now, commandId);
+    }
+    invalidateLease(command, now = Date.now()) {
+        // A rejected fence cannot be renewed. Reduce only the cached local authority,
+        // durably suppressing repeated renewals until Cloud supplies a fresh claim.
+        // Keep the signed envelope, result, effect receipt and submission budget intact.
+        this.store.db
+            .prepare(`UPDATE cloud_command_inbox SET lease_expires_at=MIN(lease_expires_at,?),updated_at=?
+       WHERE command_id=? AND attempt=? AND lease_token_digest=? AND completed_at IS NULL`)
+            .run(now, now, command.commandId, command.attempt, digest("knot.cloud.command.lease.v1", command.leaseToken));
     }
     expire(now = Date.now()) {
         const rows = this.store.db
@@ -647,8 +659,8 @@ export class CloudWorkflowExtension {
             if (terminalStates.has(command.state) ||
                 command.leaseExpiresAt - now > Math.max(5_000, (this.config.leaseSeconds * 1_000) / 2))
                 continue;
+            const envelope = this.inbox.envelope(command.commandId);
             try {
-                const envelope = this.inbox.envelope(command.commandId);
                 const extended = await this.client.extendLease(envelope, this.config.leaseSeconds, signal);
                 signal.throwIfAborted();
                 if (extended.commandId !== command.commandId || extended.attempt !== envelope.attempt)
@@ -662,6 +674,7 @@ export class CloudWorkflowExtension {
                 });
                 if (shouldDeferCloudRequests(error, signal))
                     throw error;
+                this.inbox.invalidateLease(envelope, this.now());
             }
         }
     }
@@ -705,8 +718,11 @@ export class CloudWorkflowExtension {
         while (!signal.aborted) {
             if (!(await waitFor(interval, signal)))
                 return;
+            const record = this.inbox.command(commandId);
+            if (!record || record.leaseExpiresAt <= this.now() || record.expiresAt <= this.now())
+                return;
+            const envelope = this.inbox.envelope(commandId);
             try {
-                const envelope = this.inbox.envelope(commandId);
                 const extended = await this.client.extendLease(envelope, this.config.leaseSeconds, signal);
                 signal.throwIfAborted();
                 if (extended.commandId !== commandId || extended.attempt !== envelope.attempt)
@@ -718,6 +734,10 @@ export class CloudWorkflowExtension {
                     commandId,
                     error: message(error),
                 });
+                if (!shouldDeferCloudRequests(error, signal)) {
+                    this.inbox.invalidateLease(envelope, this.now());
+                    return;
+                }
             }
         }
     }
@@ -741,14 +761,28 @@ export class CloudWorkflowExtension {
                     commandId: record.commandId,
                     error: message(error),
                 });
-                if (shouldDeferCloudRequests(error, signal))
+                if (signal.aborted ||
+                    (!isInvalidSubmissionResponse(error) && shouldDeferCloudRequests(error, signal)))
                     throw error;
-                this.inbox.failSubmission(command, record.result, error instanceof CloudRequestError && error.options.status !== undefined
+                this.inbox.failSubmission(command, record.result, !isInvalidSubmissionResponse(error) &&
+                    error instanceof CloudRequestError &&
+                    error.options.status !== undefined
                     ? `submission-http-${error.options.status}`
                     : "submission-fence-or-response-invalid", this.now());
             }
         }
     }
+}
+function isInvalidSubmissionResponse(error) {
+    // Only a known protocol violation on a successful response belongs to this
+    // result's budget. Auth/server failures and unknown transport errors defer all
+    // Cloud work, including when their response body itself is oversized.
+    return (error instanceof z.ZodError ||
+        (error instanceof CloudRequestError &&
+            (error.options.status === undefined ||
+                (error.options.status >= 200 && error.options.status < 300)) &&
+            error.options.retryable === false &&
+            ["invalid-json", "response-too-large"].includes(error.options.code ?? "")));
 }
 function shouldDeferCloudRequests(error, signal) {
     if (signal.aborted)

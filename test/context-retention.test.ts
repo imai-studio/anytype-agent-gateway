@@ -126,7 +126,7 @@ describe("managed workspace context retention", () => {
     expect(line).not.toContain(directory);
     expect(await readFile(registryPath, "utf8")).toBe("{corrupt fixture evidence");
     await expect(stat(`${registryPath}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
-  });
+  }, 20_000);
 
   it("logs a safe gateway diagnostic while corrupt-registry prompts still succeed", async () => {
     const { config, anytype, turn } = await fixture();

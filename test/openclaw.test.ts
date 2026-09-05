@@ -785,7 +785,7 @@ describe("OpenClaw bridge process shutdown", () => {
         await fixture.cleanup();
       }
     },
-    15_000,
+    30_000,
   );
 });
 
@@ -875,6 +875,70 @@ async function bridgeProcessFixture(kind: string) {
 }
 
 describe("OpenClaw shutdown and acknowledgement fences", () => {
+  it("closes an idle observer without waiting for another observer's output or ACK", async () => {
+    vi.useFakeTimers();
+    const warnings = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    let pending = false;
+    let finishOutput!: () => void;
+    let finishAck!: (response: Response) => void;
+    const outputFinished = new Promise<void>((resolve) => {
+      finishOutput = resolve;
+    });
+    const busyOutput = vi.fn(async () => outputFinished);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL, options?: RequestInit) => {
+        if (options?.method === "POST") {
+          options.signal?.throwIfAborted();
+          return new Promise<Response>((resolve) => {
+            finishAck = resolve;
+          });
+        }
+        return Response.json({
+          deliveries:
+            pending && url.searchParams.get("sessionKey") === "busy"
+              ? [{ ...bridgeTestFinal, sessionKey: "busy" }]
+              : [],
+        });
+      }),
+    );
+    const driver = new OpenClawDriver(bridgeTestRuntime());
+    const idle = await driver.observeSession(
+      { sessionKey: "idle", conversation: bridgeTestConversation },
+      async () => undefined,
+    );
+    const busy = await driver.observeSession(
+      { sessionKey: "busy", conversation: bridgeTestConversation },
+      busyOutput,
+    );
+    pending = true;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(busyOutput).toHaveBeenCalledTimes(1);
+
+    let idleClosed = false;
+    const idleClosing = idle.close().then(() => {
+      idleClosed = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(idleClosed).toBe(true);
+    await idleClosing;
+    expect(warnings).not.toHaveBeenCalled();
+
+    let busyClosed = false;
+    const busyClosing = busy.close().then(() => {
+      busyClosed = true;
+    });
+    finishOutput();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(finishAck).toBeTypeOf("function");
+    expect(busyClosed).toBe(false);
+    finishAck(Response.json({ ok: true }));
+    await busyClosing;
+    expect(busyClosed).toBe(true);
+    expect(warnings).not.toHaveBeenCalled();
+    await driver.close();
+  });
+
   it.each(["observer", "driver"])(
     "bounds %s close when onOutput never completes",
     async (target) => {

@@ -87,9 +87,18 @@ stored result, effect receipt, Cloud attempt/fence, and unacknowledged completio
 intact. A matching late acknowledgement can still complete that exact result safely. Quarantined
 and not-yet-due records do not occupy the next submission batch; healthy commands continue.
 
-`knot doctor` reports pending, backing-off and quarantined result-submission counts. The command
-inspection output includes submission attempts and safe error codes. After resolving the Cloud
-rejection, a local operator can use `result-retry` to reschedule reporting of the stored result.
+Valid leases continue renewing while result submission backs off. A permanent renewal rejection
+invalidates only that fence's cached local lease expiry, so Knot cannot start work or repeatedly
+renew under rejected authority. A fresh Cloud claim can restore a valid lease without repeating
+an already-recorded effect. Result quarantine still excludes the record from lease renewal.
+Malformed successful responses also use the result-submission rejection budget; network failures
+and global authentication failures continue to defer the batch.
+
+`knot doctor` reports `total_pending` result submissions, including the `backing_off` and
+`quarantined` subsets. These counts are not disjoint: a quarantined result still awaits a Cloud
+acknowledgement and remains in `total_pending`. The command inspection output includes submission
+attempts and safe error codes. After resolving the Cloud rejection, a local operator can use
+`result-retry` to reschedule reporting of the stored result.
 This is separate from effect retry: it does not rerun an effect, renew authority, or change the
 Cloud attempt/fence. It uses the existing protected local CLI operator boundary and is not exposed
 as a model-facing management tool. Auth failures (401/403), exhausted clock correction, rate limits,

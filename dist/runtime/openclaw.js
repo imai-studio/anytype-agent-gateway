@@ -96,7 +96,7 @@ export class OpenClawDriver {
         for (const observer of this.bridgeObservers.values())
             observer.abort.abort();
         this.bridgeObservers.clear();
-        this.closing = this.drainBridgePolling(this.bridgeReceiptAbort);
+        this.closing = this.drainBridgeWork(this.bridgePolling, this.bridgeReceiptAbort);
         await this.closing;
     }
     async configureModel(input) {
@@ -407,13 +407,12 @@ export class OpenClawDriver {
                     clearInterval(this.bridgePollTimer);
                     this.bridgePollTimer = undefined;
                 }
-                closing = this.drainBridgePolling(state.receiptAbort);
+                closing = this.drainBridgeWork(state.inFlight, state.receiptAbort);
                 await closing;
             },
         };
     }
-    async drainBridgePolling(receipts) {
-        const poll = this.bridgePolling;
+    async drainBridgeWork(poll, receipts) {
         if (!poll)
             return;
         // onOutput has no cancellation contract. Bound the entire drain, including
@@ -434,7 +433,7 @@ export class OpenClawDriver {
             // Keep the process alive until successful delivery can finish its ACK,
             // or this deadline cancels the ACK and leaves the bridge record pending.
             const timer = setTimeout(() => finish("timeout"), BRIDGE_SHUTDOWN_DRAIN_MS);
-            void poll.then(() => finish(), () => finish("poll_failed"));
+            void poll.then(() => finish(), (error) => finish(error instanceof Error && error.name === "AbortError" ? undefined : "poll_failed"));
         });
     }
     async pollBridgeOutbox() {
@@ -461,14 +460,20 @@ export class OpenClawDriver {
     }
     async drainBridgeOutbox(token) {
         for (const observer of [...this.bridgeObservers.values()]) {
+            const work = this.drainBridgeObserver(token, observer);
+            observer.inFlight = work;
             try {
-                await this.drainBridgeObserver(token, observer);
+                await work;
             }
             catch (error) {
                 if (!observer.abort.signal.aborted ||
                     !(error instanceof Error) ||
                     error.name !== "AbortError")
                     throw error;
+            }
+            finally {
+                if (observer.inFlight === work)
+                    observer.inFlight = undefined;
             }
         }
     }

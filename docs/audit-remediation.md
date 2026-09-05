@@ -112,6 +112,14 @@ budget. Doctor exposes aggregate submission and context-registry diagnostics. Re
 remain fail-closed for deletion and nonfatal for prompts, but now report fixed nonsecret reason codes.
 Stale registry locks can be reclaimed and acquired in the same bounded, zero-wait update.
 
+The subsequent review follow-up keeps valid command leases renewable during result-submission
+backoff. A permanent renewal rejection invalidates only the matching local lease-expiry cache,
+preventing repeated renewal calls until Cloud supplies a fresh claim; it does not change the
+stored result, signed envelope, effect receipt, or submission budget. Malformed JSON and invalid
+receipt schemas spend the permanent result-submission budget, while transport and cancellation
+failures defer. Command-specific auth classification leaves publication retry policy unchanged.
+Doctor labels all unacknowledged results `total_pending`, with backoff and quarantine as subsets.
+
 OpenClaw shutdown drains delivery/ACK work for at most ten seconds, including a potentially hung
 output callback. Real subprocess tests verify successful ACK before exit and ACK-failure recovery
 through the controller's persisted delivery receipts. That is not a permanent exactly-once guarantee:
@@ -119,11 +127,18 @@ local deduplication receipts expire after thirty days while plugin pending deliv
 Repeated mention occurrences keep native marks with one canonical equivalent identity; fanout counts
 distinct targets. A real unbound MCP subprocess performs status and two pushes through the native
 HTTP client against a local synthetic Cloud server; live native interoperability remains a release gate.
+The same subprocess denies a locally forbidden site even when Cloud grants that site, then
+continues permitted pushes without changing either configuration. Closing an individual observer
+drains only its own delivery work; driver shutdown retains the global ten-second bound.
 
 The [gRPC update PR #24](https://github.com/imai-studio/knot/pull/24) and remediation PR #25 are now
 merged. The combined tree resolves gRPC 1.83.1 with Go 1.26.8 and the patched indirect dependencies.
 Release verification must test/vet/build and scan this exact combined tree, then deploy its matching
 native Heart artifacts. Installing only the JavaScript package does not upgrade an older adapter.
+The review suggestion to downgrade Go/tooling was rejected against executed evidence:
+`GOTOOLCHAIN=go1.26.8 go version` reports Go 1.26.8, and `go list -m -json
+golang.org/x/vuln@v1.7.0` resolves the upstream `refs/tags/v1.7.0` at
+`617f44b718537dccdea1915395650e0529e3b72e` (2026-08-13), matching the successful vulnerability scan.
 
 After independent review, merge the reviewed sequence and build one identified release artifact.
 Record its Git SHA, package digest, Go toolchain, and Heart digest. On both Mac Klee and imai Anya,

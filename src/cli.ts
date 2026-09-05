@@ -144,7 +144,7 @@ program
       const submissionReport =
         submissions.quarantined || submissions.backingOff ? console.warn : console.log;
       submissionReport(
-        `${submissions.quarantined || submissions.backingOff ? "warning" : "ok"}: cloud result submissions (pending=${submissions.pending}, backing_off=${submissions.backingOff}, quarantined=${submissions.quarantined}, next_attempt_at=${submissions.nextAttemptAt ?? "none"}); result-retry retries reporting only, never local effects`,
+        `${submissions.quarantined || submissions.backingOff ? "warning" : "ok"}: cloud result submissions (total_pending=${submissions.pending}, backing_off=${submissions.backingOff}, quarantined=${submissions.quarantined}, next_attempt_at=${submissions.nextAttemptAt ?? "none"}); result-retry retries reporting only, never local effects`,
       );
     } finally {
       diagnostics.close();

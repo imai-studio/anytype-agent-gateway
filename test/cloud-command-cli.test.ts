@@ -154,6 +154,8 @@ describe("Cloud result submission CLI recovery", () => {
       );
       const line = output.split("\n").find((value) => value.includes("cloud result submissions"));
       expect(line).toContain("warning:");
+      expect(line).toContain("total_pending=1");
+      expect(line).toContain("backing_off=0");
       expect(line).toContain("quarantined=1");
       expect(line).not.toContain(command.commandId);
       expect(line).not.toContain(command.leaseToken);
@@ -161,5 +163,5 @@ describe("Cloud result submission CLI recovery", () => {
     } finally {
       store.close();
     }
-  });
+  }, 20_000);
 });

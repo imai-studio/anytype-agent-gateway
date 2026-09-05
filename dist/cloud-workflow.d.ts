@@ -83,6 +83,7 @@ export declare class CloudCommandStore {
     }, now?: number): boolean;
     markSubmitted(commandId: string, result: CloudCommandResult, now?: number, expectedCommand?: CloudCommandEnvelope): boolean;
     updateLease(commandId: string, leaseExpiresAtSeconds: number, now?: number): void;
+    invalidateLease(command: CloudCommandEnvelope, now?: number): void;
     expire(now?: number): number;
     claimProjection(workerId: string, now?: number): ProjectionRecord | undefined;
     completeProjection(projectionId: string, workerId: string, messageId: string, now?: number): void;

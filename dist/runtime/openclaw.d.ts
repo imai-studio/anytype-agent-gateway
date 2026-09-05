@@ -68,7 +68,7 @@ export declare class OpenClawDriver implements RuntimeDriver {
     private resolveSessionKey;
     private bindBridgeSession;
     private observeBridgeSession;
-    private drainBridgePolling;
+    private drainBridgeWork;
     private pollBridgeOutbox;
     private reportBridgePollError;
     private drainBridgeOutbox;

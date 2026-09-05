@@ -257,8 +257,8 @@ export class CloudClient {
                 signal.throwIfAborted();
                 if (!response.ok) {
                     let error = cloudError(response, responseBody);
-                    if (((input.commandScoped && [400, 404, 409, 410, 422].includes(response.status)) ||
-                        [401, 403].includes(response.status)) &&
+                    if (input.commandScoped &&
+                        [400, 401, 403, 404, 409, 410, 422].includes(response.status) &&
                         error.options.code !== "clock-skew")
                         error = new CloudRequestError(error.message, { ...error.options, retryable: false });
                     if (error.options.serverUnixSeconds !== undefined) {
@@ -353,6 +353,8 @@ function isLocalServiceUrl(value) {
 async function readBoundedResponse(response, signal) {
     const oversized = () => new CloudRequestError("Knot Cloud returned an oversized response", {
         retryable: false,
+        code: "response-too-large",
+        status: response.status,
     });
     const contentLength = response.headers.get("Content-Length");
     if (contentLength && Number(contentLength) > maximumResponseBytes) {
@@ -400,7 +402,10 @@ function parseJson(body) {
         return JSON.parse(new TextDecoder().decode(body));
     }
     catch {
-        throw new CloudRequestError("Knot Cloud returned invalid JSON", { retryable: false });
+        throw new CloudRequestError("Knot Cloud returned invalid JSON", {
+            retryable: false,
+            code: "invalid-json",
+        });
     }
 }
 function cloudError(response, body) {
