@@ -403,7 +403,10 @@ export class AgentController {
             let lastActivityAt = Date.now();
             const prompt = await preparePrompt(context, this.config, sessionKey, conversation.managementEnabled === false
                 ? undefined
-                : this.managementActorCommand(conversation.routeId, threadKey, message), { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId });
+                : this.managementActorCommand(conversation.routeId, threadKey, message), {
+                bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId,
+                onContextRegistryIssue: (reason) => this.log("context_registry_unavailable", { operation: "registration", reason }),
+            });
             const workspacePath = this.store.sessionWorkspace(threadKey);
             const actor = principalFromMessage(message);
             const turn = {

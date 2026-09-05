@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { configSchema, type AgentConfig } from "../src/config.js";
 import {
   AnytypeCloudCommandExecutor,
@@ -9,8 +14,12 @@ import {
   type CloudCommandClient,
   type CloudCommandExecutionPort,
 } from "../src/cloud-workflow.js";
-import { cloudConfigSchema } from "../src/cloud-config.js";
-import { CloudRequestError } from "../src/cloud-client.js";
+import {
+  cloudConfigSchema,
+  initializeCloudConfig,
+  resolveCloudPaths,
+} from "../src/cloud-config.js";
+import { CloudClient, CloudRequestError } from "../src/cloud-client.js";
 import {
   commandEnvelopeSchema,
   commandResultSchema,
@@ -21,6 +30,16 @@ import { Store } from "../src/store.js";
 import { FakeAnytype } from "./fakes.js";
 
 const actorDigest = "a".repeat(64);
+const temporaryDirectories: string[] = [];
+afterEach(() => {
+  for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+function temporaryDirectory(): string {
+  const path = mkdtempSync(join(tmpdir(), "knot-cloud-submission-"));
+  temporaryDirectories.push(path);
+  return path;
+}
 
 function command(
   overrides: Partial<CloudCommandEnvelope> & {
@@ -142,7 +161,680 @@ const succeeded: CloudCommandResult = commandResultSchema.parse({
   },
 });
 
+async function workflowClientConfig(baseUrl = "https://knot.example") {
+  const config = await initializeCloudConfig({
+    paths: resolveCloudPaths({ home: temporaryDirectory() }),
+    baseUrl,
+    connectorName: "Test",
+    requestedScopes: ["anytype.chats.send"],
+  });
+  return {
+    ...config,
+    paired: {
+      connectorId: command().connectorId,
+      tenantId: "00000000-0000-4000-8000-000000000012",
+      scopes: ["anytype.chats.send" as const],
+      siteIds: [],
+      slugGrants: [],
+      approvedAt: 1,
+    },
+  };
+}
+
 describe("cloud workflow bridge", () => {
+  it("renews a live 15-second lease through 30-second result backoff against Cloud HTTP fencing", async () => {
+    let now = 1_000_000;
+    const item = command({ leaseExpiresAt: 1_015 });
+    let leaseExpiresAt = item.leaseExpiresAt;
+    let claimed = false;
+    let completed = false;
+    let results = 0;
+    let renewals = 0;
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString()) as {
+        commandId: string;
+        attempt: number;
+        leaseToken: string;
+        extendBySeconds: number;
+      };
+      const reply = (value: unknown, status = 200) => {
+        response.writeHead(status, { "Content-Type": "application/json" });
+        response.end(JSON.stringify(value));
+      };
+      if (request.url?.endsWith("/claim")) {
+        reply({ protocolVersion: "1.0", commands: claimed ? [] : [item], pollAfterSeconds: 5 });
+        claimed = true;
+        return;
+      }
+      const liveFence =
+        !completed &&
+        body.commandId === item.commandId &&
+        body.attempt === item.attempt &&
+        body.leaseToken === item.leaseToken &&
+        leaseExpiresAt > now / 1_000 &&
+        item.expiresAt > now / 1_000;
+      if (!liveFence) {
+        reply(
+          {
+            type: "https://knot.example/problems/lease-lost",
+            title: "Lease lost",
+            status: 409,
+            code: "lease-lost",
+            requestId: "test-lease-lost",
+            retryable: false,
+          },
+          409,
+        );
+        return;
+      }
+      if (request.url?.endsWith("/extend")) {
+        renewals += 1;
+        leaseExpiresAt = Math.max(
+          leaseExpiresAt,
+          Math.min(item.expiresAt, now / 1_000 + body.extendBySeconds),
+        );
+        reply({
+          protocolVersion: "1.0",
+          commandId: item.commandId,
+          attempt: item.attempt,
+          leaseExpiresAt,
+        });
+        return;
+      }
+      results += 1;
+      if (results === 1) {
+        reply(
+          {
+            type: "https://knot.example/problems/result-conflict",
+            title: "Result conflict",
+            status: 409,
+            code: "result-conflict",
+            requestId: "test-result-conflict",
+            retryable: false,
+          },
+          409,
+        );
+        return;
+      }
+      completed = true;
+      reply({
+        protocolVersion: "1.0",
+        commandId: item.commandId,
+        attempt: item.attempt,
+        status: "accepted",
+        state: "succeeded",
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const store = new Store(":memory:");
+    let extension: CloudWorkflowExtension | undefined;
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing server address");
+      const client = new CloudClient(
+        await workflowClientConfig(`http://127.0.0.1:${address.port}`),
+        { now: () => now, maximumAttempts: 1 },
+      );
+      const execute = vi.fn(async () => succeeded);
+      extension = new CloudWorkflowExtension(
+        store,
+        client,
+        { execute },
+        settings({ leaseSeconds: 15 }),
+        new FakeAnytype(),
+        () => undefined,
+        () => now,
+      );
+      const inbox = new CloudCommandStore(store);
+      await extension.beforeTick();
+      expect(execute).toHaveBeenCalledOnce();
+      await extension.beforeTick();
+      expect(inbox.command(item.commandId)).toMatchObject({
+        state: "terminal_pending",
+        submissionAttempts: 1,
+      });
+      expect(inbox.submissionDiagnostics(now).nextAttemptAt).toBe(1_030_000);
+      const effectReceipt = store.db.prepare("SELECT * FROM cloud_effect_receipts").get();
+      for (const seconds of [5, 10, 20, 30]) {
+        now = 1_000_000 + seconds * 1_000;
+        await extension.beforeTick();
+      }
+      expect(renewals).toBe(3);
+      expect(results).toBe(2);
+      expect(completed).toBe(true);
+      expect(inbox.command(item.commandId)).toMatchObject({
+        state: "succeeded",
+        completedAt: now,
+        result: succeeded,
+      });
+      expect(store.db.prepare("SELECT * FROM cloud_effect_receipts").get()).toEqual(effectReceipt);
+      await extension.beforeTick();
+      expect(results).toBe(2);
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      await extension?.stop();
+      store.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("retains rejected-fence renewal suppression across reopen until a fresh claim", async () => {
+    const path = join(temporaryDirectory(), "state.sqlite");
+    let store = new Store(path);
+    let inbox = new CloudCommandStore(store);
+    let now = 1_000_000;
+    const item = command({ leaseExpiresAt: 1_015 });
+    inbox.persistClaim(item, now);
+    inbox.prepare(item.commandId, false, now);
+    const { fencingToken } = inbox.startEffect(item.commandId, now);
+    inbox.completeEffect(item.commandId, fencingToken, succeeded, now);
+    const receipt = store.db.prepare("SELECT * FROM cloud_effect_receipts").get();
+    const envelope = inbox.envelope(item.commandId);
+    const { client, extendLease, submitResult } = clientFor([]);
+    extendLease.mockRejectedValue(
+      new CloudRequestError("Lost fence", { status: 409, retryable: false }),
+    );
+    submitResult.mockRejectedValue(
+      new CloudRequestError("Temporary outage", { status: 503, retryable: true }),
+    );
+    const execute = vi.fn(async () => succeeded);
+    const createExtension = () =>
+      new CloudWorkflowExtension(
+        store,
+        client,
+        { execute },
+        settings(),
+        new FakeAnytype(),
+        () => undefined,
+        () => now,
+      );
+    let extension = createExtension();
+    await extension.beforeTick();
+    expect(extendLease).toHaveBeenCalledOnce();
+    expect(inbox.command(item.commandId)).toMatchObject({
+      leaseExpiresAt: now,
+      submissionAttempts: 0,
+    });
+    expect(inbox.envelope(item.commandId)).toEqual(envelope);
+    await extension.stop();
+    store.close();
+    store = new Store(path);
+    inbox = new CloudCommandStore(store);
+    now += 5_000;
+    extension = createExtension();
+    await extension.beforeTick();
+    expect(extendLease).toHaveBeenCalledOnce();
+    const fresh = command({
+      attempt: 2,
+      leaseToken: "fresh_lease_token_1234567890abcdefghijk",
+      leaseExpiresAt: 1_025,
+    });
+    inbox.persistClaim(fresh, now);
+    // A late rejection for the former fence must not invalidate the replacement.
+    inbox.invalidateLease(item, now);
+    expect(inbox.command(item.commandId)?.leaseExpiresAt).toBe(1_025_000);
+    extendLease.mockImplementation(async (current) => ({
+      protocolVersion: "1.0",
+      commandId: current.commandId,
+      attempt: current.attempt,
+      leaseExpiresAt: 1_100,
+    }));
+    now += 5_000;
+    await extension.beforeTick();
+    expect(extendLease).toHaveBeenCalledTimes(2);
+    expect(inbox.command(item.commandId)).toMatchObject({
+      leaseExpiresAt: 1_100_000,
+      state: "terminal_pending",
+      result: succeeded,
+      submissionAttempts: 0,
+    });
+    expect(inbox.command(item.commandId)?.completedAt).toBeUndefined();
+    expect(store.db.prepare("SELECT * FROM cloud_effect_receipts").get()).toEqual(receipt);
+    expect(execute).not.toHaveBeenCalled();
+    await extension.stop();
+    store.close();
+  });
+
+  it.each([
+    { failure: "invalid-json", status: 200 },
+    { failure: "invalid-schema", status: 200 },
+    ...[200, 400, 409].map((status) => ({ failure: "response-too-large", status })),
+  ])(
+    "quarantines persistent $status/$failure submissions from the real CloudClient",
+    async ({ failure, status }) => {
+      let now = 1_000_000;
+      const store = new Store(":memory:");
+      const inbox = new CloudCommandStore(store);
+      const item = command();
+      inbox.persistClaim(item, now);
+      inbox.prepare(item.commandId, false, now);
+      inbox.startEffect(item.commandId, now);
+      inbox.recoverInterruptedEffects(now);
+      const retained = inbox.command(item.commandId)!.result;
+      const receipt = store.db.prepare("SELECT * FROM cloud_effect_receipts").get();
+      let resultRequests = 0;
+      const readOversizedBody = vi.fn();
+      const cancelOversizedBody = vi.fn();
+      const client = new CloudClient(await workflowClientConfig(), {
+        now: () => now,
+        maximumAttempts: 1,
+        fetch: async (url) => {
+          if (String(url).endsWith("/result")) {
+            resultRequests += 1;
+            if (failure === "invalid-json") return new Response("{");
+            if (failure === "response-too-large")
+              return new Response(
+                new ReadableStream<Uint8Array>(
+                  { pull: readOversizedBody, cancel: cancelOversizedBody },
+                  { highWaterMark: 0 },
+                ),
+                { status, headers: { "Content-Length": "99999999" } },
+              );
+            return Response.json({ protocolVersion: "1.0", invalidReceipt: true });
+          }
+          return Response.json({ protocolVersion: "1.0", commands: [], pollAfterSeconds: 5 });
+        },
+      });
+      const extension = new CloudWorkflowExtension(
+        store,
+        client,
+        { execute: vi.fn(async () => succeeded) },
+        settings(),
+        new FakeAnytype(),
+        () => undefined,
+        () => now,
+      );
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        await extension.beforeTick();
+        expect(inbox.command(item.commandId)?.submissionAttempts).toBe(attempt);
+        now += 30_000 * 2 ** (attempt - 1);
+      }
+      expect(inbox.command(item.commandId)?.submissionQuarantinedAt).toBeDefined();
+      expect(inbox.command(item.commandId)?.submissionLastErrorCode).toBe(
+        status >= 400 ? `submission-http-${status}` : "submission-fence-or-response-invalid",
+      );
+      now += 3_600_000;
+      await extension.beforeTick();
+      expect(resultRequests).toBe(5);
+      expect(inbox.command(item.commandId)?.result).toEqual(retained);
+      expect(inbox.command(item.commandId)?.completedAt).toBeUndefined();
+      expect(store.db.prepare("SELECT * FROM cloud_effect_receipts").get()).toEqual(receipt);
+      if (failure === "response-too-large") {
+        expect(readOversizedBody).not.toHaveBeenCalled();
+        expect(cancelOversizedBody).toHaveBeenCalledTimes(5);
+      }
+      await extension.stop();
+      store.close();
+    },
+  );
+
+  it.each([
+    ...[401, 403, 503].flatMap((status) =>
+      ["malformed", "oversized"].map((body) => ({ status, body })),
+    ),
+    { status: 0, body: "network" },
+    { status: 0, body: "unknown" },
+    { status: 0, body: "untyped-protocol" },
+  ])(
+    "defers the batch without spending result budget on $status/$body",
+    async ({ status, body }) => {
+      const now = 1_000_000;
+      const store = new Store(":memory:");
+      const inbox = new CloudCommandStore(store);
+      for (let index = 1; index <= 25; index += 1) {
+        const item = command({
+          commandId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        });
+        inbox.persistClaim(item, now);
+        inbox.reject(item.commandId, "test-denial", now);
+      }
+      const fetchMock = vi.fn(async () => {
+        if (body === "network") throw new TypeError("fetch failed");
+        if (body === "unknown") throw new Error("unknown response failure");
+        if (body === "untyped-protocol")
+          throw new CloudRequestError("invalid JSON", { retryable: false });
+        return new Response("{", {
+          status,
+          ...(body === "oversized" ? { headers: { "Content-Length": "99999999" } } : {}),
+        });
+      });
+      const client = new CloudClient(await workflowClientConfig(), {
+        fetch: fetchMock,
+        now: () => now,
+        maximumAttempts: 1,
+      });
+      const extension = new CloudWorkflowExtension(
+        store,
+        client,
+        { execute: vi.fn(async () => succeeded) },
+        settings(),
+        new FakeAnytype(),
+        () => undefined,
+        () => now,
+      );
+      await extension.beforeTick();
+      await extension.beforeTick();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(
+        store.db
+          .prepare("SELECT SUM(submission_attempts) AS failures FROM cloud_command_inbox")
+          .get(),
+      ).toEqual({ failures: 0 });
+      expect(inbox.submissionDiagnostics(now)).toMatchObject({ pending: 25, quarantined: 0 });
+      await extension.stop();
+      store.close();
+    },
+  );
+
+  it.each(["rejected", "wrong-fence"])(
+    "backs off and quarantines %s results across reopen without losing effect barriers",
+    async (failure) => {
+      const path = join(temporaryDirectory(), "state.sqlite");
+      let store = new Store(path);
+      let inbox = new CloudCommandStore(store);
+      const item = command();
+      let now = 1_000_000;
+      inbox.persistClaim(item, now);
+      inbox.prepare(item.commandId, false, now);
+      inbox.startEffect(item.commandId, now);
+      inbox.recoverInterruptedEffects(now);
+      const result = inbox.command(item.commandId)!.result!;
+      const receipt = store.db.prepare("SELECT * FROM cloud_effect_receipts").get();
+      const retained = () =>
+        store.db
+          .prepare(
+            `SELECT envelope_json,attempt,lease_token_digest,
+      local_attempts,effect_key,result_json,last_error_code,last_error,completed_at FROM cloud_command_inbox`,
+          )
+          .get();
+      const original = retained();
+      const { client } = clientFor([]);
+      let requests = 0;
+      client.submitResult = async (submitted) => {
+        requests += 1;
+        if (failure === "rejected")
+          throw new CloudRequestError("Stale fence", { status: 409, retryable: false });
+        return {
+          protocolVersion: "1.0",
+          commandId: submitted.commandId,
+          attempt: submitted.attempt + 1,
+          status: "accepted",
+          state: "failed",
+        };
+      };
+      const execute = vi.fn(async () => succeeded);
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        const extension = new CloudWorkflowExtension(
+          store,
+          client,
+          { execute },
+          settings(),
+          new FakeAnytype(),
+          () => undefined,
+          () => now,
+        );
+        await extension.beforeTick();
+        expect(requests).toBe(attempt);
+        expect(inbox.command(item.commandId)?.submissionAttempts).toBe(attempt);
+        const afterFailure = now;
+        for (let tick = 0; tick < 10; tick += 1) {
+          now += 1_000;
+          await extension.beforeTick();
+        }
+        expect(requests).toBe(attempt);
+        expect(retained()).toEqual(original);
+        expect(store.db.prepare("SELECT * FROM cloud_effect_receipts").get()).toEqual(receipt);
+        await extension.stop();
+        store.close();
+        store = new Store(path);
+        inbox = new CloudCommandStore(store);
+        const reopened = new CloudWorkflowExtension(
+          store,
+          client,
+          { execute },
+          settings(),
+          new FakeAnytype(),
+          () => undefined,
+          () => now,
+        );
+        await reopened.beforeTick();
+        expect(requests).toBe(attempt);
+        await reopened.stop();
+        if (attempt < 5) {
+          expect(inbox.submissionDiagnostics(now)).toMatchObject({
+            pending: 1,
+            backingOff: 1,
+            quarantined: 0,
+          });
+          now = afterFailure + 30_000 * 2 ** (attempt - 1);
+        }
+      }
+      expect(inbox.submissionDiagnostics(now)).toMatchObject({
+        pending: 1,
+        backingOff: 0,
+        quarantined: 1,
+      });
+      expect(inbox.command(item.commandId)?.completedAt).toBeUndefined();
+      expect(inbox.command(item.commandId)?.result).toEqual(result);
+      now += 24 * 60 * 60_000;
+      const extension = new CloudWorkflowExtension(
+        store,
+        client,
+        { execute },
+        settings(),
+        new FakeAnytype(),
+        () => undefined,
+        () => now,
+      );
+      await extension.beforeTick();
+      expect(requests).toBe(5);
+      expect(() => inbox.retry(item.commandId, now)).toThrow("cannot be retried safely");
+      expect(() => inbox.retrySubmission(item.commandId, { operatorApproved: false }, now)).toThrow(
+        "explicit operator approval",
+      );
+      expect(retained()).toEqual(original);
+      expect(inbox.command(item.commandId)?.submissionQuarantinedAt).toBeDefined();
+      expect(inbox.retrySubmission(item.commandId, { operatorApproved: true }, now)).toBe(true);
+      expect(retained()).toEqual(original);
+      expect(store.db.prepare("SELECT * FROM cloud_effect_receipts").get()).toEqual(receipt);
+      client.submitResult = async (submitted) => {
+        requests += 1;
+        return {
+          protocolVersion: "1.0",
+          commandId: submitted.commandId,
+          attempt: submitted.attempt,
+          status: "accepted",
+          state: "failed",
+        };
+      };
+      await extension.beforeTick();
+      expect(requests).toBe(6);
+      expect(inbox.command(item.commandId)?.completedAt).toBe(now);
+      expect(inbox.command(item.commandId)?.result).toEqual(result);
+      expect(execute).not.toHaveBeenCalled();
+      expect(inbox.retrySubmission(item.commandId, { operatorApproved: true }, now)).toBe(false);
+      now += 60_000;
+      await extension.beforeTick();
+      expect(requests).toBe(6);
+      await extension.stop();
+      store.close();
+    },
+  );
+
+  it("keeps healthy results visible behind more than twenty quarantined rows and accepts a late matching receipt", async () => {
+    const store = new Store(":memory:");
+    const inbox = new CloudCommandStore(store);
+    const now = 1_000_000;
+    const items = Array.from({ length: 22 }, (_, index) =>
+      command({
+        commandId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      }),
+    );
+    for (const item of items) {
+      inbox.persistClaim(item, now);
+      inbox.reject(item.commandId, "test-denial", now);
+    }
+    for (const item of items.slice(0, 21))
+      for (let attempt = 0; attempt < 5; attempt += 1)
+        inbox.failSubmission(
+          item,
+          inbox.command(item.commandId)!.result!,
+          "submission-http-409",
+          now,
+        );
+    expect(inbox.terminalPending("", now).map((item) => item.commandId)).toEqual([
+      items[21]!.commandId,
+    ]);
+    expect(inbox.leaseCandidates("", now).map((item) => item.commandId)).toEqual([
+      items[21]!.commandId,
+    ]);
+    expect(inbox.submissionDiagnostics(now)).toMatchObject({ pending: 22, quarantined: 21 });
+    const first = items[0]!;
+    const result = inbox.command(first.commandId)!.result!;
+    expect(inbox.markSubmitted(first.commandId, result, now, { ...first, attempt: 2 })).toBe(false);
+    expect(inbox.command(first.commandId)?.submissionQuarantinedAt).toBe(now);
+    expect(inbox.markSubmitted(first.commandId, result, now, first)).toBe(true);
+    expect(inbox.command(first.commandId)?.submissionQuarantinedAt).toBeUndefined();
+    expect(inbox.command(first.commandId)?.completedAt).toBe(now);
+    expect(inbox.submissionDiagnostics(now)).toMatchObject({ pending: 21, quarantined: 20 });
+    const queued = command();
+    inbox.persistClaim(queued, now);
+    inbox.prepare(queued.commandId, false, now);
+    expect(inbox.retrySubmission(queued.commandId, { operatorApproved: true }, now)).toBe(false);
+    expect(inbox.command(queued.commandId)?.state).toBe("queued");
+    store.close();
+  });
+
+  it("upgrades schema18 with a restorable backup and unchanged results, receipts and active capabilities", () => {
+    const path = join(temporaryDirectory(), "state.sqlite");
+    const previous = new Store(path);
+    const inbox = new CloudCommandStore(previous);
+    const item = command();
+    inbox.persistClaim(item, 1_000_000);
+    inbox.prepare(item.commandId, false, 1_000_000);
+    inbox.startEffect(item.commandId, 1_000_000);
+    inbox.recoverInterruptedEffects(1_000_000);
+    const result = inbox.command(item.commandId)!.result;
+    const receipt = previous.db.prepare("SELECT * FROM cloud_effect_receipts").get();
+    const token = previous.issueManagementCapability("chat:space:chat", "owner", "publish");
+    previous.db.exec(`DROP INDEX cloud_command_submissions_due;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_attempts;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_last_error_code;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_last_error;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_quarantined_at;
+      PRAGMA user_version=18;`);
+    previous.close();
+    const upgraded = new Store(path, () => undefined);
+    expect(upgraded.schemaVersion()).toBe(19);
+    expect(upgraded.consumeManagementCapability(token, "chat:space:chat", "publish")).toBe("owner");
+    expect(new CloudCommandStore(upgraded).command(item.commandId)).toMatchObject({
+      result,
+      submissionAttempts: 0,
+      state: "dead_letter",
+    });
+    expect(upgraded.db.prepare("SELECT * FROM cloud_effect_receipts").get()).toEqual(receipt);
+    const backup = new DatabaseSync(upgraded.migrationBackupPath!);
+    expect(backup.prepare("PRAGMA user_version").get()).toEqual({ user_version: 18 });
+    expect(backup.prepare("SELECT result_json FROM cloud_command_inbox").get()).toEqual({
+      result_json: JSON.stringify(result),
+    });
+    expect(backup.prepare("SELECT * FROM cloud_effect_receipts").get()).toEqual(receipt);
+    backup.close();
+    expect(() => upgraded.db.prepare("DELETE FROM cloud_command_inbox").run()).toThrow(
+      "cloud command inbox is durable",
+    );
+    upgraded.close();
+  });
+
+  it.each([401, 403, "clock-skew"] as const)(
+    "defers the whole batch on global %s errors from the real CloudClient",
+    async (failure) => {
+      let now = 1_000_000;
+      const store = new Store(":memory:");
+      const inbox = new CloudCommandStore(store);
+      for (let index = 0; index < 120; index += 1) {
+        const item = command({
+          commandId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+          leaseExpiresAt: 1_015,
+        });
+        inbox.persistClaim(item, now);
+        if (index < 100) inbox.prepare(item.commandId, true, now);
+        else inbox.reject(item.commandId, "test-denial", now);
+      }
+      const config = await initializeCloudConfig({
+        paths: resolveCloudPaths({ home: temporaryDirectory() }),
+        baseUrl: "https://knot.example",
+        connectorName: "Test",
+        requestedScopes: ["anytype.chats.send"],
+      });
+      const status = failure === "clock-skew" ? 401 : failure;
+      const fetchMock = vi.fn(async () =>
+        Response.json(
+          {
+            type: "https://knot.example/problems/auth",
+            title: "Authentication failed",
+            status,
+            code: failure === "clock-skew" ? "clock-skew" : "connector-denied",
+            requestId: "test-request-id",
+            retryable: false,
+            ...(failure === "clock-skew" ? { serverUnixSeconds: 1_000 } : {}),
+          },
+          { status },
+        ),
+      );
+      const client = new CloudClient(
+        {
+          ...config,
+          paired: {
+            connectorId: command().connectorId,
+            tenantId: "00000000-0000-4000-8000-000000000012",
+            scopes: ["anytype.chats.send"],
+            siteIds: [],
+            slugGrants: [],
+            approvedAt: 1,
+          },
+        },
+        { fetch: fetchMock, now: () => now, maximumAttempts: 2 },
+      );
+      const log = vi.fn();
+      const extension = new CloudWorkflowExtension(
+        store,
+        client,
+        { execute: vi.fn(async () => succeeded) },
+        settings({ approval: "all" }),
+        new FakeAnytype(),
+        log,
+        () => now,
+      );
+      await extension.beforeTick();
+      await extension.beforeTick();
+      expect(fetchMock).toHaveBeenCalledTimes(failure === "clock-skew" ? 2 : 1);
+      expect(
+        log.mock.calls.filter(([event]) => event === "cloud_command_network_deferred"),
+      ).toHaveLength(1);
+      expect(
+        store.db
+          .prepare("SELECT SUM(submission_attempts) AS failures FROM cloud_command_inbox")
+          .get(),
+      ).toEqual({ failures: 0 });
+      expect(inbox.submissionDiagnostics(now)).toMatchObject({ pending: 20, quarantined: 0 });
+      expect(inbox.command("00000000-0000-4000-8000-000000000001")?.leaseExpiresAt).toBe(1_015_000);
+      now += 60_000;
+      await extension.beforeTick();
+      expect(fetchMock).toHaveBeenCalledTimes(failure === "clock-skew" ? 4 : 2);
+      expect(
+        store.db
+          .prepare("SELECT SUM(submission_attempts) AS failures FROM cloud_command_inbox")
+          .get(),
+      ).toEqual({ failures: 0 });
+      await extension.stop();
+      store.close();
+    },
+  );
+
   it("is feature-gated and requires the durable runner", () => {
     const parsed = configSchema.parse({
       version: 1,
@@ -506,10 +1198,10 @@ describe("cloud workflow bridge", () => {
     async (failure) => {
       const store = new Store(":memory:");
       const inbox = new CloudCommandStore(store);
-      const poisoned = command({ leaseExpiresAt: 999 });
+      const poisoned = command({ leaseExpiresAt: 1_015 });
       const healthy = command({
         commandId: "13b1731d-10a3-48ab-b8e4-5b164e536d20",
-        leaseExpiresAt: 999,
+        leaseExpiresAt: 1_015,
       });
       const terminal = command({ commandId: "23b1731d-10a3-48ab-b8e4-5b164e536d20" });
       const fresh = command({ commandId: "33b1731d-10a3-48ab-b8e4-5b164e536d20" });
@@ -560,7 +1252,8 @@ describe("cloud workflow bridge", () => {
       }
       expect(
         extendLease.mock.calls.filter(([item]) => item.commandId === poisoned.commandId),
-      ).toHaveLength(3);
+      ).toHaveLength(1);
+      expect(inbox.command(poisoned.commandId)?.leaseExpiresAt).toBe(1_000_000);
       expect(inbox.command(healthy.commandId)?.leaseExpiresAt).toBe(1_200_000);
       expect(submitted).toEqual([terminal.commandId]);
       expect(inbox.command(terminal.commandId)?.completedAt).toBe(1_000_000);
@@ -638,7 +1331,7 @@ describe("cloud workflow bridge", () => {
     for (let index = 0; index < 101; index += 1) {
       const item = command({
         commandId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
-        leaseExpiresAt: 999,
+        leaseExpiresAt: 1_015,
       });
       inbox.persistClaim(item, 1_000_000);
       inbox.prepare(item.commandId, true, 1_000_000);
@@ -677,7 +1370,7 @@ describe("cloud workflow bridge", () => {
     await extension.beforeTick();
     expect(inbox.command(terminal.commandId)?.completedAt).toBeUndefined();
     expect(claimCommands).not.toHaveBeenCalled();
-    now += 60_000;
+    now += 10_000;
     await extension.beforeTick();
     expect(inbox.command(terminal.commandId)?.completedAt).toBe(now);
     expect(claimCommands).toHaveBeenCalledOnce();
@@ -725,7 +1418,7 @@ describe("cloud workflow bridge", () => {
   it("still defers a batch after a retryable Cloud transport failure", async () => {
     const store = new Store(":memory:");
     const inbox = new CloudCommandStore(store);
-    const item = command({ leaseExpiresAt: 999 });
+    const item = command({ leaseExpiresAt: 1_015 });
     inbox.persistClaim(item, 1_000_000);
     inbox.prepare(item.commandId, true, 1_000_000);
     const { client, extendLease, submitResult, claimCommands } = clientFor([]);

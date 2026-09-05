@@ -59,12 +59,12 @@ export class Gateway {
             const sessions = this.store
                 .listSessionBindings()
                 .filter((binding) => binding.state === "active" || binding.state === "resetting");
-            await pruneWorkspaceContext(this.config, sessions.map((binding) => binding.nativeSessionKey));
+            const result = await pruneWorkspaceContext(this.config, sessions.map((binding) => binding.nativeSessionKey));
+            if (result.status === "skipped" && result.reason !== "disabled")
+                this.log("context_registry_unavailable", { operation: "cleanup", reason: result.reason });
         }
-        catch (error) {
-            this.log("context_prune_failed", {
-                error: error instanceof Error ? error.message : String(error),
-            });
+        catch {
+            this.log("context_prune_failed", { reason: "unexpected-failure" });
         }
     }
     async start() {

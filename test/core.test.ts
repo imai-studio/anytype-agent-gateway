@@ -118,7 +118,42 @@ describe("protocol boundaries", () => {
       },
     });
     const rendered = renderCoordination(text, value, [{ name: "Person", participantId: "person" }]);
-    expect(rendered.marks.map((mark) => mark.param)).toEqual(["_member_person", "reviewer"]);
+    const ordered = [...rendered.marks].sort((left, right) => left.from! - right.from!);
+    const mentions = [...rendered.text.matchAll(/@(Builder|Person|Reviewer)/gu)];
+    expect(ordered).toEqual(
+      mentions.map((mention) => ({
+        type: "mention",
+        from: mention.index,
+        to: mention.index! + mention[0].length,
+        param: mention[1] === "Reviewer" ? "reviewer" : "_member_person",
+      })),
+    );
+    expect(new Set(ordered.map((mark) => mark.param)).size).toBe(2);
+  });
+
+  it("preserves repeated mention marks at the distinct-target fanout limit", () => {
+    const value = config({
+      coordination: {
+        peers: [
+          { name: "Builder", participantId: "_member_person" },
+          { name: "Reviewer", participantId: "reviewer" },
+        ],
+        maxFanout: 1,
+      },
+    });
+    const rendered = renderCoordination(
+      "[[KNOT_MENTION:Person]] @Builder @Person @Reviewer [[KNOT_MENTION:Builder]]",
+      value,
+      [{ name: "Person", participantId: "person" }],
+    );
+    expect(rendered.marks).toHaveLength(4);
+    expect(rendered.marks.every((mark) => mark.param === "_member_person")).toBe(true);
+    expect(rendered.marks.map((mark) => rendered.text.slice(mark.from, mark.to)).sort()).toEqual([
+      "@Builder",
+      "@Builder",
+      "@Person",
+      "@Person",
+    ]);
   });
 
   it("drops ambiguous dynamic names regardless of order while retaining identity-equivalent hydration", () => {

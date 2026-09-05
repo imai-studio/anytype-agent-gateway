@@ -25,6 +25,16 @@ export interface CloudCommandRecord {
     createdAt: number;
     updatedAt: number;
     completedAt?: number;
+    submissionAttempts: number;
+    submissionLastErrorCode?: string;
+    submissionQuarantinedAt?: number;
+}
+export interface CloudSubmissionDiagnostics {
+    pending: number;
+    backingOff: number;
+    quarantined: number;
+    oldestPendingAt?: number;
+    nextAttemptAt?: number;
 }
 export interface CloudCommandClient {
     serverAdjustedNow(): number;
@@ -64,10 +74,16 @@ export declare class CloudCommandStore {
         retryable: boolean;
         retryAt?: number;
     }, maximumAttempts?: number, now?: number): boolean;
-    leaseCandidates(afterCommandId?: string): CloudCommandRecord[];
-    terminalPending(afterCommandId?: string): CloudCommandRecord[];
-    markSubmitted(commandId: string, result: CloudCommandResult, now?: number): boolean;
+    leaseCandidates(afterCommandId?: string, now?: number): CloudCommandRecord[];
+    terminalPending(afterCommandId?: string, now?: number): CloudCommandRecord[];
+    submissionDiagnostics(now?: number): CloudSubmissionDiagnostics;
+    failSubmission(command: CloudCommandEnvelope, result: CloudCommandResult, errorCode: string, now: number): boolean;
+    retrySubmission(commandId: string, authorization: {
+        operatorApproved: boolean;
+    }, now?: number): boolean;
+    markSubmitted(commandId: string, result: CloudCommandResult, now?: number, expectedCommand?: CloudCommandEnvelope): boolean;
     updateLease(commandId: string, leaseExpiresAtSeconds: number, now?: number): void;
+    invalidateLease(command: CloudCommandEnvelope, now?: number): void;
     expire(now?: number): number;
     claimProjection(workerId: string, now?: number): ProjectionRecord | undefined;
     completeProjection(projectionId: string, workerId: string, messageId: string, now?: number): void;

@@ -7,6 +7,8 @@ import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 import { AnytypeClient } from "./anytype-client.js";
 import { loadConfig } from "./config.js";
+import { contextRegistryDoctorLine, inspectContextRegistry } from "./context-retention.js";
+import { CloudCommandStore } from "./cloud-workflow.js";
 import type { ManagementActorCapabilities } from "./controller.js";
 import { HeartDiscussionAdapter } from "./discussions.js";
 import { Gateway } from "./gateway.js";
@@ -138,9 +140,21 @@ program
       report(
         `${counts.failed || counts.dead ? "warning" : "ok"}: reply outbox (pending=${counts.pending}, in_flight=${counts.claimed}, failed=${counts.failed}, dead=${counts.dead}); failed replies retain automatic retries, dead replies require operator recovery`,
       );
+      const submissions = new CloudCommandStore(diagnostics).submissionDiagnostics();
+      const submissionReport =
+        submissions.quarantined || submissions.backingOff ? console.warn : console.log;
+      submissionReport(
+        `${submissions.quarantined || submissions.backingOff ? "warning" : "ok"}: cloud result submissions (total_pending=${submissions.pending}, backing_off=${submissions.backingOff}, quarantined=${submissions.quarantined}, next_attempt_at=${submissions.nextAttemptAt ?? "none"}); result-retry retries reporting only, never local effects`,
+      );
     } finally {
       diagnostics.close();
     }
+    const contextRegistry = await inspectContextRegistry(config);
+    const contextReport =
+      contextRegistry.status === "ready" || contextRegistry.status === "disabled"
+        ? console.log
+        : console.warn;
+    contextReport(contextRegistryDoctorLine(contextRegistry));
     await access(config.anytype.apiKeyFile, constants.R_OK);
     const anytype = await AnytypeClient.create(config);
     for (const configuredSpace of config.spaces) {
@@ -673,7 +687,7 @@ cloudCommands
       commandId,
     }),
   );
-for (const action of ["approve", "cancel", "retry"] as const)
+for (const action of ["approve", "cancel", "retry", "result-retry"] as const)
   cloudCommands
     .command(action)
     .argument("<command-id>")

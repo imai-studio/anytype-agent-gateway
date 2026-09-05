@@ -66,7 +66,7 @@ function versionRecord(
 describe("automation persistence foundation", () => {
   it("retains the v7 automation foundation tables without enabling execution", () => {
     const store = new Store(":memory:");
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(19);
     for (const table of [
       "workflow_definitions",
       "workflow_approval_subjects",
@@ -104,10 +104,10 @@ describe("automation persistence foundation", () => {
 
     const reports: string[] = [];
     const store = new Store(path, (message) => reports.push(message));
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(19);
     expect(store.migrationBackupPath).toBeTruthy();
     expect(store.migrationBackupPath).toContain(".pre-v6.");
-    expect(reports[0]).toContain("from schema 6 to 18");
+    expect(reports[0]).toContain("from schema 6 to 19");
     expect(statSync(store.migrationBackupPath!).mode & 0o777).toBe(0o600);
     const backup = new DatabaseSync(store.migrationBackupPath!, { readOnly: true });
     expect(
@@ -265,7 +265,7 @@ describe("automation persistence foundation", () => {
 
     const store = new Store(path, () => {});
 
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(19);
     expect(
       store.db
         .prepare("SELECT 1 FROM pragma_table_info('workflow_deliveries') WHERE name=?")
@@ -312,12 +312,17 @@ describe("automation persistence foundation", () => {
       DROP INDEX idx_management_actor_capabilities_thread;
       ALTER TABLE management_actor_capabilities DROP COLUMN thread_key;
       ALTER TABLE management_actor_capabilities DROP COLUMN uses_remaining;
+      DROP INDEX cloud_command_submissions_due;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_attempts;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_last_error_code;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_last_error;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_quarantined_at;
       PRAGMA user_version=15;
     `);
     legacy.close();
 
     const store = new Store(path, () => {});
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(19);
     expect(
       store.db
         .prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?")
@@ -355,7 +360,7 @@ describe("automation persistence foundation", () => {
     store.close();
 
     const reopened = new Store(path);
-    expect(reopened.schemaVersion()).toBe(18);
+    expect(reopened.schemaVersion()).toBe(19);
     expect(
       reopened.db
         .prepare("SELECT state FROM workflow_effect_receipts WHERE effect_key='effect-1'")
@@ -382,12 +387,17 @@ describe("automation persistence foundation", () => {
       DROP INDEX idx_management_actor_capabilities_thread;
       ALTER TABLE management_actor_capabilities DROP COLUMN thread_key;
       ALTER TABLE management_actor_capabilities DROP COLUMN uses_remaining;
+      DROP INDEX cloud_command_submissions_due;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_attempts;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_last_error_code;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_last_error;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_quarantined_at;
       PRAGMA user_version=16;
     `);
     legacy.close();
 
     const store = new Store(path, () => {});
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(19);
     for (const table of ["workflow_operator_overrides", "workflow_operator_audit"])
       expect(
         store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table),
@@ -404,7 +414,7 @@ describe("automation persistence foundation", () => {
     store.close();
   });
 
-  it("scrubs legacy raw workflow source during the v8 to v9 migration", () => {
+  it.each([7, 8])("scrubs legacy raw workflow source while upgrading schema %i", (version) => {
     const directory = mkdtempSync(join(tmpdir(), "knot-v8-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "state.sqlite");
@@ -423,11 +433,18 @@ describe("automation persistence foundation", () => {
       INSERT INTO workflow_versions VALUES(
         'workflow-1','version-1','secret-bearing source','legacy-unverified-editor'
       );
-      PRAGMA user_version=8;
+      PRAGMA user_version=${version};
     `);
     legacy.close();
 
     const store = new Store(path);
+    expect(store.schemaVersion()).toBe(19);
+    const backup = new DatabaseSync(store.migrationBackupPath!);
+    expect(backup.prepare("PRAGMA user_version").get()).toEqual({ user_version: version });
+    expect(backup.prepare("SELECT source_text FROM workflow_versions").get()).toEqual({
+      source_text: "secret-bearing source",
+    });
+    backup.close();
     expect(
       store.db
         .prepare(

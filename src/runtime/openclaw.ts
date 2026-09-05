@@ -38,6 +38,7 @@ const GATEWAY_RECONNECT_TIMEOUT_MS = 120_000;
 const RECOVERED_RUN_HISTORY_TIMEOUT_MS = 120_000;
 const MAX_GATEWAY_REQUEST_ATTEMPTS = 3;
 const MAX_BRIDGE_PAGES_PER_POLL = 10;
+const BRIDGE_SHUTDOWN_DRAIN_MS = 10_000;
 
 type ConnectionWaiter = {
   afterGeneration: number;
@@ -72,6 +73,8 @@ export class OpenClawDriver implements RuntimeDriver {
   private readonly bridgeObservers = new Map<string, BridgeObserverState>();
   private bridgePollTimer: NodeJS.Timeout | undefined;
   private bridgePolling: Promise<void> | undefined;
+  private readonly bridgeReceiptAbort = new AbortController();
+  private closing: Promise<void> | undefined;
   private lastBridgePollErrorAt = 0;
 
   constructor(
@@ -111,6 +114,7 @@ export class OpenClawDriver implements RuntimeDriver {
   }
 
   async close(): Promise<void> {
+    if (this.closing) return this.closing;
     this.closed = true;
     this.rejectPendingConnection?.(new Error("OpenClaw driver closed"));
     if (this.pendingClient) this.disconnect(this.pendingClient);
@@ -122,6 +126,8 @@ export class OpenClawDriver implements RuntimeDriver {
     this.bridgePollTimer = undefined;
     for (const observer of this.bridgeObservers.values()) observer.abort.abort();
     this.bridgeObservers.clear();
+    this.closing = this.drainBridgeWork(this.bridgePolling, this.bridgeReceiptAbort);
+    await this.closing;
   }
 
   async configureModel(input: {
@@ -465,6 +471,7 @@ export class OpenClawDriver implements RuntimeDriver {
       recentOutputs: new Map(),
       afterSequence: 0,
       abort: new AbortController(),
+      receiptAbort: new AbortController(),
     };
     this.bridgeObservers.set(id, state);
     try {
@@ -480,9 +487,11 @@ export class OpenClawDriver implements RuntimeDriver {
       }, this.config.channelBridge.pollIntervalMilliseconds);
       this.bridgePollTimer.unref?.();
     }
+    let closing: Promise<void> | undefined;
     return {
       ...(state.cursor ? { cursor: state.cursor } : {}),
       close: async () => {
+        if (closing) return closing;
         state.abort.abort();
         this.bridgeObservers.delete(id);
         state.runs.clear();
@@ -491,8 +500,42 @@ export class OpenClawDriver implements RuntimeDriver {
           clearInterval(this.bridgePollTimer);
           this.bridgePollTimer = undefined;
         }
+        closing = this.drainBridgeWork(state.inFlight, state.receiptAbort);
+        await closing;
       },
     };
+  }
+
+  private async drainBridgeWork(
+    poll: Promise<void> | undefined,
+    receipts: AbortController,
+  ): Promise<void> {
+    if (!poll) return;
+    // onOutput has no cancellation contract. Bound the entire drain, including
+    // that callback; receipts left pending can retry against the controller's
+    // persisted proactive-delivery records (subject to their retention window).
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (reason?: "timeout" | "poll_failed"): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        receipts.abort();
+        if (reason)
+          process.stderr.write(
+            `${JSON.stringify({ level: "warn", event: "openclaw_bridge_shutdown_incomplete", reason })}\n`,
+          );
+        resolve();
+      };
+      // Keep the process alive until successful delivery can finish its ACK,
+      // or this deadline cancels the ACK and leaves the bridge record pending.
+      const timer = setTimeout(() => finish("timeout"), BRIDGE_SHUTDOWN_DRAIN_MS);
+      void poll.then(
+        () => finish(),
+        (error: unknown) =>
+          finish(error instanceof Error && error.name === "AbortError" ? undefined : "poll_failed"),
+      );
+    });
   }
 
   private async pollBridgeOutbox(): Promise<void> {
@@ -518,10 +561,19 @@ export class OpenClawDriver implements RuntimeDriver {
 
   private async drainBridgeOutbox(token: string): Promise<void> {
     for (const observer of [...this.bridgeObservers.values()]) {
+      const work = this.drainBridgeObserver(token, observer);
+      observer.inFlight = work;
       try {
-        await this.drainBridgeObserver(token, observer);
+        await work;
       } catch (error) {
-        if (!observer.abort.signal.aborted) throw error;
+        if (
+          !observer.abort.signal.aborted ||
+          !(error instanceof Error) ||
+          error.name !== "AbortError"
+        )
+          throw error;
+      } finally {
+        if (observer.inFlight === work) observer.inFlight = undefined;
       }
     }
   }
@@ -573,7 +625,9 @@ export class OpenClawDriver implements RuntimeDriver {
             await this.ackBridgeDelivery(
               delivery.id,
               token,
-              delivered ? undefined : observer.abort.signal,
+              delivered
+                ? AbortSignal.any([observer.receiptAbort.signal, this.bridgeReceiptAbort.signal])
+                : observer.abort.signal,
             );
           } catch (error) {
             if (owned) this.markOwnedTerminalText(observer.sessionKey, text);
@@ -613,7 +667,9 @@ export class OpenClawDriver implements RuntimeDriver {
         await this.ackBridgeDeliveries(
           run.deliveryIds,
           token,
-          delivered ? undefined : observer.abort.signal,
+          delivered
+            ? AbortSignal.any([observer.receiptAbort.signal, this.bridgeReceiptAbort.signal])
+            : observer.abort.signal,
         );
         if (owned) this.ownedRunIds.delete(event.runId);
         observer.runs.delete(event.runId);
@@ -1182,6 +1238,8 @@ type BridgeObserverState = {
   recentOutputs: Map<string, { kind: "agent-event" | "message-final"; timestamp: number }>;
   afterSequence: number;
   abort: AbortController;
+  receiptAbort: AbortController;
+  inFlight?: Promise<void> | undefined;
   cursor?: string;
 };
 

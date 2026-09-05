@@ -39,6 +39,8 @@ export declare class OpenClawDriver implements RuntimeDriver {
     private readonly bridgeObservers;
     private bridgePollTimer;
     private bridgePolling;
+    private readonly bridgeReceiptAbort;
+    private closing;
     private lastBridgePollErrorAt;
     constructor(config: Extract<AgentConfig["runtime"], {
         kind: "openclaw";
@@ -66,6 +68,7 @@ export declare class OpenClawDriver implements RuntimeDriver {
     private resolveSessionKey;
     private bindBridgeSession;
     private observeBridgeSession;
+    private drainBridgeWork;
     private pollBridgeOutbox;
     private reportBridgePollError;
     private drainBridgeOutbox;

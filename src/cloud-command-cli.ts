@@ -50,7 +50,7 @@ export async function cloudCommandShow(input: {
 export async function cloudCommandAction(input: {
   agentConfigFile: string;
   commandId: string;
-  action: "approve" | "reject" | "cancel" | "retry";
+  action: "approve" | "reject" | "cancel" | "retry" | "result-retry";
   reasonCode?: string;
   output?: (line: string) => void;
 }): Promise<void> {
@@ -62,12 +62,18 @@ export async function cloudCommandAction(input: {
           ? inbox.reject(input.commandId, input.reasonCode ?? "operator-rejected")
           : input.action === "cancel"
             ? inbox.cancel(input.commandId)
-            : inbox.retry(input.commandId);
+            : input.action === "result-retry"
+              ? inbox.retrySubmission(input.commandId, { operatorApproved: true })
+              : inbox.retry(input.commandId);
     if (!changed)
       throw new Error(
         `Cloud command cannot transition through ${input.action} from its current state`,
       );
-    (input.output ?? console.log)(`${input.action}: ${input.commandId}`);
+    (input.output ?? console.log)(
+      input.action === "result-retry"
+        ? "Result submission retry scheduled; local effects will not run again."
+        : `${input.action}: ${input.commandId}`,
+    );
   });
 }
 

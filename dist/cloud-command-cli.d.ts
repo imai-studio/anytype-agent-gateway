@@ -12,7 +12,7 @@ export declare function cloudCommandShow(input: {
 export declare function cloudCommandAction(input: {
     agentConfigFile: string;
     commandId: string;
-    action: "approve" | "reject" | "cancel" | "retry";
+    action: "approve" | "reject" | "cancel" | "retry" | "result-retry";
     reasonCode?: string;
     output?: (line: string) => void;
 }): Promise<void>;

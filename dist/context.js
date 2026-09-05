@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { prepareWorkspaceDirectory, recordWorkspaceSession } from "./context-retention.js";
+import { prepareWorkspaceDirectory, recordWorkspaceSession, } from "./context-retention.js";
 import { principalFromMessage } from "./principal.js";
 export async function buildContext(anytype, config, conversation, trigger, options = {}) {
     let history = !options.newSession && config.context.historyMessages
@@ -216,8 +216,11 @@ export function formatPrompt(bundle, config, managementCommand, workspaceContext
 export async function preparePrompt(bundle, config, sessionKey, managementCommand, options = {}) {
     const attachmentPaths = (bundle.attachments ?? []).flatMap((item) => item.localPath ? [item.localPath] : []);
     if (config.context.promptMode !== "workspace" || !config.runtime.defaultProject) {
-        if (attachmentPaths.length)
-            await recordWorkspaceSession(config, sessionKey, attachmentPaths);
+        if (attachmentPaths.length) {
+            const result = await recordWorkspaceSession(config, sessionKey, attachmentPaths);
+            if (result.status === "skipped" && result.reason !== "disabled")
+                options.onContextRegistryIssue?.(result.reason);
+        }
         return formatPrompt(bundle, config, managementCommand);
     }
     const payload = {
@@ -238,7 +241,12 @@ export async function preparePrompt(bundle, config, sessionKey, managementComman
     try {
         await writeFile(temporaryFile, `${JSON.stringify({ updatedAt: new Date().toISOString(), ...payload }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
         await rename(temporaryFile, contextFile);
-        await recordWorkspaceSession(config, sessionKey, [...attachmentPaths, contextFile]);
+        const result = await recordWorkspaceSession(config, sessionKey, [
+            ...attachmentPaths,
+            contextFile,
+        ]);
+        if (result.status === "skipped" && result.reason !== "disabled")
+            options.onContextRegistryIssue?.(result.reason);
     }
     finally {
         await unlink(temporaryFile).catch(() => undefined);

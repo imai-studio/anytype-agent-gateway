@@ -657,38 +657,6 @@ export function renderCoordination(
     }
     if (!previous) peers.set(key, { name, participantId: target.participantId, aliases: [] });
   }
-  const marks: TextMark[] = [];
-  const tagged = new Set<string>();
-  const alreadyTagged = (participantId: string) =>
-    [...tagged].some((previous) => sameIdentity(previous, participantId));
-  const matcher = new RegExp(mentionMarker.source, mentionMarker.flags);
-  let rendered = "";
-  let cursor = 0;
-  for (let match = matcher.exec(text); match; match = matcher.exec(text)) {
-    rendered += text.slice(cursor, match.index);
-    cursor = match.index + match[0].length;
-    const peer = peers.get((match[1] ?? "").trim().replace(/^@/, "").toLocaleLowerCase());
-    if (
-      !peer ||
-      (!alreadyTagged(peer.participantId) && tagged.size >= config.coordination.maxFanout)
-    ) {
-      rendered += match[0];
-      continue;
-    }
-    const mention = `@${peer.name}`;
-    if (!alreadyTagged(peer.participantId)) {
-      marks.push({
-        type: "mention",
-        from: rendered.length,
-        to: rendered.length + mention.length,
-        param: peer.participantId,
-      });
-      tagged.add(peer.participantId);
-    }
-    rendered += mention;
-  }
-  rendered += text.slice(cursor);
-  const occupied = marks.map((mark) => [mark.from ?? 0, mark.to ?? 0] as const);
   const uniqueTargets: Array<{ participantId: string; names: Set<string> }> = [];
   for (const target of peers.values()) {
     const previous = uniqueTargets.find((candidate) =>
@@ -697,6 +665,39 @@ export function renderCoordination(
     if (previous) previous.names.add(target.name);
     else uniqueTargets.push({ participantId: target.participantId, names: new Set([target.name]) });
   }
+  const canonicalParticipant = (participantId: string) =>
+    uniqueTargets.find((target) => sameIdentity(target.participantId, participantId))
+      ?.participantId ?? participantId;
+  const marks: TextMark[] = [];
+  const tagged = new Set<string>();
+  const matcher = new RegExp(mentionMarker.source, mentionMarker.flags);
+  let rendered = "";
+  let cursor = 0;
+  for (let match = matcher.exec(text); match; match = matcher.exec(text)) {
+    rendered += text.slice(cursor, match.index);
+    cursor = match.index + match[0].length;
+    const peer = peers.get((match[1] ?? "").trim().replace(/^@/, "").toLocaleLowerCase());
+    const participantId = peer ? canonicalParticipant(peer.participantId) : undefined;
+    if (
+      !peer ||
+      !participantId ||
+      (!tagged.has(participantId) && tagged.size >= config.coordination.maxFanout)
+    ) {
+      rendered += match[0];
+      continue;
+    }
+    const mention = `@${peer.name}`;
+    marks.push({
+      type: "mention",
+      from: rendered.length,
+      to: rendered.length + mention.length,
+      param: participantId,
+    });
+    tagged.add(participantId);
+    rendered += mention;
+  }
+  rendered += text.slice(cursor);
+  const occupied = marks.map((mark) => [mark.from ?? 0, mark.to ?? 0] as const);
   for (const target of uniqueTargets) {
     const names = [...target.names].map(escapeRegExp).join("|");
     const matcher = new RegExp(`@(?:${names})(?![\\p{L}\\p{N}_])`, "giu");
@@ -705,7 +706,7 @@ export function renderCoordination(
       const to = from + match[0].length;
       if (occupied.some(([occupiedFrom, occupiedTo]) => from < occupiedTo && to > occupiedFrom))
         continue;
-      if (alreadyTagged(target.participantId) || tagged.size >= config.coordination.maxFanout)
+      if (!tagged.has(target.participantId) && tagged.size >= config.coordination.maxFanout)
         continue;
       marks.push({ type: "mention", from, to, param: target.participantId });
       tagged.add(target.participantId);

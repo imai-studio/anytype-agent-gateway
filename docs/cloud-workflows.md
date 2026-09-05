@@ -61,6 +61,7 @@ knot cloud commands approve <command-id> --agent-config /private/path/agent.yaml
 knot cloud commands reject <command-id> --reason policy-name --agent-config /private/path/agent.yaml
 knot cloud commands cancel <command-id> --agent-config /private/path/agent.yaml
 knot cloud commands retry <command-id> --agent-config /private/path/agent.yaml
+knot cloud commands result-retry <command-id> --agent-config /private/path/agent.yaml
 ```
 
 Retry is refused when an external effect may already have happened. After a process stops with a
@@ -78,6 +79,42 @@ Each command has one stable effect key and one durable receipt. A result reaches
 stored result with the Cloud attempt and lease token. A duplicate Cloud acknowledgement is safe.
 Retryable reads and idempotent publication controls use bounded backoff; unsafe mutations do not
 repeat automatically.
+
+Permanent command-result rejections (HTTP 400/404/409/410/422 or a mismatched receipt fence) back
+off per stored result, starting at 30 seconds and doubling between failures. After five permanent
+rejections, result submission is quarantined and an operator status projection is queued. The
+stored result, effect receipt, Cloud attempt/fence, and unacknowledged completion state remain
+intact. A matching late acknowledgement can still complete that exact result safely. Quarantined
+and not-yet-due records do not occupy the next submission batch; healthy commands continue.
+The listed HTTP statuses remain permanent rejections when the response body is malformed or
+exceeds the response-size limit. Knot classifies the status without reading an oversized body;
+global auth and server failures still defer the batch.
+
+Valid leases continue renewing while result submission backs off. A permanent renewal rejection
+invalidates only that fence's cached local lease expiry, so Knot cannot start work or repeatedly
+renew under rejected authority. A fresh Cloud claim can restore a valid lease without repeating
+an already-recorded effect. Result quarantine still excludes the record from lease renewal.
+Malformed successful responses also use the result-submission rejection budget; network failures
+and global authentication failures continue to defer the batch.
+
+`knot doctor` reports `total_pending` result submissions, including the `backing_off` and
+`quarantined` subsets. These counts are not disjoint: a quarantined result still awaits a Cloud
+acknowledgement and remains in `total_pending`. The command inspection output includes submission
+attempts and safe error codes. After resolving the Cloud rejection, a local operator can use
+`result-retry` to reschedule reporting of the stored result.
+This is separate from effect retry: it does not rerun an effect, renew authority, or change the
+Cloud attempt/fence. It uses the existing protected local CLI operator boundary and is not exposed
+as a model-facing management tool. Auth failures (401/403), exhausted clock correction, rate limits,
+and transport failures defer the network batch and do not spend the permanent rejection budget.
+
+Before recovery, use `knot cloud commands show <command-id> --agent-config <config-file>` to inspect
+`leaseExpiresAt`.
+`result-retry` does not mint or renew an expired lease. After quarantine, if the lease has expired,
+Cloud must first supply a valid fresh claim; an operator must then explicitly run `result-retry`.
+A fresh claim alone does not clear quarantine, and neither step repeats the stored effect. Cloud
+may be unable to re-claim a terminal or expired command; that requires operator reconciliation on
+the Cloud side rather than repeated local result retries. A matching duplicate acknowledgement
+for a result already accepted by Cloud remains safe.
 
 `notBefore` and `expiresAt` are evaluated with the same server-adjusted clock used to sign Cloud
 requests. A command received before `notBefore` remains durably queued at that timestamp; it is not
@@ -132,7 +169,8 @@ state. Do not infer success from a lost lease or a missing worker process.
 ## Local responsiveness and cancellation
 
 Cloud command lease/result/poll work shares a one-second budget per runner tick. The first network
-failure defers remaining network work until the configured poll interval. Status projection has a
+or global authorization failure defers remaining network work until the configured poll interval.
+Per-command permanent result rejections use their own durable backoff/quarantine. Status projection has a
 separate one-second budget. Local run reauthorization and cancellation run before extension I/O.
 The built-in Cloud and Anytype clients propagate cancellation through queued and active HTTP
 requests and retry delays; extension shutdown aborts and awaits its tracked work. Custom injected

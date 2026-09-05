@@ -1,5 +1,20 @@
 # Upgrade and rollback from AAG
 
+Knot 0.2.0 is prepared but not yet published. The npm command below is for use after trusted
+publishing completes; use the checkout-local installation while preparing the release.
+
+Before running a new Knot binary's `doctor` or `run` against existing state, stop all gateway and
+MCP writers and take a private SQLite-consistent backup using the backup API or `.backup`. Doctor
+opens the state store and can migrate it. Preserve configuration, identity/key references, service
+definitions, context registries, and the independently installed OpenClaw plugin's state/artifact.
+Stop the plugin writer for its snapshot. Do not copy a live database without its committed WAL data.
+
+The first release supports upgrades from schemas 7, 17, and 18 to schema 19. The store creates a
+private pre-migration snapshot before applying the applicable migration chain. Migration 18
+expires pre-thread-binding ephemeral capabilities; migration 19 adds durable result-submission
+retry metadata while preserving results, effect receipts and completion state. Fresh authenticated
+turns replace expired capabilities. Earlier binaries reject schema 19 rather than downgrading it.
+
 If the old package was installed globally, remove it before installing Knot so both packages do not
 compete for the `aag` executable shim:
 
@@ -49,6 +64,13 @@ Every migration writes a manifest below `~/.local/state/knot-migration-manifests
 backup until the upgrade has been observed under normal traffic.
 
 ## Rollback
+
+The service-name rollback below describes the historical rename. An already-renamed Knot service
+should retain its identity and paths during an artifact upgrade. Restore a pre-upgrade database
+only with matching artifacts/configuration, stopped writers, and no stale WAL/SHM sidecars. Once
+new traffic has been accepted, preserve the newer database and prefer a forward fix: restoring an
+old snapshot can lose replies or approvals and repeat external effects. State reconciliation is
+required before a rollback in that case; merely replacing the executable cannot downgrade schema 19.
 
 Linux:
 

@@ -101,6 +101,51 @@ describe("local Cloud publication actions", () => {
     });
   });
 
+  it.each([401, 403])(
+    "preserves retryable HTTP %i publication failures in the durable outbox",
+    async (status) => {
+      const { config, configFile } = await pairedConfig();
+      const client = new CloudClient(config, {
+        maximumAttempts: 1,
+        fetch: async () =>
+          Response.json(
+            {
+              type: "https://knot.example/problems/auth-unavailable",
+              title: "Authentication temporarily unavailable",
+              status,
+              code: "auth-unavailable",
+              requestId: "synthetic-auth-request",
+              retryable: true,
+              retryAfterSeconds: 5,
+            },
+            { status },
+          ),
+      });
+      const result = await publicationAction(
+        {
+          action: "push",
+          configFile,
+          siteId,
+          publicationId,
+          slug: "notes/auth-retry",
+          operation: "create",
+          document,
+        },
+        { client: () => client, workerId: "worker", now: () => 1_000 },
+      );
+      expect(result).toMatchObject({
+        state: "retrying",
+        lastErrorCode: "auth-unavailable",
+        availableAt: 6_000,
+      });
+      if (!("operationId" in result) || typeof result.operationId !== "string")
+        throw new Error("Expected a durable publication operation");
+      expect(
+        await publicationOperationStatus({ configFile, operationId: result.operationId }),
+      ).toMatchObject({ state: "retrying", lastErrorCode: "auth-unavailable" });
+    },
+  );
+
   it("treats a trailing slash as a local slug prefix", async () => {
     const { configFile } = await pairedConfig();
     const client = {
