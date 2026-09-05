@@ -10,6 +10,7 @@ const GATEWAY_RECONNECT_TIMEOUT_MS = 120_000;
 const RECOVERED_RUN_HISTORY_TIMEOUT_MS = 120_000;
 const MAX_GATEWAY_REQUEST_ATTEMPTS = 3;
 const MAX_BRIDGE_PAGES_PER_POLL = 10;
+const BRIDGE_SHUTDOWN_DRAIN_MS = 10_000;
 export class OpenClawDriver {
     config;
     clientConstructor;
@@ -39,6 +40,8 @@ export class OpenClawDriver {
     bridgeObservers = new Map();
     bridgePollTimer;
     bridgePolling;
+    bridgeReceiptAbort = new AbortController();
+    closing;
     lastBridgePollErrorAt = 0;
     constructor(config, clientConstructor, discoverModelsOnStart = false) {
         this.config = config;
@@ -76,6 +79,8 @@ export class OpenClawDriver {
         return results;
     }
     async close() {
+        if (this.closing)
+            return this.closing;
         this.closed = true;
         this.rejectPendingConnection?.(new Error("OpenClaw driver closed"));
         if (this.pendingClient)
@@ -91,6 +96,8 @@ export class OpenClawDriver {
         for (const observer of this.bridgeObservers.values())
             observer.abort.abort();
         this.bridgeObservers.clear();
+        this.closing = this.drainBridgePolling(this.bridgeReceiptAbort);
+        await this.closing;
     }
     async configureModel(input) {
         const client = await this.getClient();
@@ -368,6 +375,7 @@ export class OpenClawDriver {
             recentOutputs: new Map(),
             afterSequence: 0,
             abort: new AbortController(),
+            receiptAbort: new AbortController(),
         };
         this.bridgeObservers.set(id, state);
         try {
@@ -385,9 +393,12 @@ export class OpenClawDriver {
             }, this.config.channelBridge.pollIntervalMilliseconds);
             this.bridgePollTimer.unref?.();
         }
+        let closing;
         return {
             ...(state.cursor ? { cursor: state.cursor } : {}),
             close: async () => {
+                if (closing)
+                    return closing;
                 state.abort.abort();
                 this.bridgeObservers.delete(id);
                 state.runs.clear();
@@ -396,8 +407,35 @@ export class OpenClawDriver {
                     clearInterval(this.bridgePollTimer);
                     this.bridgePollTimer = undefined;
                 }
+                closing = this.drainBridgePolling(state.receiptAbort);
+                await closing;
             },
         };
+    }
+    async drainBridgePolling(receipts) {
+        const poll = this.bridgePolling;
+        if (!poll)
+            return;
+        // onOutput has no cancellation contract. Bound the entire drain, including
+        // that callback; receipts left pending can retry against the controller's
+        // persisted proactive-delivery records (subject to their retention window).
+        await new Promise((resolve) => {
+            let settled = false;
+            const finish = (reason) => {
+                if (settled)
+                    return;
+                settled = true;
+                clearTimeout(timer);
+                receipts.abort();
+                if (reason)
+                    process.stderr.write(`${JSON.stringify({ level: "warn", event: "openclaw_bridge_shutdown_incomplete", reason })}\n`);
+                resolve();
+            };
+            // Keep the process alive until successful delivery can finish its ACK,
+            // or this deadline cancels the ACK and leaves the bridge record pending.
+            const timer = setTimeout(() => finish("timeout"), BRIDGE_SHUTDOWN_DRAIN_MS);
+            void poll.then(() => finish(), () => finish("poll_failed"));
+        });
     }
     async pollBridgeOutbox() {
         if (this.bridgePolling)
@@ -427,7 +465,9 @@ export class OpenClawDriver {
                 await this.drainBridgeObserver(token, observer);
             }
             catch (error) {
-                if (!observer.abort.signal.aborted)
+                if (!observer.abort.signal.aborted ||
+                    !(error instanceof Error) ||
+                    error.name !== "AbortError")
                     throw error;
             }
         }
@@ -482,7 +522,9 @@ export class OpenClawDriver {
                     try {
                         // A successful local delivery must finish its receipt even if close
                         // cancelled the observer while onOutput was awaiting the send.
-                        await this.ackBridgeDelivery(delivery.id, token, delivered ? undefined : observer.abort.signal);
+                        await this.ackBridgeDelivery(delivery.id, token, delivered
+                            ? AbortSignal.any([observer.receiptAbort.signal, this.bridgeReceiptAbort.signal])
+                            : observer.abort.signal);
                     }
                     catch (error) {
                         if (owned)
@@ -524,7 +566,9 @@ export class OpenClawDriver {
                 }
                 if (!delivered && !this.bridgeObservers.has(observer.id))
                     return;
-                await this.ackBridgeDeliveries(run.deliveryIds, token, delivered ? undefined : observer.abort.signal);
+                await this.ackBridgeDeliveries(run.deliveryIds, token, delivered
+                    ? AbortSignal.any([observer.receiptAbort.signal, this.bridgeReceiptAbort.signal])
+                    : observer.abort.signal);
                 if (owned)
                     this.ownedRunIds.delete(event.runId);
                 observer.runs.delete(event.runId);

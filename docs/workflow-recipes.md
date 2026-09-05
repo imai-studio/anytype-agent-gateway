@@ -618,7 +618,10 @@ revokes the previous set. Ignored messages and unrelated discussion roots do not
 An expired, exhausted, revoked, or mismatched capability requires a new authenticated turn;
 this is separate from a sender denied by the configured allowlist. The schema 18 upgrade expires
 pre-upgrade ephemeral capabilities because they lack a source thread; users need a new turn.
-It preserves durable sessions, replies, workflow approvals, and replay records. Do not add a static actor ID to OpenClaw's MCP configuration.
+It preserves durable sessions, replies, workflow approvals, and replay records. Schema 19 adds
+result-submission retry metadata without changing those capability rules. Stop writers and back
+up state before the new `doctor` or `run`, because both can open and migrate an older database.
+Do not add a static actor ID to OpenClaw's MCP configuration.
 
 The source thread controls a capability's lifetime. It is also the target scope for model changes:
 unbound OpenClaw calls supply `discussion_root_id`, which must match the model token's source root.

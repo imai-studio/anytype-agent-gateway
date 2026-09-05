@@ -30,21 +30,25 @@ const fencedCommand: CloudCommandEnvelope = {
 };
 
 describe("CloudClient", () => {
-  it.each(["extend", "result"])(
-    "does not retry %s command conflicts marked retryable",
-    async (operation) => {
+  it.each(
+    [400, 404, 409, 410, 422].flatMap((status) =>
+      ["extend", "result"].map((operation) => ({ status, operation })),
+    ),
+  )(
+    "does not retry $operation command rejection $status marked retryable",
+    async ({ status, operation }) => {
       const config = await pairedConfig();
       const fetchMock = vi.fn(async () =>
         Response.json(
           {
             type: "https://knot.example/problems/stale-fence",
             title: "Stale command fence",
-            status: 409,
+            status,
             code: "stale-fence",
             requestId: "test-request-id",
             retryable: true,
           },
-          { status: 409 },
+          { status },
         ),
       );
       const sleep = vi.fn(async () => undefined);
@@ -53,7 +57,36 @@ describe("CloudClient", () => {
         operation === "extend"
           ? client.extendLease(fencedCommand)
           : client.rejectByLocalPolicy(fencedCommand, "sender-denied");
-      await expect(pending).rejects.toMatchObject({ options: { status: 409, retryable: false } });
+      await expect(pending).rejects.toMatchObject({ options: { status, retryable: false } });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(
+    [401, 403].flatMap((status) => [false, true].map((retryable) => ({ status, retryable }))),
+  )(
+    "returns global auth status $status after one request even when retryable=$retryable",
+    async ({ status, retryable }) => {
+      const config = await pairedConfig();
+      const fetchMock = vi.fn(async () =>
+        Response.json(
+          {
+            type: "https://knot.example/problems/denied",
+            title: "Connector denied",
+            status,
+            code: "connector-denied",
+            requestId: "test-request-id",
+            retryable,
+          },
+          { status },
+        ),
+      );
+      const sleep = vi.fn(async () => undefined);
+      const client = new CloudClient(config, { fetch: fetchMock, sleep, maximumAttempts: 4 });
+      await expect(client.extendLease(fencedCommand)).rejects.toMatchObject({
+        options: { status },
+      });
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(sleep).not.toHaveBeenCalled();
     },

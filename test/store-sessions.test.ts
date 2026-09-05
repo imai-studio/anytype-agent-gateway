@@ -25,7 +25,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(19);
     expect(store.cursor("route")).toBe("order-7");
     expect(
       (
@@ -64,7 +64,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(19);
     expect(
       (
         store.db.prepare("PRAGMA table_info(conversation_models)").all() as Array<{ name: string }>
@@ -110,7 +110,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(19);
     expect(store.sessionWorkspace("chat:space:chat")).toBe("/projects/imai");
     expect(store.sessionWorkspaceSource("chat:space:chat")).toBe("explicit");
     expect(store.db.prepare("PRAGMA foreign_key_list(session_workspaces)").all()).not.toHaveLength(
@@ -236,7 +236,7 @@ describe("session persistence", () => {
     legacy.close();
 
     const store = new Store(path);
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(19);
     const token = store.issueManagementCapability("chat:space:chat", "owner", "publish");
     expect(store.consumeManagementCapability(token, "chat:space:chat", "publish")).toBe("owner");
     store.close();
@@ -252,6 +252,11 @@ describe("session persistence", () => {
     previous.db.exec(`DROP INDEX idx_management_actor_capabilities_thread;
       ALTER TABLE management_actor_capabilities DROP COLUMN thread_key;
       ALTER TABLE management_actor_capabilities DROP COLUMN uses_remaining;
+      DROP INDEX cloud_command_submissions_due;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_attempts;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_last_error_code;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_last_error;
+      ALTER TABLE cloud_command_inbox DROP COLUMN submission_quarantined_at;
       PRAGMA user_version=17;`);
     previous.close();
     const upgraded = new Store(path, () => {});

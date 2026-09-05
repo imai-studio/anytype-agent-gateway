@@ -76,6 +76,14 @@ an Anytype sender, choose a credential, or bypass the local executor catalog.
   plugin's separate SQLite store. Bridge pending finals/events and idempotency tombstones can
   grow indefinitely; payload compaction does not bound row count. A replay-safe archive/recovery
   policy must precede any deletion of those records.
+- Reconcile the OpenClaw bridge's indefinite pending-delivery lifetime with the gateway's thirty-day
+  local deduplication receipt retention. Shutdown drains are bounded and retained local receipts
+  suppress retry after a failed ACK, but a pending record recovered after those receipts expire can
+  be delivered again. This remains an at-least-once contract, not permanent exactly-once delivery.
+  Acceptance tests for a future alignment must cover ACK loss, restart and cleanup beyond thirty
+  days, preserving pending payloads and replay barriers while suppressing a previously delivered
+  record. Include mixed plugin/gateway versions and an operator recovery path; do not solve this
+  by deleting an unacknowledged delivery.
 - A product policy for Cloud `chat.send` origin recency and content binding; today it rechecks the
   native origin sender against current local policy but does not require recent command-specific
   consent.

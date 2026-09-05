@@ -1,5 +1,6 @@
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
@@ -1177,6 +1178,163 @@ describe("AAG Anytype MCP policy", () => {
         reopened.close();
       }
     } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes status and multiple pushes through unbound MCP stdio and the native HTTP client", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "knot-mcp-stdio-publish-"));
+    const siteId = "00000000-0000-4000-8000-000000000011";
+    const publicationId = "00000000-0000-4000-8000-000000000022";
+    const requests: Array<{ method: string; signed: boolean; body: string }> = [];
+    const server = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      requests.push({ method: request.method!, signed: !!request.headers["knot-signature"], body });
+      response.setHeader("content-type", "application/json");
+      if (request.url?.endsWith("/status")) {
+        response.end(
+          JSON.stringify({
+            protocolVersion: "1.0",
+            publicationId,
+            siteId,
+            slug: "notes/status",
+            state: "ready",
+            updatedAt: 1,
+          }),
+        );
+      } else {
+        response.statusCode = 201;
+        response.end(
+          JSON.stringify({
+            protocolVersion: "1.0",
+            publicationId,
+            versionId: "00000000-0000-4000-8000-000000000055",
+            state: "ready",
+          }),
+        );
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing test address");
+      const paths = resolveCloudPaths({ configFile: join(directory, "cloud.json") });
+      const base = await initializeCloudConfig({
+        paths,
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        connectorName: "Synthetic",
+        requestedScopes: ["publications.read", "publications.write"],
+        requestedSlugGrants: ["notes/*"],
+      });
+      await saveCloudConfig(paths, {
+        ...base,
+        paired: {
+          connectorId: "00000000-0000-4000-8000-000000000033",
+          tenantId: "00000000-0000-4000-8000-000000000044",
+          scopes: ["publications.read", "publications.write"],
+          siteIds: [siteId],
+          slugGrants: ["notes/*"],
+          approvedAt: 1,
+        },
+      });
+      const apiKeyFile = join(directory, "synthetic-key");
+      await writeFile(apiKeyFile, "synthetic-unused-key");
+      const configPath = join(directory, "agent.yaml");
+      const statePath = join(directory, "state.sqlite");
+      await writeFile(
+        configPath,
+        YAML.stringify({
+          version: 1,
+          agent: { name: "Synthetic", participantId: "bot" },
+          anytype: { apiKeyFile, apiBase: "http://127.0.0.1:1" },
+          runtime: { kind: "openclaw" },
+          spaces: [{ id: "space-1" }],
+          state: { path: statePath },
+          tools: {
+            anytype: { allowedSpaceIds: ["space-1"] },
+            publish: {
+              enabled: true,
+              allowedUsers: ["owner"],
+              allowedSiteIds: [siteId],
+              allowedSlugPrefixes: ["notes/"],
+              cloudConfigFile: paths.configFile,
+            },
+          },
+        }),
+      );
+      const routeId = "discussion:space-1:discussion";
+      const store = new Store(statePath);
+      const capability = store.issueManagementCapability(
+        routeId,
+        "owner",
+        "publish",
+        undefined,
+        `${routeId}:root:source`,
+      );
+      store.close();
+      const metadata = { route_id: routeId, actor_capability: capability };
+      const status = { action: "status", publication_id: publicationId };
+      const push = {
+        ...metadata,
+        action: "push",
+        publication_id: publicationId,
+        site_id: siteId,
+        operation: "create",
+        document: {
+          schemaVersion: "1.0",
+          title: "Synthetic",
+          blocks: [{ type: "paragraph", content: [{ text: "Ready" }] }],
+        },
+      };
+      const calls = [
+        { ...status, route_id: routeId },
+        { ...status, ...metadata },
+        { ...push, slug: "notes/one" },
+        { ...push, slug: "notes/two" },
+        { ...push, slug: "outside/denied" },
+      ];
+      const environment = { ...process.env };
+      for (const key of Object.keys(environment))
+        if (/^(?:KNOT_|AAG_|ANYTYPE_|OPENCLAW_)/u.test(key)) delete environment[key];
+      const { stdout } = await runProcess(
+        process.execPath,
+        [resolve("dist/cli.js"), "mcp", "--config", configPath],
+        {
+          env: environment,
+          timeoutMs: 5_000,
+          stdin:
+            calls
+              .map((args, index) =>
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: index + 1,
+                  method: "tools/call",
+                  params: { name: "aag_publish", arguments: args },
+                }),
+              )
+              .join("\n") + "\n",
+        },
+      );
+      const responses = stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).result);
+      expect(responses).toHaveLength(5);
+      expect(responses[0].isError).toBe(true);
+      expect(responses[4].isError).toBe(true);
+      expect(
+        responses.slice(1, 4).map((result) => JSON.parse(result.content[0].text).state),
+      ).toEqual(["ready", "succeeded", "succeeded"]);
+      expect(requests.map((request) => request.method)).toEqual(["POST", "POST", "POST"]);
+      expect(requests.every((request) => request.signed)).toBe(true);
+      expect(requests.slice(1).map((request) => JSON.parse(request.body).slug)).toEqual([
+        "notes/one",
+        "notes/two",
+      ]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       await rm(directory, { recursive: true, force: true });
     }
   });

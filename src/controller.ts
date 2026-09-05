@@ -559,7 +559,11 @@ export class AgentController {
         conversation.managementEnabled === false
           ? undefined
           : this.managementActorCommand(conversation.routeId, threadKey, message),
-        { bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId },
+        {
+          bootstrapWorkspace: newSession || !existingBinding?.nativeSessionId,
+          onContextRegistryIssue: (reason) =>
+            this.log("context_registry_unavailable", { operation: "registration", reason }),
+        },
       );
       const workspacePath = this.store.sessionWorkspace(threadKey);
       const actor = principalFromMessage(message);

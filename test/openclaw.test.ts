@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { configSchema } from "../src/config.js";
 import { OpenClawDriver } from "../src/runtime/openclaw.js";
 import { BridgeServer, BridgeStore } from "../packages/openclaw-anytype-channel/src/index.js";
@@ -689,7 +694,244 @@ const bridgeTestFinal = {
   message: { text: "direct reply" },
 };
 
+// Use the real controller, disk Store, HTTP bridge, and process exit. Only the
+// Anytype write port is synthetic; its append-only log survives child restarts.
+const bridgeShutdownChild = `
+import { appendFileSync } from "node:fs";
+import { configSchema } from "./src/config.ts";
+import { AgentController } from "./src/controller.ts";
+import { Store } from "./src/store.ts";
+import { OpenClawDriver } from "./src/runtime/openclaw.ts";
+import { FakeAnytype } from "./test/fakes.ts";
+const [mode, database, sends, url] = process.argv.slice(1);
+const keepAlive = setInterval(() => undefined, 1_000);
+process.env.KNOT_SHUTDOWN_TEST_TOKEN = "synthetic-bridge-token-for-shutdown-test";
+const config = configSchema.parse({
+  version: 1, agent: { name: "Test", participantId: "bot" },
+  anytype: { apiKeyFile: "/tmp/synthetic-key" }, spaces: [{ id: "space" }],
+  runtime: { kind: "openclaw", channelBridge: {
+    enabled: true, url, tokenEnv: "KNOT_SHUTDOWN_TEST_TOKEN", pollIntervalMilliseconds: 100,
+  } },
+});
+const driver = new OpenClawDriver(config.runtime);
+let shuttingDown;
+let signalShutdown;
+const shutdownStarted = new Promise((resolve) => { signalShutdown = resolve; });
+class Anytype extends FakeAnytype {
+  async sendMessage(...args) {
+    const id = await super.sendMessage(...args);
+    appendFileSync(sends, id + "\\n");
+    if (mode === "shutdown") {
+      shuttingDown = driver.close();
+      signalShutdown();
+    }
+    return id;
+  }
+}
+const store = new Store(database);
+if (!store.sessionBinding("thread")) store.saveSessionBinding({
+  threadKey: "thread", routeId: "chat:space:chat", spaceId: "space", chatId: "chat",
+  runtime: "openclaw", nativeSessionKey: "session", generation: 0, state: "active",
+});
+const controller = new AgentController(new Anytype(), driver, config, store, () => undefined);
+try {
+  await controller.restoreObserversForRoute({ kind: "chat", routeId: "chat:space:chat", spaceId: "space", chatId: "chat" });
+} catch (error) {
+  if (!/observer closed|acknowledgement returned HTTP 503/.test(String(error))) throw error;
+}
+if (mode === "shutdown") {
+  await shutdownStarted;
+  await shuttingDown;
+}
+await controller.stop();
+store.close();
+clearInterval(keepAlive);
+// Deliberately exit here rather than allowing an un-awaited ACK to finish.
+process.exit(0);
+`;
+
+describe("OpenClaw bridge process shutdown", () => {
+  it.each(["final", "event"])(
+    "drains a delivered %s ACK before process exit",
+    async (kind) => {
+      const fixture = await bridgeProcessFixture(kind);
+      try {
+        await fixture.run("shutdown");
+        expect(fixture.pending()).toEqual([]);
+        expect(await fixture.sendCount()).toBe(1);
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+    15_000,
+  );
+
+  it.each(["final", "event"])(
+    "uses the persisted %s receipt after ACK failure and process restart",
+    async (kind) => {
+      const fixture = await bridgeProcessFixture(kind);
+      try {
+        fixture.rejectAck(true);
+        const result = await fixture.run("shutdown");
+        expect(result.stderr).toContain("openclaw_bridge_shutdown_incomplete");
+        expect(result.stderr).toContain("poll_failed");
+        expect(fixture.pending()).toHaveLength(1);
+        expect(await fixture.sendCount()).toBe(1);
+        fixture.rejectAck(false);
+        await fixture.run("restart");
+        expect(fixture.pending()).toEqual([]);
+        expect(await fixture.sendCount()).toBe(1);
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+    15_000,
+  );
+});
+
+async function bridgeProcessFixture(kind: string) {
+  const directory = await mkdtemp(join(tmpdir(), "knot-bridge-shutdown-"));
+  const database = join(directory, "state.sqlite");
+  const sends = join(directory, "sends.log");
+  let rejectAck = false;
+  let firstPollEmpty = false;
+  let pending: Array<{ id: string } & Record<string, unknown>> =
+    kind === "final"
+      ? [bridgeTestFinal]
+      : [
+          {
+            id: "terminal",
+            idempotencyKey: "terminal-source",
+            storeSequence: 1,
+            sessionKey: "session",
+            kind: "agent-event",
+            agentEvent: {
+              runId: "external",
+              seq: 1,
+              stream: "lifecycle",
+              timestamp: 1,
+              data: { phase: "error", text: "synthetic failure" },
+            },
+          },
+        ];
+  const server = createServer(async (request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    if (request.method === "POST") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      // Slow enough that returning from close immediately kills the ACK socket.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (response.destroyed) return;
+      if (rejectAck) {
+        response.writeHead(503);
+        response.end("{}");
+        return;
+      }
+      const ids: string[] =
+        url.pathname === "/v1/outbox/ack"
+          ? (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { ids: string[] }).ids
+          : [url.pathname.split("/")[3]!];
+      pending = pending.filter((delivery) => !ids.includes(delivery.id));
+      response.end("{}");
+      return;
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ deliveries: firstPollEmpty ? [] : pending }));
+    firstPollEmpty = false;
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing fixture address");
+  return {
+    run: async (mode: string) => {
+      firstPollEmpty = mode === "shutdown";
+      return await promisify(execFile)(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "--input-type=module",
+          "-e",
+          bridgeShutdownChild,
+          mode,
+          database,
+          sends,
+          `http://127.0.0.1:${address.port}`,
+        ],
+        { cwd: resolve(import.meta.dirname, ".."), timeout: 12_000 },
+      );
+    },
+    pending: () => pending,
+    rejectAck: (value: boolean) => {
+      rejectAck = value;
+    },
+    sendCount: async () => (await readFile(sends, "utf8")).trim().split("\n").length,
+    cleanup: async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
+}
+
 describe("OpenClaw shutdown and acknowledgement fences", () => {
+  it.each(["observer", "driver"])(
+    "bounds %s close when onOutput never completes",
+    async (target) => {
+      vi.useFakeTimers();
+      const warnings = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      let deliveries: unknown[] = [];
+      let finishOutput!: () => void;
+      const outputs = vi.fn(
+        async () =>
+          new Promise<void>((resolve) => {
+            finishOutput = resolve;
+          }),
+      );
+      const acknowledged = vi.fn();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_url: URL, options?: RequestInit) => {
+          if (options?.method === "POST") {
+            options.signal?.throwIfAborted();
+            acknowledged();
+            return Response.json({ ok: true });
+          }
+          return Response.json({ deliveries });
+        }),
+      );
+      const driver = new OpenClawDriver(bridgeTestRuntime());
+      const observer = await driver.observeSession(
+        { sessionKey: "session", conversation: bridgeTestConversation },
+        outputs,
+      );
+      deliveries = [bridgeTestFinal];
+      await vi.advanceTimersByTimeAsync(100);
+      expect(outputs).toHaveBeenCalledTimes(1);
+      let closed = false;
+      const closing = (target === "observer" ? observer.close() : driver.close()).then(() => {
+        closed = true;
+      });
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(closed).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await closing;
+      expect(closed).toBe(true);
+      expect(
+        warnings.mock.calls.some(([line]) =>
+          String(line).includes("openclaw_bridge_shutdown_incomplete"),
+        ),
+      ).toBe(true);
+      expect(acknowledged).not.toHaveBeenCalled();
+      expect(deliveries).toHaveLength(1);
+      // A callback that settles after the deadline cannot initiate a late ACK.
+      finishOutput();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(acknowledged).not.toHaveBeenCalled();
+      await driver.close();
+    },
+  );
+
   it.each([
     ["observer", "final"],
     ["observer", "event"],
@@ -761,11 +1003,11 @@ describe("OpenClaw shutdown and acknowledgement fences", () => {
     const expectedIds = deliveries.map((delivery) => delivery.id);
     await vi.advanceTimersByTimeAsync(100);
     expect(outputs).toHaveBeenCalledTimes(1);
-    if (target === "observer") await observer.close();
-    else await driver.close();
+    const closing = target === "observer" ? observer.close() : driver.close();
     expect(acknowledged).toEqual([]);
     finishOutput();
     await vi.advanceTimersByTimeAsync(0);
+    await closing;
     expect(acknowledged).toEqual(expectedIds);
     expect(deliveries).toEqual([]);
 
@@ -809,11 +1051,11 @@ describe("OpenClaw shutdown and acknowledgement fences", () => {
       held = true;
       await vi.advanceTimersByTimeAsync(100);
       expect(release).toBeTypeOf("function");
-      if (target === "observer") await observer.close();
-      else await driver.close();
+      const closing = target === "observer" ? observer.close() : driver.close();
       // Deliberately emulate a transport that completes despite cancellation.
       release(Response.json({ deliveries: [bridgeTestFinal] }));
       await vi.advanceTimersByTimeAsync(0);
+      await closing;
       expect(outputs).not.toHaveBeenCalled();
       expect(acks).not.toHaveBeenCalled();
       await driver.close();

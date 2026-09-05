@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { normalizedEventSchema } from "./automation/event.js";
 import { evaluateWorkflowPolicy } from "./automation/policy.js";
 import { WORKFLOW_POLICY_VERSION, canonicalJson, canonicalStoredWorkflowApproval, canonicalStoredWorkflowDefinition, canonicalWorkflowDefinition, redactStoredWorkflowJson, workflowApprovalHash, workflowApprovalMaterial, workflowDefinitionSchema, workflowSourceDigest, workflowVersionHash, } from "./automation/workflow.js";
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 function managementCapabilityHash(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -88,6 +88,8 @@ export class Store {
                 this.migrateToVersion17();
             if (current < 18)
                 this.migrateToVersion18();
+            if (current < 19)
+                this.migrateToVersion19();
             this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
         }
         catch (error) {
@@ -958,6 +960,17 @@ export class Store {
       ALTER TABLE management_actor_capabilities ADD COLUMN uses_remaining INTEGER NOT NULL DEFAULT 1 CHECK(uses_remaining >= 0);
       DELETE FROM management_actor_capabilities;
       CREATE INDEX idx_management_actor_capabilities_thread ON management_actor_capabilities(thread_key);
+    `);
+    }
+    migrateToVersion19() {
+        this.db.exec(`
+      ALTER TABLE cloud_command_inbox ADD COLUMN submission_attempts INTEGER NOT NULL DEFAULT 0 CHECK(submission_attempts >= 0);
+      ALTER TABLE cloud_command_inbox ADD COLUMN submission_last_error_code TEXT;
+      ALTER TABLE cloud_command_inbox ADD COLUMN submission_last_error TEXT;
+      ALTER TABLE cloud_command_inbox ADD COLUMN submission_quarantined_at INTEGER;
+      CREATE INDEX cloud_command_submissions_due ON cloud_command_inbox(available_at,command_id)
+        WHERE submission_quarantined_at IS NULL AND completed_at IS NULL
+          AND state IN ('terminal_pending','dead_letter');
     `);
     }
     isInitialized(routeId) {

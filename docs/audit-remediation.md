@@ -105,11 +105,25 @@ Run Node 24+/pnpm 11 frozen install, `pnpm run check`, `pnpm run release:gates`,
 `pnpm audit`, and Heart test/vet/build plus pinned `govulncheck@v1.7.0` on Go 1.26.8. Matching compiled
 artifacts belong in the same reviewed commit. The PR handoff records exact results and commits.
 
-The existing [gRPC update PR #24](https://github.com/imai-studio/knot/pull/24), at
-`0f689b32b4c12ad4a40babe58bd881d26364f134`, is a release prerequisite. This remediation deliberately
-avoids duplicating its gRPC update. Its exact dependency files combined with these Heart changes
-were tested in an isolated module with test/vet/build and a clean complete vulnerability scan.
-Do not deploy the standalone remediation Heart binary while it still resolves gRPC 1.82.1.
+The pre-release follow-up to the second independent review adds durable per-result backoff and
+quarantine, without marking an unacknowledged result submitted or repeating its effect. Global
+auth/transport failures defer a batch; only permanent command/fence rejections spend the rejection
+budget. Doctor exposes aggregate submission and context-registry diagnostics. Registry failures
+remain fail-closed for deletion and nonfatal for prompts, but now report fixed nonsecret reason codes.
+Stale registry locks can be reclaimed and acquired in the same bounded, zero-wait update.
+
+OpenClaw shutdown drains delivery/ACK work for at most ten seconds, including a potentially hung
+output callback. Real subprocess tests verify successful ACK before exit and ACK-failure recovery
+through the controller's persisted delivery receipts. That is not a permanent exactly-once guarantee:
+local deduplication receipts expire after thirty days while plugin pending delivery can persist.
+Repeated mention occurrences keep native marks with one canonical equivalent identity; fanout counts
+distinct targets. A real unbound MCP subprocess performs status and two pushes through the native
+HTTP client against a local synthetic Cloud server; live native interoperability remains a release gate.
+
+The [gRPC update PR #24](https://github.com/imai-studio/knot/pull/24) and remediation PR #25 are now
+merged. The combined tree resolves gRPC 1.83.1 with Go 1.26.8 and the patched indirect dependencies.
+Release verification must test/vet/build and scan this exact combined tree, then deploy its matching
+native Heart artifacts. Installing only the JavaScript package does not upgrade an older adapter.
 
 After independent review, merge the reviewed sequence and build one identified release artifact.
 Record its Git SHA, package digest, Go toolchain, and Heart digest. On both Mac Klee and imai Anya,
@@ -121,8 +135,12 @@ then service start and live smoke checks. Verify real unbound OpenClaw MCP statu
 publishes on harmless synthetic objects, Unicode discussion mentions, hop guard, timeout/shutdown,
 and existing chat/session continuity. Do not publish private chat/history.
 
-Schema 18 creates a pre-migration backup and expires only pre-upgrade ephemeral capabilities. Older
-schema-17 binaries cannot reopen schema-18 state. Prefer a forward fix; do not blindly restore a
+Schema 19 adds dedicated durable result-submission metadata, keeping effect attempts/fences,
+results, receipts and completion state separate from submission retry policy. Earlier migrations,
+including schema 18's expiry of pre-thread-binding ephemeral capabilities, remain unchanged.
+Upgrades from 7, 17, and 18 create private pre-migration backups. Older binaries cannot reopen
+schema-19 state. Doctor itself can migrate state, so stop writers and take a consistent operator
+backup before running the new doctor. Prefer a forward fix; do not blindly restore a
 pre-upgrade database after new messages/effects have been accepted. Any rollback needs an explicit
 state reconciliation plan to avoid losing replies or replaying effects. Keep Cloud repository
 changes outside this release unless separately justified and reviewed.

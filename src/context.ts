@@ -3,7 +3,11 @@ import { rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AgentConfig } from "./config.js";
 import type { AnytypePort, ChatMessage, ContextBundle, ConversationRef } from "./types.js";
-import { prepareWorkspaceDirectory, recordWorkspaceSession } from "./context-retention.js";
+import {
+  prepareWorkspaceDirectory,
+  recordWorkspaceSession,
+  type ContextRegistryIssue,
+} from "./context-retention.js";
 import { principalFromMessage } from "./principal.js";
 
 export async function buildContext(
@@ -257,13 +261,20 @@ export async function preparePrompt(
   config: AgentConfig,
   sessionKey: string,
   managementCommand?: string,
-  options: { bootstrapWorkspace?: boolean } = {},
+  options: {
+    bootstrapWorkspace?: boolean;
+    onContextRegistryIssue?: (reason: ContextRegistryIssue) => void;
+  } = {},
 ): Promise<string> {
   const attachmentPaths = (bundle.attachments ?? []).flatMap((item) =>
     item.localPath ? [item.localPath] : [],
   );
   if (config.context.promptMode !== "workspace" || !config.runtime.defaultProject) {
-    if (attachmentPaths.length) await recordWorkspaceSession(config, sessionKey, attachmentPaths);
+    if (attachmentPaths.length) {
+      const result = await recordWorkspaceSession(config, sessionKey, attachmentPaths);
+      if (result.status === "skipped" && result.reason !== "disabled")
+        options.onContextRegistryIssue?.(result.reason);
+    }
     return formatPrompt(bundle, config, managementCommand);
   }
 
@@ -289,7 +300,12 @@ export async function preparePrompt(
       { mode: 0o600, flag: "wx" },
     );
     await rename(temporaryFile, contextFile);
-    await recordWorkspaceSession(config, sessionKey, [...attachmentPaths, contextFile]);
+    const result = await recordWorkspaceSession(config, sessionKey, [
+      ...attachmentPaths,
+      contextFile,
+    ]);
+    if (result.status === "skipped" && result.reason !== "disabled")
+      options.onContextRegistryIssue?.(result.reason);
   } finally {
     await unlink(temporaryFile).catch(() => undefined);
   }

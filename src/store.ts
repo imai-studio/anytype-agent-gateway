@@ -47,7 +47,7 @@ import {
   type JsonValue,
 } from "./automation/workflow.js";
 
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 const MAX_FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 export type ManagementCapabilityScope = "wake" | "access" | "model" | "publish";
 
@@ -133,6 +133,7 @@ export class Store {
       if (current < 16) this.migrateToVersion16();
       if (current < 17) this.migrateToVersion17();
       if (current < 18) this.migrateToVersion18();
+      if (current < 19) this.migrateToVersion19();
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; COMMIT`);
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -1084,6 +1085,18 @@ export class Store {
       ALTER TABLE management_actor_capabilities ADD COLUMN uses_remaining INTEGER NOT NULL DEFAULT 1 CHECK(uses_remaining >= 0);
       DELETE FROM management_actor_capabilities;
       CREATE INDEX idx_management_actor_capabilities_thread ON management_actor_capabilities(thread_key);
+    `);
+  }
+
+  private migrateToVersion19(): void {
+    this.db.exec(`
+      ALTER TABLE cloud_command_inbox ADD COLUMN submission_attempts INTEGER NOT NULL DEFAULT 0 CHECK(submission_attempts >= 0);
+      ALTER TABLE cloud_command_inbox ADD COLUMN submission_last_error_code TEXT;
+      ALTER TABLE cloud_command_inbox ADD COLUMN submission_last_error TEXT;
+      ALTER TABLE cloud_command_inbox ADD COLUMN submission_quarantined_at INTEGER;
+      CREATE INDEX cloud_command_submissions_due ON cloud_command_inbox(available_at,command_id)
+        WHERE submission_quarantined_at IS NULL AND completed_at IS NULL
+          AND state IN ('terminal_pending','dead_letter');
     `);
   }
 

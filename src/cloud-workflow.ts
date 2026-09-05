@@ -53,6 +53,10 @@ type CommandRow = {
   created_at: number;
   updated_at: number;
   completed_at: number | null;
+  submission_attempts: number;
+  submission_last_error_code: string | null;
+  submission_last_error: string | null;
+  submission_quarantined_at: number | null;
 };
 
 export interface CloudCommandRecord {
@@ -74,7 +78,20 @@ export interface CloudCommandRecord {
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
+  submissionAttempts: number;
+  submissionLastErrorCode?: string;
+  submissionQuarantinedAt?: number;
 }
+
+export interface CloudSubmissionDiagnostics {
+  pending: number;
+  backingOff: number;
+  quarantined: number;
+  oldestPendingAt?: number;
+  nextAttemptAt?: number;
+}
+
+class CloudCommandFenceError extends Error {}
 
 export interface CloudCommandClient {
   serverAdjustedNow(): number;
@@ -324,7 +341,8 @@ export class CloudCommandStore {
     const changed = this.store.db
       .prepare(
         `UPDATE cloud_command_inbox SET state='queued',available_at=?,last_error_code=NULL,
-         last_error=NULL,result_json=NULL,completed_at=NULL,updated_at=?
+         last_error=NULL,result_json=NULL,completed_at=NULL,updated_at=?,submission_attempts=0,
+         submission_last_error_code=NULL,submission_last_error=NULL,submission_quarantined_at=NULL
          WHERE command_id=? AND completed_at IS NULL
          AND state IN ('terminal_pending','failed','dead_letter')`,
       )
@@ -512,32 +530,125 @@ export class CloudCommandStore {
     }
   }
 
-  leaseCandidates(afterCommandId = ""): CloudCommandRecord[] {
+  leaseCandidates(afterCommandId = "", now = Date.now()): CloudCommandRecord[] {
     return (
       this.store.db
         .prepare(
           `SELECT * FROM cloud_command_inbox
            WHERE state IN ('received','awaiting_approval','queued','running','terminal_pending')
+             AND (state<>'terminal_pending' OR (submission_quarantined_at IS NULL AND available_at<=?))
            ORDER BY CASE WHEN command_id>? THEN 0 ELSE 1 END,command_id LIMIT 100`,
         )
-        .all(afterCommandId) as unknown as CommandRow[]
+        .all(now, afterCommandId) as unknown as CommandRow[]
     ).map(mapCommand);
   }
 
-  terminalPending(afterCommandId = ""): CloudCommandRecord[] {
+  terminalPending(afterCommandId = "", now = Date.now()): CloudCommandRecord[] {
     return (
       this.store.db
         .prepare(
           `SELECT * FROM cloud_command_inbox
-           WHERE state='terminal_pending'
-              OR (state='dead_letter' AND result_json IS NOT NULL AND completed_at IS NULL)
+           WHERE state IN ('terminal_pending','dead_letter') AND result_json IS NOT NULL
+             AND completed_at IS NULL AND submission_quarantined_at IS NULL AND available_at<=?
            ORDER BY CASE WHEN command_id>? THEN 0 ELSE 1 END,command_id LIMIT 20`,
         )
-        .all(afterCommandId) as unknown as CommandRow[]
+        .all(now, afterCommandId) as unknown as CommandRow[]
     ).map(mapCommand);
   }
 
-  markSubmitted(commandId: string, result: CloudCommandResult, now = Date.now()): boolean {
+  submissionDiagnostics(now = Date.now()): CloudSubmissionDiagnostics {
+    const row = this.store.db
+      .prepare(
+        `
+      SELECT COUNT(*) AS pending,
+        COALESCE(SUM(submission_quarantined_at IS NULL AND available_at>?),0) AS backing_off,
+        COALESCE(SUM(submission_quarantined_at IS NOT NULL),0) AS quarantined,
+        MIN(created_at) AS oldest_pending_at,
+        MIN(CASE WHEN submission_quarantined_at IS NULL THEN available_at END) AS next_attempt_at
+      FROM cloud_command_inbox WHERE state IN ('terminal_pending','dead_letter')
+        AND result_json IS NOT NULL AND completed_at IS NULL
+    `,
+      )
+      .get(now) as {
+      pending: number;
+      backing_off: number;
+      quarantined: number;
+      oldest_pending_at: number | null;
+      next_attempt_at: number | null;
+    };
+    return {
+      pending: row.pending,
+      backingOff: row.backing_off,
+      quarantined: row.quarantined,
+      ...(row.oldest_pending_at === null ? {} : { oldestPendingAt: row.oldest_pending_at }),
+      ...(row.next_attempt_at === null ? {} : { nextAttemptAt: row.next_attempt_at }),
+    };
+  }
+
+  failSubmission(
+    command: CloudCommandEnvelope,
+    result: CloudCommandResult,
+    errorCode: string,
+    now: number,
+  ): boolean {
+    const failed = this.store.db
+      .prepare(
+        `
+      UPDATE cloud_command_inbox SET submission_attempts=submission_attempts+1,
+        submission_last_error_code=?,submission_last_error='Cloud did not acknowledge the stored result',
+        submission_quarantined_at=CASE WHEN submission_attempts+1>=5 THEN ? ELSE NULL END,
+        available_at=?+30000*(1 << MIN(submission_attempts,4)),updated_at=?
+      WHERE command_id=? AND attempt=? AND lease_token_digest=? AND result_json=?
+        AND state IN ('terminal_pending','dead_letter') AND completed_at IS NULL
+        AND submission_quarantined_at IS NULL
+      RETURNING submission_quarantined_at
+    `,
+      )
+      .get(
+        safeCode(errorCode),
+        now,
+        now,
+        now,
+        command.commandId,
+        command.attempt,
+        digest("knot.cloud.command.lease.v1", command.leaseToken),
+        JSON.stringify(commandResultSchema.parse(result)),
+      ) as { submission_quarantined_at: number | null } | undefined;
+    if (
+      failed?.submission_quarantined_at !== null &&
+      failed?.submission_quarantined_at !== undefined
+    )
+      this.enqueueProjection(command.commandId, "result-submission-quarantined", now);
+    return failed !== undefined;
+  }
+
+  retrySubmission(
+    commandId: string,
+    authorization: { operatorApproved: boolean },
+    now = Date.now(),
+  ): boolean {
+    if (!authorization?.operatorApproved)
+      throw new Error("Result submission retry requires explicit operator approval");
+    const changed = this.store.db
+      .prepare(
+        `
+      UPDATE cloud_command_inbox SET submission_attempts=0,submission_last_error_code=NULL,
+        submission_last_error=NULL,submission_quarantined_at=NULL,available_at=?,updated_at=?
+      WHERE command_id=? AND state IN ('terminal_pending','dead_letter')
+        AND result_json IS NOT NULL AND completed_at IS NULL
+    `,
+      )
+      .run(now, now, commandId).changes;
+    if (changed) this.enqueueProjection(commandId, "result-submission-retry", now);
+    return changed === 1;
+  }
+
+  markSubmitted(
+    commandId: string,
+    result: CloudCommandResult,
+    now = Date.now(),
+    expectedCommand?: CloudCommandEnvelope,
+  ): boolean {
     let state =
       result.outcome === "succeeded"
         ? "succeeded"
@@ -561,10 +672,20 @@ export class CloudCommandStore {
       state = "dead_letter";
     const changed = this.store.db
       .prepare(
-        `UPDATE cloud_command_inbox SET state=?,completed_at=?,updated_at=?
-         WHERE command_id=? AND state IN ('terminal_pending','dead_letter') AND result_json=?`,
+        `UPDATE cloud_command_inbox SET state=?,completed_at=?,updated_at=?,submission_quarantined_at=NULL
+         WHERE command_id=? AND state IN ('terminal_pending','dead_letter') AND result_json=?
+           AND completed_at IS NULL AND (? IS NULL OR (attempt=? AND lease_token_digest=?))`,
       )
-      .run(state, now, now, commandId, JSON.stringify(commandResultSchema.parse(result))).changes;
+      .run(
+        state,
+        now,
+        now,
+        commandId,
+        JSON.stringify(commandResultSchema.parse(result)),
+        expectedCommand?.attempt ?? null,
+        expectedCommand?.attempt ?? null,
+        expectedCommand ? digest("knot.cloud.command.lease.v1", expectedCommand.leaseToken) : null,
+      ).changes;
     if (changed) this.enqueueProjection(commandId, state, now);
     return changed === 1;
   }
@@ -673,10 +794,10 @@ export class CloudCommandStore {
     const placeholders = allowed.map(() => "?").join(",");
     const changed = this.store.db
       .prepare(
-        `UPDATE cloud_command_inbox SET state='terminal_pending',result_json=?,updated_at=?
+        `UPDATE cloud_command_inbox SET state='terminal_pending',result_json=?,available_at=?,updated_at=?
          WHERE command_id=? AND state IN (${placeholders})`,
       )
-      .run(JSON.stringify(parsed), now, commandId, ...allowed).changes;
+      .run(JSON.stringify(parsed), now, now, commandId, ...allowed).changes;
     if (changed) this.enqueueProjection(commandId, parsed.outcome, now);
     return changed === 1;
   }
@@ -918,7 +1039,7 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
   }
 
   private async extendLeases(now: number, signal: AbortSignal): Promise<void> {
-    for (const command of this.inbox.leaseCandidates(this.lastLeaseCommandId)) {
+    for (const command of this.inbox.leaseCandidates(this.lastLeaseCommandId, now)) {
       signal.throwIfAborted();
       this.lastLeaseCommandId = command.commandId;
       if (
@@ -931,7 +1052,9 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
         const extended = await this.client.extendLease(envelope, this.config.leaseSeconds, signal);
         signal.throwIfAborted();
         if (extended.commandId !== command.commandId || extended.attempt !== envelope.attempt)
-          throw new Error("Cloud returned a lease extension for a different command fence");
+          throw new CloudCommandFenceError(
+            "Cloud returned a lease extension for a different command fence",
+          );
         this.inbox.updateLease(command.commandId, extended.leaseExpiresAt, now);
       } catch (error) {
         this.log("cloud_command_lease_extension_failed", {
@@ -999,7 +1122,9 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
         const extended = await this.client.extendLease(envelope, this.config.leaseSeconds, signal);
         signal.throwIfAborted();
         if (extended.commandId !== commandId || extended.attempt !== envelope.attempt)
-          throw new Error("Cloud returned a lease extension for a different command fence");
+          throw new CloudCommandFenceError(
+            "Cloud returned a lease extension for a different command fence",
+          );
         this.inbox.updateLease(commandId, extended.leaseExpiresAt, this.now());
       } catch (error) {
         this.log("cloud_command_lease_extension_failed", {
@@ -1011,24 +1136,32 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
   }
 
   private async submitTerminalResults(now: number, signal: AbortSignal): Promise<void> {
-    for (const record of this.inbox.terminalPending(this.lastResultCommandId)) {
+    for (const record of this.inbox.terminalPending(this.lastResultCommandId, now)) {
       signal.throwIfAborted();
       this.lastResultCommandId = record.commandId;
       if (!record.result) continue;
+      const command = this.inbox.envelope(record.commandId);
       try {
-        const command = this.inbox.envelope(record.commandId);
         const receipt = await this.client.submitResult(command, record.result, signal);
         if (receipt.commandId !== record.commandId || receipt.attempt !== command.attempt)
-          throw new Error("Cloud acknowledged a different command fence");
+          throw new CloudCommandFenceError("Cloud acknowledged a different command fence");
         // A matching receipt confirms submission even if cancellation arrived
         // with the reply. Retire that result instead of replaying a known ACK.
-        this.inbox.markSubmitted(record.commandId, record.result, now);
+        this.inbox.markSubmitted(record.commandId, record.result, now, command);
       } catch (error) {
         this.log("cloud_command_result_submission_failed", {
           commandId: record.commandId,
           error: message(error),
         });
         if (shouldDeferCloudRequests(error, signal)) throw error;
+        this.inbox.failSubmission(
+          command,
+          record.result,
+          error instanceof CloudRequestError && error.options.status !== undefined
+            ? `submission-http-${error.options.status}`
+            : "submission-fence-or-response-invalid",
+          this.now(),
+        );
       }
     }
   }
@@ -1036,19 +1169,17 @@ export class CloudWorkflowExtension implements WorkflowRunnerExtension {
 
 function shouldDeferCloudRequests(error: unknown, signal: AbortSignal): boolean {
   if (signal.aborted) return true;
+  if (error instanceof CloudCommandFenceError) return false;
   if (error instanceof CloudRequestError) {
     const status = error.options.status;
-    if (status !== undefined && status >= 400 && status < 500 && ![408, 429].includes(status))
-      return false;
-    return error.options.retryable;
+    if (error.options.code === "clock-skew") return true;
+    if (status !== undefined && [400, 404, 409, 410, 422].includes(status)) return false;
+    return true;
   }
   // Native fetch reports network failures as TypeError, while request deadlines
   // and caller cancellation use these named errors. Command/fence rejections
   // must not prevent other results or newly claimed commands from progressing.
-  return (
-    error instanceof TypeError ||
-    (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name))
-  );
+  return true;
 }
 
 export class AnytypeCloudCommandExecutor implements CloudCommandExecutionPort {
@@ -1503,6 +1634,7 @@ function mapCommand(row: CommandRow): CloudCommandRecord {
     state: row.state,
     attempt: row.attempt,
     localAttempts: row.local_attempts,
+    submissionAttempts: row.submission_attempts,
     leaseExpiresAt: row.lease_expires_at,
     expiresAt: row.expires_at,
     effectKey: row.effect_key,
@@ -1512,6 +1644,12 @@ function mapCommand(row: CommandRow): CloudCommandRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
+    ...(row.submission_last_error_code
+      ? { submissionLastErrorCode: row.submission_last_error_code }
+      : {}),
+    ...(row.submission_quarantined_at === null
+      ? {}
+      : { submissionQuarantinedAt: row.submission_quarantined_at }),
   };
 }
 

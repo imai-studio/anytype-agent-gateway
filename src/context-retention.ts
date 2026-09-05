@@ -19,6 +19,28 @@ type Registry = {
   sessions: Record<string, SessionReferences>;
 };
 
+type RegistryReadFailure =
+  "missing" | "invalid-json" | "invalid-schema" | "nonregular" | "unreadable";
+export type ContextRegistryIssue =
+  | RegistryReadFailure
+  | "disabled"
+  | "lock-contended"
+  | "lock-unavailable"
+  | "registration-failed"
+  | "cleanup-failed"
+  | "write-failed";
+export type ContextRegistryResult =
+  { status: "ok" } | { status: "skipped"; reason: ContextRegistryIssue };
+type RegistryRead = { status: "ready"; registry: Registry } | { status: RegistryReadFailure };
+
+export type ContextRegistryDiagnostics = {
+  status: "ready" | "disabled" | RegistryReadFailure;
+  registeredFiles?: number;
+  managedFiles?: number;
+  managedBytes?: number;
+  lock: "present" | "absent" | "unreadable" | "not-applicable";
+};
+
 const holds = new Map<string, number>();
 
 /** Prevent a sweep while a turn is assembling or using not-yet-bound context. */
@@ -82,8 +104,8 @@ export async function recordWorkspaceSession(
   config: AgentConfig,
   sessionKey: string,
   paths: string[],
-): Promise<void> {
-  await withRegistry(config, true, async (registry, project) => {
+): Promise<ContextRegistryResult> {
+  return withRegistry(config, true, async (registry, project) => {
     // Register files and session references atomically. A skipped update must not
     // leave registered media unprotected while its runtime session is active.
     await registerFiles(registry, project, paths);
@@ -104,10 +126,9 @@ export async function pruneWorkspaceContext(
   config: AgentConfig,
   activeSessionKeys: string[],
   now = Date.now(),
-): Promise<{ removedFiles: number; retainedBytes: number }> {
+): Promise<{ removedFiles: number; retainedBytes: number } & ContextRegistryResult> {
   const result = { removedFiles: 0, retainedBytes: 0 };
-  if (!config.runtime.defaultProject) return result;
-  await withRegistry(config, false, async (registry, project) => {
+  const maintenance = await withRegistry(config, false, async (registry, project) => {
     const active = new Set(activeSessionKeys.map(sessionHash));
     const cutoff = now - config.context.retention.maxAgeDays * 86_400_000;
     const maxBytes = config.context.retention.maxBytes;
@@ -170,7 +191,43 @@ export async function pruneWorkspaceContext(
       }
     }
   });
-  return result;
+  return { ...result, ...maintenance };
+}
+
+/** Inspect registry and recorded files without locks, writes, repairs or cleanup. */
+export async function inspectContextRegistry(
+  config: AgentConfig,
+): Promise<ContextRegistryDiagnostics> {
+  if (!config.runtime.defaultProject) return { status: "disabled", lock: "not-applicable" };
+  const project = resolve(config.runtime.defaultProject);
+  const path = registryPathFor(config, project);
+  const lock = await lstat(`${path}.lock`).then(
+    () => "present" as const,
+    (error: NodeJS.ErrnoException) =>
+      error.code === "ENOENT" ? ("absent" as const) : ("unreadable" as const),
+  );
+  const loaded = await readRegistry(path);
+  if (loaded.status !== "ready") return { status: loaded.status, lock };
+  let managedFiles = 0;
+  let managedBytes = 0;
+  for (const [local, file] of Object.entries(loaded.registry.files)) {
+    if (await unchangedManagedFile(project, local, file)) {
+      managedFiles += 1;
+      managedBytes += file.size;
+    }
+  }
+  return {
+    status: "ready",
+    lock,
+    registeredFiles: Object.keys(loaded.registry.files).length,
+    managedFiles,
+    managedBytes,
+  };
+}
+
+export function contextRegistryDoctorLine(diagnostics: ContextRegistryDiagnostics): string {
+  const healthy = diagnostics.status === "ready" || diagnostics.status === "disabled";
+  return `${healthy ? "ok" : "warning"}: context retention registry (status=${diagnostics.status}, registered_files=${diagnostics.registeredFiles ?? "unavailable"}, managed_files=${diagnostics.managedFiles ?? "unavailable"}, managed_bytes=${diagnostics.managedBytes ?? "unavailable"}, lock=${diagnostics.lock})`;
 }
 
 function referencedPaths(registry: Registry, retainedSessions: Set<string>): Set<string> {
@@ -283,42 +340,70 @@ async function withRegistry(
   config: AgentConfig,
   createIfMissing: boolean,
   operation: (registry: Registry, project: string) => Promise<void>,
-): Promise<void> {
-  if (!config.runtime.defaultProject) return;
+): Promise<ContextRegistryResult> {
+  if (!config.runtime.defaultProject) return { status: "skipped", reason: "disabled" };
   const project = resolve(config.runtime.defaultProject);
-  const registryPath = join(
-    dirname(resolve(config.state.path)),
-    `context-${sessionHash(project)}.json`,
-  );
+  const registryPath = registryPathFor(config, project);
   const temporary = `${registryPath}.${randomUUID()}.tmp`;
   let release: (() => Promise<void>) | undefined;
+  let failure: ContextRegistryIssue = "lock-unavailable";
   try {
     // Retention is best effort: contention or inaccessible state must never delay
     // attachment delivery or prevent the runtime from receiving its prompt.
     release = await acquireProcessLock(`${registryPath}.lock`, {
-      attempts: 1,
+      // A second immediate attempt can acquire the lock after reclaiming a dead
+      // owner. Live contention still throws immediately because wait is zero.
+      attempts: 2,
       waitMilliseconds: 0,
+      contentionMessage: () => {
+        failure = "lock-contended";
+        return "Context registry is locked";
+      },
     });
-    const info = await lstat(registryPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (info && (!info.isFile() || info.isSymbolicLink())) return;
-    if (!info && !createIfMissing) return;
-    const registry: unknown = info
-      ? JSON.parse(await readFile(registryPath, "utf8"))
-      : { version: 1, files: {}, sessions: {} };
+    const loaded = await readRegistry(registryPath);
+    if (loaded.status !== "ready" && !(loaded.status === "missing" && createIfMissing))
+      return { status: "skipped", reason: loaded.status };
+    const registry: Registry =
+      loaded.status === "ready" ? loaded.registry : { version: 1, files: {}, sessions: {} };
     // Validate everything before considering a single deletion. Preserve corrupt
     // evidence for the operator; do not replace it with an empty or partial map.
-    if (!validRegistry(registry)) return;
+    failure = createIfMissing ? "registration-failed" : "cleanup-failed";
     await operation(registry, project);
+    failure = "write-failed";
     await writeFile(temporary, `${JSON.stringify(registry)}\n`, { mode: 0o600, flag: "wx" });
     await rename(temporary, registryPath);
+    return { status: "ok" };
   } catch {
     // Unregistered files remain unmanaged. A later successful turn can register
-    // them, while damaged registry data requires operator repair.
+    // them, while damaged registry data requires operator repair. Never expose
+    // an OS error message here: it can include private paths or session data.
+    return { status: "skipped", reason: failure };
   } finally {
     await unlink(temporary).catch(() => undefined);
     await release?.().catch(() => undefined);
   }
+}
+
+function registryPathFor(config: AgentConfig, project: string): string {
+  return join(dirname(resolve(config.state.path)), `context-${sessionHash(project)}.json`);
+}
+
+async function readRegistry(path: string): Promise<RegistryRead> {
+  let contents: string;
+  try {
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) return { status: "nonregular" };
+    contents = await readFile(path, "utf8");
+  } catch (error) {
+    return {
+      status: (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable",
+    };
+  }
+  let registry: unknown;
+  try {
+    registry = JSON.parse(contents);
+  } catch {
+    return { status: "invalid-json" };
+  }
+  return validRegistry(registry) ? { status: "ready", registry } : { status: "invalid-schema" };
 }

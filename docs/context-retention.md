@@ -56,12 +56,30 @@ path checks protect against accidental deletion; they are not an isolation
 boundary against another process with the same OS user's access to the workspace
 and state directory.
 
-Registry maintenance is best effort. If another process holds its lock, Knot skips
-that update immediately. Unreadable, nonregular or corrupt registry data also
+Registry maintenance is best effort. If another live process holds its lock, Knot
+skips that update immediately. A stale lock is reclaimed and acquisition retried
+once without a contention wait. Unreadable, nonregular or corrupt registry data also
 causes maintenance to skip, before deleting any managed files. Knot preserves the
 registry evidence instead of replacing it with an empty map. These registry
 failures do not prevent attachment delivery or prompt preparation when the
 workspace itself is writable.
+
+Skipped registration and cleanup emit `context_registry_unavailable` with the
+operation and a fixed reason such as `invalid-json`, `invalid-schema`,
+`nonregular`, `unreadable`, `lock-contended`, `registration-failed`, or
+`write-failed`. These diagnostics contain no private paths, participant or session
+identifiers, registry contents, or raw filesystem errors. A `missing` cleanup
+registry means maintenance has no ownership records yet; the next successfully
+registered turn initializes it.
+
+`knot doctor` reports registry status, registered file count, verified managed
+file count, verified managed bytes, and whether a lock is present. Counts and bytes
+are unavailable for an invalid or unreadable registry. Changed, missing or unsafe
+files remain in the registered count until maintenance checks them, but are
+excluded from the verified managed count and bytes. Registry inspection is
+read-only: it does not acquire or reclaim locks, create registry directories,
+rewrite evidence, or delete files. The rest of `doctor` retains its existing state
+database initialization and migration behavior.
 
 For a damaged registry, preserve a copy and restore a known-good backup after
 stopping the agent. Do not replace it with an empty map to force cleanup. The next

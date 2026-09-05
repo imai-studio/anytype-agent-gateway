@@ -257,10 +257,8 @@ export class CloudClient {
                 signal.throwIfAborted();
                 if (!response.ok) {
                     let error = cloudError(response, responseBody);
-                    if (input.commandScoped &&
-                        response.status >= 400 &&
-                        response.status < 500 &&
-                        ![408, 429].includes(response.status) &&
+                    if (((input.commandScoped && [400, 404, 409, 410, 422].includes(response.status)) ||
+                        [401, 403].includes(response.status)) &&
                         error.options.code !== "clock-skew")
                         error = new CloudRequestError(error.message, { ...error.options, retryable: false });
                     if (error.options.serverUnixSeconds !== undefined) {
